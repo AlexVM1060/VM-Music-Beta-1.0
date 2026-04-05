@@ -52,6 +52,8 @@ class DownloadsPage extends StatelessWidget {
                         title: song.title,
                         thumbnailUrl: song.thumbnailUrl,
                         artist: song.channelTitle,
+                        localPlainLyrics: song.plainLyrics,
+                        localSyncedLyrics: song.syncedLyrics,
                       );
                     },
                     child: Padding(

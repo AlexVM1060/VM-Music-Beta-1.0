@@ -148,6 +148,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                   title: local.title,
                                   thumbnailUrl: local.thumbnailUrl,
                                   artist: local.channelTitle,
+                                  localPlainLyrics: local.plainLyrics,
+                                  localSyncedLyrics: local.syncedLyrics,
                                 );
                                 return;
                               }

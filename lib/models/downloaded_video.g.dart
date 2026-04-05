@@ -22,13 +22,15 @@ class DownloadedVideoAdapter extends TypeAdapter<DownloadedVideo> {
       thumbnailUrl: fields[2] as String,
       channelTitle: fields[3] as String,
       filePath: fields[4] as String,
+      plainLyrics: fields[5] as String?,
+      syncedLyrics: fields[6] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, DownloadedVideo obj) {
     writer
-      ..writeByte(5)
+      ..writeByte(7)
       ..writeByte(0)
       ..write(obj.videoId)
       ..writeByte(1)
@@ -38,7 +40,11 @@ class DownloadedVideoAdapter extends TypeAdapter<DownloadedVideo> {
       ..writeByte(3)
       ..write(obj.channelTitle)
       ..writeByte(4)
-      ..write(obj.filePath);
+      ..write(obj.filePath)
+      ..writeByte(5)
+      ..write(obj.plainLyrics)
+      ..writeByte(6)
+      ..write(obj.syncedLyrics);
   }
 
   @override

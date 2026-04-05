@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
+import 'package:myapp/services/lyrics_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
@@ -28,6 +29,7 @@ class DownloadService with ChangeNotifier {
   static const String _autoDownloadBoxName = 'auto_download_playlists';
   final YoutubeExplode _yt = YoutubeExplode();
   final Dio _dio = Dio();
+  final LyricsService _lyricsService = LyricsService();
   static const Map<String, String> _youtubeHeaders = {
     'User-Agent':
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
@@ -181,12 +183,18 @@ class DownloadService with ChangeNotifier {
         throw Exception('No se pudo descargar con ningún stream: $lastError');
       }
 
+      final lyrics = await _fetchLyricsSafe(
+        title: title,
+        artist: channelTitle,
+      );
       final downloadedVideo = DownloadedVideo(
         videoId: videoId,
         title: title,
         thumbnailUrl: thumbnailUrl,
         channelTitle: channelTitle,
         filePath: successfulPath,
+        plainLyrics: lyrics?.plainLyrics,
+        syncedLyrics: lyrics?.rawSyncedLyrics,
       );
 
       final box = await _downloadsBox;
@@ -268,12 +276,18 @@ class DownloadService with ChangeNotifier {
         throw Exception('Archivo descargado vacío');
       }
 
+      final lyrics = await _fetchLyricsSafe(
+        title: title,
+        artist: channelTitle,
+      );
       final downloadedVideo = DownloadedVideo(
         videoId: videoId,
         title: title,
         thumbnailUrl: thumbnailUrl,
         channelTitle: channelTitle,
         filePath: targetPath,
+        plainLyrics: lyrics?.plainLyrics,
+        syncedLyrics: lyrics?.rawSyncedLyrics,
       );
 
       final box = await _downloadsBox;
@@ -515,5 +529,19 @@ class DownloadService with ChangeNotifier {
       return 'No hay conexión estable para descargar. Verifica tu internet e intenta de nuevo.';
     }
     return 'No se pudo completar la descarga.';
+  }
+
+  Future<LyricsResult?> _fetchLyricsSafe({
+    required String title,
+    required String artist,
+  }) async {
+    try {
+      return await _lyricsService.fetchLyrics(
+        title: title,
+        artist: artist,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 }

@@ -19,11 +19,19 @@ class DownloadedVideo extends HiveObject {
   @HiveField(4)
   final String filePath; // Path al archivo de vídeo descargado
 
+  @HiveField(5)
+  final String? plainLyrics;
+
+  @HiveField(6)
+  final String? syncedLyrics;
+
   DownloadedVideo({
     required this.videoId,
     required this.title,
     required this.thumbnailUrl,
     required this.channelTitle,
     required this.filePath,
+    this.plainLyrics,
+    this.syncedLyrics,
   });
 }
