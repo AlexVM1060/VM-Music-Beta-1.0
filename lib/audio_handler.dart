@@ -15,6 +15,8 @@ Future<AudioHandler> initAudioService() async {
   );
 }
 
+class SilentAudioHandler extends BaseAudioHandler {}
+
 class MyAudioHandler extends BaseAudioHandler {
   final _player = AudioPlayer();
   final List<MediaItem> _items = [];

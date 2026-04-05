@@ -1,5 +1,7 @@
 import 'dart:ui' show ImageFilter;
 
+import 'dart:async';
+
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -23,7 +25,6 @@ import 'package:path_provider/path_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await _configureAudioSession();
 
   // Inicialización de Hive
   final appDocumentDir = await getApplicationDocumentsDirectory();
@@ -32,7 +33,13 @@ void main() async {
   Hive.registerAdapter(PlaylistAdapter());
   Hive.registerAdapter(DownloadedVideoAdapter());
 
-  final audioHandler = await initAudioService();
+  late final dynamic audioHandler;
+  try {
+    audioHandler = await initAudioService().timeout(const Duration(seconds: 10));
+  } catch (_) {
+    audioHandler = SilentAudioHandler();
+  }
+
   runApp(
     MultiProvider(
       providers: [
@@ -44,27 +51,37 @@ void main() async {
       child: const MyApp(),
     ),
   );
+
+  unawaited(_configureAudioSessionSafe());
 }
 
-Future<void> _configureAudioSession() async {
-  final session = await AudioSession.instance;
-  await session.configure(
-    const AudioSessionConfiguration(
-      avAudioSessionCategory: AVAudioSessionCategory.playback,
-      avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.allowAirPlay,
-      avAudioSessionMode: AVAudioSessionMode.defaultMode,
-      avAudioSessionRouteSharingPolicy: AVAudioSessionRouteSharingPolicy.defaultPolicy,
-      avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
-      androidAudioAttributes: AndroidAudioAttributes(
-        contentType: AndroidAudioContentType.music,
-        flags: AndroidAudioFlags.none,
-        usage: AndroidAudioUsage.media,
-      ),
-      androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
-      androidWillPauseWhenDucked: false,
-    ),
-  );
-  await session.setActive(true);
+Future<void> _configureAudioSessionSafe() async {
+  try {
+    final session = await AudioSession.instance.timeout(
+      const Duration(seconds: 5),
+    );
+    await session
+        .configure(
+          const AudioSessionConfiguration(
+            avAudioSessionCategory: AVAudioSessionCategory.playback,
+            avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.allowAirPlay,
+            avAudioSessionMode: AVAudioSessionMode.defaultMode,
+            avAudioSessionRouteSharingPolicy: AVAudioSessionRouteSharingPolicy.defaultPolicy,
+            avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
+            androidAudioAttributes: AndroidAudioAttributes(
+              contentType: AndroidAudioContentType.music,
+              flags: AndroidAudioFlags.none,
+              usage: AndroidAudioUsage.media,
+            ),
+            androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+            androidWillPauseWhenDucked: false,
+          ),
+        )
+        .timeout(const Duration(seconds: 5));
+    await session.setActive(true).timeout(const Duration(seconds: 5));
+  } catch (_) {
+    // No bloqueamos el arranque de la app por configuración de audio.
+  }
 }
 
 class ThemeProvider with ChangeNotifier {
