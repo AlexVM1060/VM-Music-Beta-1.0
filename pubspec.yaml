@@ -1,0 +1,47 @@
+name: myapp
+description: "A new Flutter project."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations: # Añadido para solucionar el error de MaterialLocalizations
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  youtube_explode_dart: ^3.0.5 # Usamos la original
+  path_provider: ^2.1.5
+  just_audio: ^0.10.5
+  audio_session: ^0.2.2
+  permission_handler: ^12.0.1
+  path: ^1.9.1
+  audio_service: ^0.18.18
+  provider: ^6.0.0 # Añadido para gestionar el estado del reproductor minimizable
+  google_fonts: ^6.3.3
+  go_router: ^17.0.1
+  video_player: ^2.10.1
+  chewie: ^1.13.0
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  dio: ^5.9.0
+  collection: ^1.19.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  hive_generator: ^2.0.1
+  build_runner: ^2.4.13
+
+# Anulación correcta:
+# Forzamos a todo el proyecto (incluyendo las dependencias de youtube_player_flutter)
+# a usar la versión 3.0.5 de youtube_explode_dart.
+dependency_overrides:
+  youtube_explode_dart: ^3.0.5
+
+flutter:
+  uses-material-design: true
