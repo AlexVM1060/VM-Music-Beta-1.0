@@ -264,6 +264,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                               IconButton(
                                 icon: const Icon(CupertinoIcons.delete, color: Colors.red),
                                 onPressed: () async {
+                                  final wasDownloaded = await downloadService
+                                      .isVideoDownloaded(video.videoId);
                                   await downloadService.deleteVideo(video.videoId);
                                   await playlistService.removeVideoFromPlaylist(
                                     _currentPlaylist.name,
@@ -277,8 +279,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                         .removeWhere((v) => v.videoId == video.videoId);
                                   });
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Canción eliminada de la playlist'),
+                                    SnackBar(
+                                      content: Text(
+                                        wasDownloaded
+                                            ? 'Canción eliminada de la playlist y de descargas locales.'
+                                            : 'Canción eliminada de la playlist.',
+                                      ),
                                     ),
                                   );
                                 },

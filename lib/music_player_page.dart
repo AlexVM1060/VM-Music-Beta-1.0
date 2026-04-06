@@ -631,7 +631,7 @@ class _FullPlayer extends StatelessWidget {
         final bottomInset = MediaQuery.of(overlayContext).padding.bottom;
         return IgnorePointer(
           ignoring: true,
-          child: Positioned.fill(
+          child: SizedBox.expand(
             child: Align(
               alignment: Alignment.bottomCenter,
               child: Padding(

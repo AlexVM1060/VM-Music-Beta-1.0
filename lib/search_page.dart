@@ -6,7 +6,10 @@ import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:myapp/models/video_history.dart';
 import 'package:myapp/search_view_state.dart';
+import 'package:myapp/services/download_service.dart';
+import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:provider/provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -63,6 +66,7 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
   int _searchEpoch = 0;
   bool _showArtists = true;
   _SelectedArtistView? _selectedArtistView;
+  int _artistTransitionDirection = 1;
   SearchViewState? _searchViewState;
   AnimationController? _searchBarGlowController;
 
@@ -107,6 +111,7 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     final pending = _searchViewState?.consumePendingArtistProfile();
     if (pending == null) return;
     setState(() {
+      _artistTransitionDirection = 1;
       _selectedArtistView = _SelectedArtistView(
         channelId: pending.channelId,
         channelName: pending.channelName,
@@ -150,15 +155,37 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     });
 
     try {
-      final searchResult = await _searchWithCache(query);
+      final videosFuture = _searchWithCache(query);
+      final channelsFuture = _searchChannelsWithCache(query);
+
+      // Mostramos el canal del artista tan pronto como esté listo.
+      unawaited(() async {
+        try {
+          final channelResult = await channelsFuture;
+          if (!mounted || epoch != _searchEpoch) return;
+          setState(() {
+            _channels = channelResult;
+            _searchState =
+                _videos.isEmpty && channelResult.isEmpty
+                    ? SearchState.noResults
+                    : SearchState.success;
+          });
+        } catch (_) {
+          // Ignoramos: la búsqueda de videos puede seguir funcionando.
+        }
+      }());
+
+      final searchResult = await videosFuture;
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _videos = searchResult.toList();
-        _channels = cachedChannels ?? const [];
-        _searchState = searchResult.isEmpty ? SearchState.loading : SearchState.success;
+        _channels = _channels.isNotEmpty ? _channels : (cachedChannels ?? const []);
+        _searchState =
+            _videos.isEmpty && _channels.isEmpty ? SearchState.noResults : SearchState.success;
       });
 
-      final channelResult = await _searchChannelsWithCache(query);
+      // Si canales aún no termina, esperamos su resultado final.
+      final channelResult = await channelsFuture;
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _channels = channelResult;
@@ -177,6 +204,7 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
   Future<void> _openChannel(SearchChannelWithSubscribers channelData) async {
     final channel = channelData.channel;
     setState(() {
+      _artistTransitionDirection = 1;
       _selectedArtistView = _SelectedArtistView(
         channelId: channel.id.value,
         channelName: channel.name,
@@ -184,6 +212,14 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       );
     });
     _searchViewState?.setArtistFullscreen(true);
+  }
+
+  void _closeArtistChannel() {
+    setState(() {
+      _artistTransitionDirection = -1;
+      _selectedArtistView = null;
+    });
+    _searchViewState?.setArtistFullscreen(false);
   }
 
   Future<void> _openVideoPlayer(
@@ -206,6 +242,319 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
         const SnackBar(content: Text('No se pudo iniciar la reproducción.')),
       );
     }
+  }
+
+  Future<void> _playVideoPreferLocal(Video video) async {
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    final local = await downloadService.getDownloadedVideoById(video.id.value);
+
+    if (!mounted) return;
+    if (local != null) {
+      await videoManager.playLocalFile(
+        id: local.videoId,
+        filePath: local.filePath,
+        title: local.title,
+        thumbnailUrl: local.thumbnailUrl,
+        artist: local.channelTitle,
+        localPlainLyrics: local.plainLyrics,
+        localSyncedLyrics: local.syncedLyrics,
+      );
+      return;
+    }
+
+    await _openVideoPlayer(
+      video.id.value,
+      thumbnailUrl: video.thumbnails.mediumResUrl,
+      title: video.title,
+      artist: video.author,
+    );
+  }
+
+  Future<void> _openArtistFromVideo(Video video) async {
+    try {
+      final details = await _runYoutubeWithRetry(
+        () => _youtubeExplode.channels.getByVideo(video.id.value),
+        maxAttempts: 1,
+      );
+      if (!mounted) return;
+      setState(() {
+        _artistTransitionDirection = 1;
+        _selectedArtistView = _SelectedArtistView(
+          channelId: details.id.value,
+          channelName: details.title,
+          channelThumbnailUrl: details.logoUrl,
+        );
+      });
+      _searchViewState?.setArtistFullscreen(true);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir el perfil del artista.')),
+      );
+    }
+  }
+
+  Future<void> _showVideoOptionsMenu(Video video) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.systemGrey6
+                        .resolveFrom(sheetContext)
+                        .withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: CupertinoColors.white.withValues(alpha: 0.24),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(sheetContext)
+                              .withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                video.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: CupertinoTheme.of(sheetContext)
+                                    .textTheme
+                                    .navTitleTextStyle
+                                    .copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minimumSize: const Size(34, 34),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                              child: Icon(
+                                CupertinoIcons.xmark_circle_fill,
+                                size: 24,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(sheetContext),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
+                        child: Column(
+                          children: [
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.star_fill,
+                              label: 'Añadir a Favoritos',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('favorites'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.music_note_list,
+                              label: 'Añadir a playlist',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('playlist'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.person_crop_circle,
+                              label: 'Ir al artista',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('artist'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (!mounted || action == null) return;
+    if (action == 'favorites') {
+      await _addVideoToPlaylist(video, PlaylistService.favoritesPlaylistName);
+      return;
+    }
+    if (action == 'playlist') {
+      await _showPlaylistPicker(video);
+      return;
+    }
+    if (action == 'artist') {
+      await _openArtistFromVideo(video);
+    }
+  }
+
+  Future<void> _showPlaylistPicker(Video video) async {
+    final playlistService = context.read<PlaylistService>();
+    final playlists = await playlistService.getPlaylists();
+    if (!mounted || playlists.isEmpty) return;
+
+    final selectedName = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(sheetContext).size.height * 0.78,
+                  ),
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.systemGrey6
+                        .resolveFrom(sheetContext)
+                        .withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: CupertinoColors.white.withValues(alpha: 0.24),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(sheetContext)
+                              .withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Row(
+                          children: [
+                            Text(
+                              'Añadir a playlist',
+                              style: CupertinoTheme.of(sheetContext)
+                                  .textTheme
+                                  .navTitleTextStyle
+                                  .copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const Spacer(),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minimumSize: const Size(34, 34),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                              child: Icon(
+                                CupertinoIcons.xmark_circle_fill,
+                                size: 24,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(sheetContext),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Flexible(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
+                          itemCount: playlists.length,
+                          itemBuilder: (context, index) {
+                            final playlist = playlists[index];
+                            final cover = playlist.videos.isNotEmpty
+                                ? playlist.videos.first.thumbnailUrl
+                                : null;
+                            final isFavorites = PlaylistService
+                                .isFavoritesPlaylistName(playlist.name);
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: _GlassPlaylistPickerRow(
+                                name: playlist.name,
+                                songsCount: playlist.videos.length,
+                                coverUrl: cover,
+                                isFavorites: isFavorites,
+                                onTap: () => Navigator.of(sheetContext).pop(
+                                  playlist.name,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted || selectedName == null || selectedName.isEmpty) return;
+    await _addVideoToPlaylist(video, selectedName);
+  }
+
+  Future<void> _addVideoToPlaylist(Video video, String playlistName) async {
+    final playlistService = context.read<PlaylistService>();
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    final track = VideoHistory(
+      videoId: video.id.value,
+      title: video.title,
+      thumbnailUrl: video.thumbnails.mediumResUrl,
+      channelTitle: video.author,
+      watchedAt: DateTime.now(),
+    );
+    await playlistService.addVideoToPlaylist(playlistName, track);
+    await downloadService.autoDownloadIfEnabledUsingClone(
+      playlistName,
+      track,
+      videoManager: videoManager,
+    );
+    if (!mounted) return;
+    final label = PlaylistService.isFavoritesPlaylistName(playlistName)
+        ? 'Añadida a Favoritos'
+        : 'Añadida a $playlistName';
+    _showIosTopToast(
+      context,
+      message: label,
+      icon: PlaylistService.isFavoritesPlaylistName(playlistName)
+          ? CupertinoIcons.star_fill
+          : CupertinoIcons.check_mark_circled_solid,
+    );
   }
 
   Future<List<Video>> _searchWithCache(String query) async {
@@ -239,20 +588,32 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     final future = _runYoutubeWithRetry<Object>(() async {
       final list = await _youtubeExplode.search
           .searchContent(query, filter: TypeFilters.channel);
-      final channels = list.whereType<SearchChannel>().toList();
-      final topSearchChannelPhoto = await _resolveTopSubscribedChannelPhoto(channels);
+      final channels = list.whereType<SearchChannel>().take(8).toList();
+      if (channels.isEmpty) return const <SearchChannelWithSubscribers>[];
+
+      // Ruta rápida: evita llamadas extras para que el artista aparezca antes.
       final resolvedByChannelSearch = await _resolveChannelsWithSubscribers(channels);
+      final filtered = _filterChannelsBySubscribers(resolvedByChannelSearch);
+      if (filtered.isNotEmpty) {
+        return _hydrateTopicChannelPhotos(
+          filtered,
+          resolvedByChannelSearch,
+          forcedTopicThumbnail: _topThumbnailFromResolved(resolvedByChannelSearch),
+        );
+      }
+
+      // Fallback solo si no hubo suficientes candidatos por canal.
       final videos = await _searchWithCache(query);
-      final resolvedByVideoSearch = await _resolveChannelsFromTopVideos(videos);
+      final resolvedByVideoSearch = await _resolveChannelsFromTopVideos(videos.take(2).toList());
       final merged = _mergeChannelCandidates(
         resolvedByChannelSearch,
         resolvedByVideoSearch,
       );
-      final filtered = _filterChannelsBySubscribers(merged);
+      final mergedFiltered = _filterChannelsBySubscribers(merged);
       return _hydrateTopicChannelPhotos(
-        filtered,
+        mergedFiltered,
         merged,
-        forcedTopicThumbnail: topSearchChannelPhoto,
+        forcedTopicThumbnail: _topThumbnailFromResolved(merged),
       );
     });
     _channelSearchInFlight[query] = future;
@@ -422,14 +783,6 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     }
 
     return hydrated;
-  }
-
-  Future<String?> _resolveTopSubscribedChannelPhoto(
-    List<SearchChannel> channels,
-  ) async {
-    if (channels.isEmpty) return null;
-    final resolved = await _resolveChannelsWithSubscribers(channels.take(6).toList());
-    return _topThumbnailFromResolved(resolved);
   }
 
   String? _topThumbnailFromResolved(List<SearchChannelWithSubscribers> channels) {
@@ -629,49 +982,68 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final selectedArtist = _selectedArtistView;
-    if (selectedArtist != null) {
-      return PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, result) {
-          if (!didPop) {
-            setState(() => _selectedArtistView = null);
-            context.read<SearchViewState>().setArtistFullscreen(false);
-          }
-        },
-        child: ChannelVideosPage(
-          channelId: selectedArtist.channelId,
-          channelName: selectedArtist.channelName,
-          channelThumbnailUrl: selectedArtist.channelThumbnailUrl,
-          embedded: true,
-          onBack: () {
-            setState(() => _selectedArtistView = null);
-            context.read<SearchViewState>().setArtistFullscreen(false);
-          },
-        ),
-      );
-    }
-
-    if (context.read<SearchViewState>().isArtistFullscreen) {
+    if (context.read<SearchViewState>().isArtistFullscreen && selectedArtist == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         context.read<SearchViewState>().setArtistFullscreen(false);
       });
     }
 
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16.0),
-        child: Column(
-          children: [
-            const SizedBox(height: 16),
-            _buildSearchBar(),
-            const SizedBox(height: 10),
-            _buildSearchFilters(),
-            const SizedBox(height: 24),
-            Expanded(child: _buildBody()),
-          ],
-        ),
+    return PopScope(
+      canPop: selectedArtist == null,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop && selectedArtist != null) {
+          _closeArtistChannel();
+        }
+      },
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 320),
+        reverseDuration: const Duration(milliseconds: 280),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) {
+          final beginX = _artistTransitionDirection > 0 ? 0.14 : -0.14;
+          final slide = Tween<Offset>(
+            begin: Offset(beginX, 0),
+            end: Offset.zero,
+          ).animate(
+            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+          );
+          return FadeTransition(
+            opacity: animation,
+            child: SlideTransition(position: slide, child: child),
+          );
+        },
+        child: selectedArtist == null
+            ? KeyedSubtree(
+                key: const ValueKey('search_home'),
+                child: Scaffold(
+                  backgroundColor: Colors.transparent,
+                  body: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 16),
+                        _buildSearchBar(),
+                        const SizedBox(height: 10),
+                        _buildSearchFilters(),
+                        const SizedBox(height: 24),
+                        Expanded(child: _buildBody()),
+                      ],
+                    ),
+                  ),
+                ),
+              )
+            : KeyedSubtree(
+                key: ValueKey('artist_${selectedArtist.channelId}'),
+                child: ChannelVideosPage(
+                  channelId: selectedArtist.channelId,
+                  channelName: selectedArtist.channelName,
+                  channelThumbnailUrl: selectedArtist.channelThumbnailUrl,
+                  embedded: true,
+                  onBack: _closeArtistChannel,
+                ),
+              ),
       ),
     );
   }
@@ -817,6 +1189,7 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
           ),
         );
       case SearchState.success:
+        final downloadService = context.watch<DownloadService>();
         final prioritizedVideos = _prioritizedVideos(_videos);
         return ListView(
           children: [
@@ -870,12 +1243,11 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
             ...prioritizedVideos.take(20).map(
               (video) => VideoCard(
                 video: video,
-                onPlay: () => _openVideoPlayer(
-                  video.id.value,
-                  thumbnailUrl: video.thumbnails.mediumResUrl,
-                  title: video.title,
-                  artist: video.author,
-                ),
+                isDownloaded:
+                    downloadService.getDownloadStatus(video.id.value) ==
+                    DownloadStatus.downloaded,
+                onPlay: () => _playVideoPreferLocal(video),
+                onMenuTap: () => _showVideoOptionsMenu(video),
               ),
             ),
           ],
@@ -1267,12 +1639,16 @@ class TopArtistCard extends StatelessWidget {
 class VideoCard extends StatelessWidget {
   final Video video;
   final VoidCallback onPlay;
+  final VoidCallback onMenuTap;
+  final bool isDownloaded;
   final bool highlightTop;
 
   const VideoCard({
     super.key,
     required this.video,
     required this.onPlay,
+    required this.onMenuTap,
+    this.isDownloaded = false,
     this.highlightTop = false,
   });
 
@@ -1352,6 +1728,36 @@ class VideoCard extends StatelessWidget {
                       ],
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  if (isDownloaded) ...[
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.22),
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                          color: CupertinoColors.white.withValues(alpha: 0.22),
+                          width: 0.5,
+                        ),
+                      ),
+                      child: const Icon(
+                        CupertinoIcons.arrow_down_circle_fill,
+                        size: 14,
+                        color: Color(0xFF5ED47E),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  CupertinoButton(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(32, 32),
+                    onPressed: onMenuTap,
+                    child: Icon(
+                      CupertinoIcons.ellipsis_circle,
+                      size: 24,
+                      color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -1391,6 +1797,345 @@ class VideoCard extends StatelessWidget {
   }
 }
 
+class _GlassSheetActionRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _GlassSheetActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.05),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: onTap,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: CupertinoColors.white.withValues(alpha: 0.18),
+                  width: 0.6,
+                ),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.08),
+                    Colors.white.withValues(alpha: 0.02),
+                  ],
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: const TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    CupertinoIcons.chevron_right,
+                    size: 17,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GlassPlaylistPickerRow extends StatelessWidget {
+  final String name;
+  final int songsCount;
+  final String? coverUrl;
+  final bool isFavorites;
+  final VoidCallback onTap;
+
+  const _GlassPlaylistPickerRow({
+    required this.name,
+    required this.songsCount,
+    required this.coverUrl,
+    required this.isFavorites,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.05),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: CupertinoColors.white.withValues(alpha: 0.18),
+                  width: 0.6,
+                ),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.08),
+                    Colors.white.withValues(alpha: 0.02),
+                  ],
+                ),
+              ),
+              child: Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: SizedBox(
+                      width: 52,
+                      height: 52,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          coverUrl == null || coverUrl!.isEmpty
+                              ? Container(
+                                  color: CupertinoColors.systemGrey4.resolveFrom(context),
+                                  alignment: Alignment.center,
+                                  child: Icon(
+                                    isFavorites
+                                        ? CupertinoIcons.star_fill
+                                        : CupertinoIcons.music_note_list,
+                                    size: 20,
+                                    color: CupertinoColors.white,
+                                  ),
+                                )
+                              : Image.network(
+                                  coverUrl!,
+                                  fit: BoxFit.cover,
+                                  alignment: Alignment.center,
+                                  errorBuilder: (context, _, _) => Container(
+                                    color: CupertinoColors.systemGrey4.resolveFrom(context),
+                                    alignment: Alignment.center,
+                                    child: Icon(
+                                      isFavorites
+                                          ? CupertinoIcons.star_fill
+                                          : CupertinoIcons.music_note_list,
+                                      size: 20,
+                                      color: CupertinoColors.white,
+                                    ),
+                                  ),
+                                ),
+                          if (isFavorites)
+                            Align(
+                              alignment: Alignment.topRight,
+                              child: Container(
+                                margin: const EdgeInsets.all(3),
+                                width: 15,
+                                height: 15,
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.42),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  CupertinoIcons.star_fill,
+                                  size: 9,
+                                  color: Color(0xFFFFD24A),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontWeight: FontWeight.w700,
+                            fontSize: 15,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '$songsCount canciones',
+                          style: TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontSize: 12,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    CupertinoIcons.chevron_right,
+                    size: 17,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+void _showIosTopToast(
+  BuildContext context, {
+  required String message,
+  required IconData icon,
+}) {
+  final overlay = Overlay.of(context, rootOverlay: true);
+
+  late OverlayEntry entry;
+  entry = OverlayEntry(
+    builder: (overlayContext) {
+      final bottomInset = MediaQuery.of(overlayContext).padding.bottom;
+      return IgnorePointer(
+        ignoring: true,
+        child: SizedBox.expand(
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: EdgeInsets.only(bottom: bottomInset + 130),
+              child: _IosTopToast(message: message, icon: icon),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+  overlay.insert(entry);
+  Timer(const Duration(milliseconds: 1900), () {
+    entry.remove();
+  });
+}
+
+class _IosTopToast extends StatefulWidget {
+  final String message;
+  final IconData icon;
+
+  const _IosTopToast({
+    required this.message,
+    required this.icon,
+  });
+
+  @override
+  State<_IosTopToast> createState() => _IosTopToastState();
+}
+
+class _IosTopToastState extends State<_IosTopToast>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _fade;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+      reverseDuration: const Duration(milliseconds: 240),
+    );
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
+    _slide = Tween<Offset>(
+      begin: const Offset(0, -0.06),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+    _controller.forward();
+    Timer(const Duration(milliseconds: 1400), () {
+      if (mounted) {
+        _controller.reverse();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(
+        position: _slide,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 330),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? Colors.black.withValues(alpha: 0.72)
+                    : Colors.white.withValues(alpha: 0.86),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.white.withValues(alpha: 0.14)
+                      : Colors.black.withValues(alpha: 0.08),
+                  width: 0.6,
+                ),
+              ),
+              child: Text(
+                widget.message,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: '.SF Pro Text',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.white
+                      : Colors.black,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class ChannelVideosPage extends StatefulWidget {
   final String channelId;
   final String channelName;
@@ -1414,6 +2159,7 @@ class ChannelVideosPage extends StatefulWidget {
 class _ChannelVideosPageState extends State<ChannelVideosPage>
     with SingleTickerProviderStateMixin {
   final YoutubeExplode _yt = YoutubeExplode();
+  static const Duration _channelFetchTimeout = Duration(seconds: 6);
   List<Video> _videos = [];
   bool _loading = true;
   bool _error = false;
@@ -1457,7 +2203,28 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
   }
 
   Future<List<Video>> _fetchChannelVideosWithFallback() async {
-    // 1) Canal uploads page (ruta principal)
+    // Ejecutamos ambas fuentes en paralelo para obtener resultados más rápido.
+    final fromPageFuture = _fetchUploadsFromPageFast();
+    final fromPlaylistFuture = _fetchUploadsPlaylistFast();
+
+    final first = await Future.any<(String, List<Video>)>([
+      fromPageFuture.then((videos) => ('page', videos)),
+      fromPlaylistFuture.then((videos) => ('playlist', videos)),
+    ]);
+
+    if (first.$2.isNotEmpty) return first.$2;
+
+    final second = first.$1 == 'page'
+        ? await fromPlaylistFuture
+        : await fromPageFuture;
+    if (second.isNotEmpty) return second;
+
+    // 3) Fallback por busqueda del nombre del canal/topic
+    final searchFallback = await _searchMusicByChannelName();
+    return searchFallback;
+  }
+
+  Future<List<Video>> _fetchUploadsFromPageFast() async {
     try {
       final uploads = await _runYoutubeWithRetry(
         () => _yt.channels.getUploadsFromPage(
@@ -1465,22 +2232,24 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
           videoSorting: VideoSorting.newest,
           videoType: VideoType.normal,
         ),
-      );
-      final result = uploads.toList();
-      if (result.isNotEmpty) return result;
-    } catch (_) {}
+        maxAttempts: 1,
+      ).timeout(_channelFetchTimeout);
+      return uploads.toList();
+    } catch (_) {
+      return const <Video>[];
+    }
+  }
 
-    // 2) Playlist de uploads del canal (mejor para canales - Topic)
+  Future<List<Video>> _fetchUploadsPlaylistFast() async {
     try {
       final streamResult = await _runYoutubeWithRetry(
         () => _yt.channels.getUploads(widget.channelId).take(80).toList(),
-      );
-      if (streamResult.isNotEmpty) return streamResult;
-    } catch (_) {}
-
-    // 3) Fallback por busqueda del nombre del canal/topic
-    final searchFallback = await _searchMusicByChannelName();
-    return searchFallback;
+        maxAttempts: 1,
+      ).timeout(_channelFetchTimeout);
+      return streamResult;
+    } catch (_) {
+      return const <Video>[];
+    }
   }
 
   Future<List<Video>> _searchMusicByChannelName() async {
@@ -1499,13 +2268,14 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
       try {
         final result = await _runYoutubeWithRetry(
           () => _yt.search.search(query),
-        );
+          maxAttempts: 1,
+        ).timeout(_channelFetchTimeout);
         for (final item in result.take(20)) {
           if (!_looksLikeMusic(item)) continue;
           if (seenIds.add(item.id.value)) {
             collected.add(item);
           }
-          if (collected.length >= 80) {
+          if (collected.length >= 40) {
             return collected;
           }
         }
@@ -1598,7 +2368,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
 
   Future<T> _runYoutubeWithRetry<T>(
     Future<T> Function() action, {
-    int maxAttempts = 3,
+    int maxAttempts = 2,
   }) async {
     Object? lastError;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -1614,7 +2384,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
         lastError = e;
       }
       if (attempt < maxAttempts) {
-        await Future<void>.delayed(Duration(seconds: attempt * 2));
+        await Future<void>.delayed(Duration(seconds: attempt));
       }
     }
     throw lastError ?? Exception('Error de red');
@@ -1641,6 +2411,284 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     }
   }
 
+  Future<void> _playVideoPreferLocal(Video video) async {
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    final local = await downloadService.getDownloadedVideoById(video.id.value);
+
+    if (!mounted) return;
+    if (local != null) {
+      await videoManager.playLocalFile(
+        id: local.videoId,
+        filePath: local.filePath,
+        title: local.title,
+        thumbnailUrl: local.thumbnailUrl,
+        artist: local.channelTitle,
+        localPlainLyrics: local.plainLyrics,
+        localSyncedLyrics: local.syncedLyrics,
+      );
+      return;
+    }
+
+    await _openVideoPlayer(
+      video.id.value,
+      thumbnailUrl: video.thumbnails.mediumResUrl,
+      title: video.title,
+      artist: video.author,
+    );
+  }
+
+  Future<void> _showVideoOptionsMenu(Video video) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.systemGrey6
+                        .resolveFrom(sheetContext)
+                        .withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: CupertinoColors.white.withValues(alpha: 0.24),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(sheetContext)
+                              .withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                video.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: CupertinoTheme.of(sheetContext)
+                                    .textTheme
+                                    .navTitleTextStyle
+                                    .copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minimumSize: const Size(34, 34),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                              child: Icon(
+                                CupertinoIcons.xmark_circle_fill,
+                                size: 24,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(sheetContext),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
+                        child: Column(
+                          children: [
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.star_fill,
+                              label: 'Añadir a Favoritos',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('favorites'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.music_note_list,
+                              label: 'Añadir a playlist',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('playlist'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (!mounted || action == null) return;
+    if (action == 'favorites') {
+      await _addVideoToPlaylist(video, PlaylistService.favoritesPlaylistName);
+      return;
+    }
+    if (action == 'playlist') {
+      await _showPlaylistPicker(video);
+    }
+  }
+
+  Future<void> _showPlaylistPicker(Video video) async {
+    final playlistService = context.read<PlaylistService>();
+    final playlists = await playlistService.getPlaylists();
+    if (!mounted || playlists.isEmpty) return;
+
+    final selectedName = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(sheetContext).size.height * 0.78,
+                  ),
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.systemGrey6
+                        .resolveFrom(sheetContext)
+                        .withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: CupertinoColors.white.withValues(alpha: 0.24),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(sheetContext)
+                              .withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Row(
+                          children: [
+                            Text(
+                              'Añadir a playlist',
+                              style: CupertinoTheme.of(sheetContext)
+                                  .textTheme
+                                  .navTitleTextStyle
+                                  .copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const Spacer(),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minimumSize: const Size(34, 34),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                              child: Icon(
+                                CupertinoIcons.xmark_circle_fill,
+                                size: 24,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(sheetContext),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Flexible(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
+                          itemCount: playlists.length,
+                          itemBuilder: (context, index) {
+                            final playlist = playlists[index];
+                            final cover = playlist.videos.isNotEmpty
+                                ? playlist.videos.first.thumbnailUrl
+                                : null;
+                            final isFavorites = PlaylistService
+                                .isFavoritesPlaylistName(playlist.name);
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: _GlassPlaylistPickerRow(
+                                name: playlist.name,
+                                songsCount: playlist.videos.length,
+                                coverUrl: cover,
+                                isFavorites: isFavorites,
+                                onTap: () => Navigator.of(sheetContext).pop(
+                                  playlist.name,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (!mounted || selectedName == null || selectedName.isEmpty) return;
+    await _addVideoToPlaylist(video, selectedName);
+  }
+
+  Future<void> _addVideoToPlaylist(Video video, String playlistName) async {
+    final playlistService = context.read<PlaylistService>();
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    final track = VideoHistory(
+      videoId: video.id.value,
+      title: video.title,
+      thumbnailUrl: video.thumbnails.mediumResUrl,
+      channelTitle: video.author,
+      watchedAt: DateTime.now(),
+    );
+    await playlistService.addVideoToPlaylist(playlistName, track);
+    await downloadService.autoDownloadIfEnabledUsingClone(
+      playlistName,
+      track,
+      videoManager: videoManager,
+    );
+    if (!mounted) return;
+    final label = PlaylistService.isFavoritesPlaylistName(playlistName)
+        ? 'Añadida a Favoritos'
+        : 'Añadida a $playlistName';
+    _showIosTopToast(
+      context,
+      message: label,
+      icon: PlaylistService.isFavoritesPlaylistName(playlistName)
+          ? CupertinoIcons.star_fill
+          : CupertinoIcons.check_mark_circled_solid,
+    );
+  }
+
   @override
   void dispose() {
     _bgMotionController.dispose();
@@ -1650,6 +2698,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
 
   @override
   Widget build(BuildContext context) {
+    final downloadService = context.watch<DownloadService>();
     final content = _loading
         ? const Center(child: CupertinoActivityIndicator(radius: 14))
         : _error
@@ -1709,13 +2758,12 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
                             final video = _videos[index];
                             return VideoCard(
                               video: video,
+                              isDownloaded:
+                                  downloadService.getDownloadStatus(video.id.value) ==
+                                  DownloadStatus.downloaded,
                               highlightTop: index < 3,
-                              onPlay: () => _openVideoPlayer(
-                                video.id.value,
-                                thumbnailUrl: video.thumbnails.mediumResUrl,
-                                title: video.title,
-                                artist: video.author,
-                              ),
+                              onPlay: () => _playVideoPreferLocal(video),
+                              onMenuTap: () => _showVideoOptionsMenu(video),
                             );
                           },
                         ),

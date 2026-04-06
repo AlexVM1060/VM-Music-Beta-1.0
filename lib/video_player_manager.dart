@@ -922,9 +922,28 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _bufferedPosition = Duration.zero;
     _completionHandledForCurrent = false;
     _resetLyricsState();
-    _applyLocalLyrics(
-      plainLyrics: localPlainLyrics,
-      syncedLyrics: localSyncedLyrics,
+
+    String? resolvedPlainLyrics = localPlainLyrics;
+    String? resolvedSyncedLyrics = localSyncedLyrics;
+    final hasPassedLyrics =
+        (resolvedPlainLyrics?.trim().isNotEmpty ?? false) ||
+        (resolvedSyncedLyrics?.trim().isNotEmpty ?? false);
+    if (!hasPassedLyrics) {
+      try {
+        final box = await Hive.openBox<DownloadedVideo>('downloads');
+        final downloaded = box.get(id);
+        if (downloaded != null) {
+          resolvedPlainLyrics = downloaded.plainLyrics;
+          resolvedSyncedLyrics = downloaded.syncedLyrics;
+        }
+      } catch (_) {
+        // Ignoramos: si falla Hive, seguimos sin letra local.
+      }
+    }
+
+    final hasAppliedLocalLyrics = _applyLocalLyrics(
+      plainLyrics: resolvedPlainLyrics,
+      syncedLyrics: resolvedSyncedLyrics,
     );
     notifyListeners();
 
@@ -946,7 +965,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       } else {
         _clearQueueForAutoplayDisabled();
       }
-      if (_isLyricsLayout) {
+      if (_isLyricsLayout && !hasAppliedLocalLyrics) {
         unawaited(_loadLyricsForCurrentTrack());
       }
     } catch (e, s) {
@@ -1004,7 +1023,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   void toggleLyricsLayout() {
     _isLyricsLayout = !_isLyricsLayout;
-    if (_isLyricsLayout) {
+    final hasCurrentLyrics = (_lyricsText?.trim().isNotEmpty ?? false) || _syncedLyrics.isNotEmpty;
+    if (_isLyricsLayout && !hasCurrentLyrics) {
       unawaited(_loadLyricsForCurrentTrack());
     }
     notifyListeners();
@@ -1525,7 +1545,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  void _applyLocalLyrics({
+  bool _applyLocalLyrics({
     String? plainLyrics,
     String? syncedLyrics,
   }) {
@@ -1533,7 +1553,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final localSynced = syncedLyrics?.trim();
     if ((localPlain == null || localPlain.isEmpty) &&
         (localSynced == null || localSynced.isEmpty)) {
-      return;
+      return false;
     }
 
     if (localSynced != null && localSynced.isNotEmpty) {
@@ -1545,14 +1565,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _lyricsText = cleaned;
       _lyricsError = null;
       _isLyricsLoading = false;
-      return;
+      return true;
     }
 
     if (localPlain != null && localPlain.isNotEmpty) {
       _lyricsText = localPlain;
       _lyricsError = null;
       _isLyricsLoading = false;
+      return true;
     }
+    return false;
   }
 
   String _stripLrcTimestamps(String lrc) {

@@ -28,6 +28,15 @@ class _HistoryPageState extends State<HistoryPage> {
     });
   }
 
+  Future<void> _refreshHistory() async {
+    final refreshed =
+        await Provider.of<HistoryService>(context, listen: false).getHistory();
+    if (!mounted) return;
+    setState(() {
+      _historyFuture = Future.value(refreshed);
+    });
+  }
+
   Future<void> _clearHistory() async {
     await Provider.of<HistoryService>(context, listen: false).clearHistory();
     _loadHistory();
@@ -45,7 +54,16 @@ class _HistoryPageState extends State<HistoryPage> {
           return const Center(child: Text('No se pudo cargar el historial.'));
         }
         if (!snapshot.hasData || snapshot.data!.isEmpty) {
-          return const Center(child: Text('No hay historial de canciones.'));
+          return RefreshIndicator(
+            onRefresh: _refreshHistory,
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: const [
+                SizedBox(height: 180),
+                Center(child: Text('No hay historial de canciones.')),
+              ],
+            ),
+          );
         }
 
         final history = snapshot.data!;
@@ -63,18 +81,22 @@ class _HistoryPageState extends State<HistoryPage> {
               ),
             ),
             Expanded(
-              child: ListView.builder(
-                padding: EdgeInsets.fromLTRB(
-                  12,
-                  8,
-                  12,
-                  _accountBottomOverlayReserve(context),
+              child: RefreshIndicator(
+                onRefresh: _refreshHistory,
+                child: ListView.builder(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: EdgeInsets.fromLTRB(
+                    12,
+                    8,
+                    12,
+                    _accountBottomOverlayReserve(context),
+                  ),
+                  itemCount: history.length,
+                  itemBuilder: (context, index) {
+                    final video = history[index];
+                    return _HistoryCard(video: video);
+                  },
                 ),
-                itemCount: history.length,
-                itemBuilder: (context, index) {
-                  final video = history[index];
-                  return _HistoryCard(video: video);
-                },
               ),
             ),
           ],

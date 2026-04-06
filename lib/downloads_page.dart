@@ -1,5 +1,6 @@
 import 'dart:ui' show ImageFilter;
 
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/services/download_service.dart';
@@ -121,7 +122,10 @@ class DownloadsPage extends StatelessWidget {
                                 ),
                                 const SizedBox(width: 8),
                                 IconButton(
-                                  icon: const Icon(Icons.delete_outline),
+                                  icon: const Icon(
+                                    CupertinoIcons.delete,
+                                    color: Colors.red,
+                                  ),
                                   tooltip: 'Eliminar descarga',
                                   onPressed: () async {
                                     await downloadService.deleteVideo(song.videoId);
