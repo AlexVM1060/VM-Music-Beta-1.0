@@ -199,6 +199,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   void init() {}
 
+  void clearErrorMessage() {
+    if (_errorMessage == null) return;
+    _errorMessage = null;
+    notifyListeners();
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
@@ -355,7 +361,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }());
     } catch (e, s) {
       log('Error reproduciendo audio', error: e, stackTrace: s);
-      _errorMessage = 'No se pudo reproducir esta canción.';
+      _errorMessage = _buildPlaybackErrorMessage(e);
       _isPlaying = false;
       _isBuffering = false;
       await _player.stop();
@@ -970,7 +976,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     } catch (e, s) {
       log('Error reproduciendo archivo local', error: e, stackTrace: s);
-      _errorMessage = 'No se pudo reproducir el archivo descargado.';
+      _errorMessage = _buildPlaybackErrorMessage(
+        e,
+        isLocalPlayback: true,
+      );
       _isPlaying = false;
       _isBuffering = false;
     } finally {
@@ -1593,5 +1602,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         .map((line) => line.replaceAll(RegExp(r'\[[0-9:.]+\]'), '').trim())
         .where((line) => line.isNotEmpty)
         .join('\n');
+  }
+
+  String _buildPlaybackErrorMessage(
+    Object error, {
+    bool isLocalPlayback = false,
+  }) {
+    final raw = error.toString();
+    if (error is RequestLimitExceededException) {
+      return 'No se pudo reproducir porque YouTube limitó temporalmente la solicitud. Intenta de nuevo en unos minutos.';
+    }
+    if (error is SocketException) {
+      return isLocalPlayback
+          ? 'No se pudo reproducir el archivo local por un problema de acceso al sistema de archivos.'
+          : 'No se pudo reproducir por un problema de conexión a internet.';
+    }
+    if (error is HttpException) {
+      return 'No se pudo reproducir porque el servidor respondió con un error de red.';
+    }
+    if (raw.contains('No se encontraron streams de audio')) {
+      return 'No se pudo reproducir porque no se encontró un stream de audio compatible para esta canción.';
+    }
+    if (raw.contains('No se pudo iniciar audio ni fallback de video')) {
+      return 'No se pudo reproducir porque falló tanto el stream de audio como el fallback de video.';
+    }
+    if (raw.contains('El archivo local no existe')) {
+      return 'No se pudo reproducir porque el archivo descargado ya no existe en el dispositivo.';
+    }
+    if (raw.contains('No se pudo reproducir el archivo descargado')) {
+      return 'No se pudo reproducir el archivo descargado. Puede estar dañado o incompleto.';
+    }
+    return isLocalPlayback
+        ? 'No se pudo reproducir el archivo local: $raw'
+        : 'No se pudo reproducir esta canción: $raw';
   }
 }

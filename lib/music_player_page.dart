@@ -17,13 +17,27 @@ import 'package:myapp/video_player_manager.dart';
 import 'package:provider/provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
-class MusicPlayerPage extends StatelessWidget {
+class MusicPlayerPage extends StatefulWidget {
   const MusicPlayerPage({super.key});
+
+  @override
+  State<MusicPlayerPage> createState() => _MusicPlayerPageState();
+}
+
+class _MusicPlayerPageState extends State<MusicPlayerPage> {
+  bool _isShowingPlaybackErrorDialog = false;
 
   @override
   Widget build(BuildContext context) {
     return Consumer<VideoPlayerManager>(
       builder: (context, manager, child) {
+        final error = manager.errorMessage;
+        if (error != null && error.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _showPlaybackErrorDialog(error);
+          });
+        }
+
         if (manager.currentVideoId == null) {
           return const SizedBox.shrink();
         }
@@ -71,6 +85,35 @@ class MusicPlayerPage extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _showPlaybackErrorDialog(String message) async {
+    if (!mounted || _isShowingPlaybackErrorDialog) return;
+    _isShowingPlaybackErrorDialog = true;
+    try {
+      await showCupertinoDialog<void>(
+        context: context,
+        builder: (dialogContext) => CupertinoAlertDialog(
+          title: const Text('No se pudo reproducir'),
+          content: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(message),
+          ),
+          actions: [
+            CupertinoDialogAction(
+              isDefaultAction: true,
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Entendido'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      if (mounted) {
+        context.read<VideoPlayerManager>().clearErrorMessage();
+      }
+      _isShowingPlaybackErrorDialog = false;
+    }
   }
 }
 
@@ -351,17 +394,6 @@ class _FullPlayer extends StatelessWidget {
                                 ),
                               ),
                       ),
-                      if (manager.errorMessage != null) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          manager.errorMessage!,
-                          textAlign: TextAlign.center,
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                color: Theme.of(context).colorScheme.error,
-                                fontWeight: FontWeight.w600,
-                              ),
-                        ),
-                      ],
                       if (manager.isLyricsLayout) ...[
                         const SizedBox(height: 14),
                         _LyricsPanel(manager: manager),
