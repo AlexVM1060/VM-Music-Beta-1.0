@@ -1,14 +1,21 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:developer' as developer;
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show FontFeature, ImageFilter;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:myapp/app_tab_state.dart';
 import 'package:myapp/models/video_history.dart';
-import 'package:myapp/models/playlist.dart';
+import 'package:myapp/models/playlist.dart' as app_models;
+import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:provider/provider.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 class MusicPlayerPage extends StatelessWidget {
   const MusicPlayerPage({super.key});
@@ -286,10 +293,16 @@ class _FullPlayer extends StatelessWidget {
                 ),
               ),
               Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
-                  child: Column(
-                    children: [
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    return SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          minHeight: constraints.maxHeight - 40,
+                        ),
+                        child: Column(
+                          children: [
                       AnimatedSwitcher(
                         duration: const Duration(milliseconds: 420),
                         switchInCurve: Curves.easeOutCubic,
@@ -313,10 +326,12 @@ class _FullPlayer extends StatelessWidget {
                             ? _CompactNowPlayingHeader(
                                 key: const ValueKey('compact_now_playing_header'),
                                 manager: manager,
+                                onArtistTap: () => _openArtistProfile(context),
                               )
                             : _DefaultNowPlayingHero(
                                 key: const ValueKey('default_now_playing_hero'),
                                 manager: manager,
+                                onArtistTap: () => _openArtistProfile(context),
                               ),
                       ),
                       if (manager.errorMessage != null) ...[
@@ -373,8 +388,11 @@ class _FullPlayer extends StatelessWidget {
                       ],
                       const SizedBox(height: 26),
                       _QueueSection(manager: manager),
-                    ],
-                  ),
+                      ],
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ],
@@ -441,7 +459,7 @@ class _FullPlayer extends StatelessWidget {
     required BuildContext sheetContext,
     required PlaylistService playlistService,
     required VideoPlayerManager manager,
-    required Playlist playlist,
+    required app_models.Playlist playlist,
   }) async {
     final videoId = manager.currentVideoId;
     if (videoId == null) return;
@@ -518,6 +536,169 @@ class _FullPlayer extends StatelessWidget {
         );
       },
     );
+  }
+
+  Future<void> _openArtistProfile(BuildContext context) async {
+    final rawArtist = manager.trackArtist?.trim();
+    if (rawArtist == null || rawArtist.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se encontró el nombre del artista.')),
+      );
+      return;
+    }
+
+    final normalizedArtist = rawArtist
+        .replaceAll(RegExp(r'\s*[-–—]\s*topic$', caseSensitive: false), '')
+        .trim()
+        .toLowerCase();
+
+    final yt = YoutubeExplode();
+    try {
+      final raw = await yt.search.searchContent(
+        rawArtist,
+        filter: TypeFilters.channel,
+      );
+      final channels = raw.whereType<SearchChannel>().take(12).toList();
+      if (channels.isEmpty) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No se encontró un perfil para este artista.')),
+        );
+        return;
+      }
+
+      SearchChannel best = channels.first;
+      var bestScore = -1;
+      for (final channel in channels) {
+        final name = channel.name.toLowerCase();
+        final description = channel.description.toLowerCase();
+        var score = 0;
+        if (name.contains(normalizedArtist)) score += 5;
+        if (description.contains(normalizedArtist)) score += 2;
+        if (name.endsWith('- topic') || name.endsWith('topic')) score += 6;
+        if (score > bestScore) {
+          bestScore = score;
+          best = channel;
+        }
+      }
+
+      final wikiArtistPhoto = await _resolveArtistImageFromInternet(
+        normalizedArtist.isEmpty ? rawArtist : normalizedArtist,
+      );
+      final thumb = best.thumbnails.isNotEmpty
+          ? (wikiArtistPhoto ?? best.thumbnails.first.url.toString())
+          : (wikiArtistPhoto ?? manager.trackThumbnailUrl ?? '');
+      if (!context.mounted) return;
+      context.read<SearchViewState>().requestOpenArtistProfile(
+        PendingArtistProfile(
+          channelId: best.id.value,
+          channelName: best.name,
+          channelThumbnailUrl: thumb,
+        ),
+      );
+      context.read<AppTabState?>()?.setIndex(0);
+      manager.minimize();
+    } catch (e, s) {
+      developer.log('Error al abrir perfil del artista', error: e, stackTrace: s);
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir el perfil del artista.')),
+      );
+    } finally {
+      yt.close();
+    }
+  }
+
+  Future<String?> _resolveArtistImageFromInternet(String rawArtistName) async {
+    final cleaned = rawArtistName
+        .replaceAll(RegExp(r'\s*[-–—]\s*topic$', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\btopic\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bvevo\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bofficial\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\brecords?\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bmusic\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (cleaned.isEmpty) return null;
+
+    final candidates = <String>{
+      cleaned,
+      cleaned
+          .replaceAll(RegExp(r'\s*[\(\[\{].*?[\)\]\}]'), '')
+          .trim(),
+      cleaned.split(RegExp(r'\s+(feat\.?|ft\.?|x|&)\s+', caseSensitive: false)).first.trim(),
+    }.where((name) => name.isNotEmpty).toList();
+
+    for (final candidate in candidates) {
+      try {
+        final title = await _resolveWikipediaTitle(candidate);
+        if (title == null || title.isEmpty) continue;
+        final image = await _resolveWikipediaThumbnail(title);
+        if (image != null && image.isNotEmpty) return image;
+      } catch (_) {
+        // Seguimos probando con el siguiente candidato.
+      }
+    }
+
+    return null;
+  }
+
+  Future<String?> _resolveWikipediaTitle(String artistName) async {
+    final uri = Uri.https('en.wikipedia.org', '/w/api.php', {
+      'action': 'opensearch',
+      'search': artistName,
+      'limit': '1',
+      'namespace': '0',
+      'format': 'json',
+    });
+    final data = await _getJsonFromInternet(uri);
+    if (data is! List || data.length < 2) return null;
+    final titles = data[1];
+    if (titles is! List || titles.isEmpty) return null;
+    return titles.first?.toString();
+  }
+
+  Future<String?> _resolveWikipediaThumbnail(String title) async {
+    final uri = Uri.https('en.wikipedia.org', '/w/api.php', {
+      'action': 'query',
+      'format': 'json',
+      'prop': 'pageimages',
+      'piprop': 'thumbnail',
+      'pithumbsize': '600',
+      'titles': title,
+    });
+
+    final data = await _getJsonFromInternet(uri);
+    if (data is! Map<String, dynamic>) return null;
+    final query = data['query'];
+    if (query is! Map<String, dynamic>) return null;
+    final pages = query['pages'];
+    if (pages is! Map<String, dynamic>) return null;
+
+    for (final page in pages.values) {
+      if (page is! Map<String, dynamic>) continue;
+      final thumbnail = page['thumbnail'];
+      if (thumbnail is! Map<String, dynamic>) continue;
+      final source = thumbnail['source'];
+      if (source is String && source.isNotEmpty) return source;
+    }
+    return null;
+  }
+
+  Future<dynamic> _getJsonFromInternet(Uri uri) async {
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(uri);
+      request.headers.set(HttpHeaders.userAgentHeader, 'VMMusic/1.0');
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('HTTP ${response.statusCode}', uri: uri);
+      }
+      final body = await response.transform(utf8.decoder).join();
+      return jsonDecode(body);
+    } finally {
+      client.close(force: true);
+    }
   }
 }
 
@@ -656,47 +837,278 @@ class _InlineLyricsButtonState extends State<_InlineLyricsButton>
 
 class _DefaultNowPlayingHero extends StatelessWidget {
   final VideoPlayerManager manager;
+  final VoidCallback onArtistTap;
 
   const _DefaultNowPlayingHero({
     super.key,
     required this.manager,
+    required this.onArtistTap,
   });
 
   @override
   Widget build(BuildContext context) {
     return Column(
       key: key,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _ArtworkImage(url: manager.trackThumbnailUrl, size: 310),
+        Center(child: _ArtworkImage(url: manager.trackThumbnailUrl, size: 310)),
         const SizedBox(height: 28),
-        Text(
-          manager.trackTitle ?? 'Cargando canción...',
-          textAlign: TextAlign.center,
-          style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle.copyWith(
-                fontSize: 34,
-                fontWeight: FontWeight.w700,
-              ),
+        SizedBox(
+          width: double.infinity,
+          child: _AutoScrollText(
+            text: manager.trackTitle ?? 'Cargando canción...',
+            style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle.copyWith(
+                  fontSize: 34,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
         ),
         const SizedBox(height: 8),
-        Text(
-          manager.trackArtist ?? 'Artista desconocido',
-          textAlign: TextAlign.center,
-          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                fontSize: 20,
-                color: CupertinoColors.secondaryLabel.resolveFrom(context),
-              ),
+        SizedBox(
+          width: double.infinity,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onArtistTap,
+            child: _AutoScrollText(
+              text: manager.trackArtist ?? 'Artista desconocido',
+              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                    fontSize: 20,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+            ),
+          ),
         ),
       ],
     );
   }
 }
 
+class _AutoScrollText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+
+  const _AutoScrollText({
+    required this.text,
+    required this.style,
+  });
+
+  @override
+  State<_AutoScrollText> createState() => _AutoScrollTextState();
+}
+
+class _AutoScrollTextState extends State<_AutoScrollText>
+    with TickerProviderStateMixin {
+  AnimationController? _scrollController;
+  AnimationController? _fadeController;
+  double _overflow = 0;
+  String _lastText = '';
+  Duration _scrollDuration = const Duration(milliseconds: 4200);
+  double _travel = 0;
+  int _cycleEpoch = 0;
+  bool _cycleRunning = false;
+
+  @override
+  void dispose() {
+    _cycleEpoch++;
+    _scrollController?.dispose();
+    _fadeController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AutoScrollText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text) {
+      _lastText = '';
+      _restartCycle();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth;
+        final painter = TextPainter(
+          text: TextSpan(text: widget.text, style: widget.style),
+          maxLines: 1,
+          textDirection: Directionality.of(context),
+        )..layout(minWidth: 0, maxWidth: double.infinity);
+
+	        final textWidth = painter.width;
+	        final textHeight = painter.height;
+	        _overflow = (textWidth - maxWidth).clamp(0.0, double.infinity);
+        if (_overflow <= 1) {
+          _cycleEpoch++;
+          _cycleRunning = false;
+          _scrollController?.stop();
+          _fadeController?.stop();
+          _scrollController?.value = 0;
+          _fadeController?.value = 1;
+          return Text(
+            widget.text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.left,
+            style: widget.style,
+          );
+        }
+
+        _ensureControllers();
+
+        final ms = ((_overflow / 26) * 1000).clamp(2200, 9000).round();
+        final duration = Duration(milliseconds: ms);
+        _travel = _overflow + 36.0;
+        if (_scrollDuration != duration) {
+          _scrollDuration = duration;
+          _restartCycle();
+        }
+        if (_lastText != widget.text) {
+          _lastText = widget.text;
+          _restartCycle();
+        }
+
+        _startCycleIfNeeded();
+        const gap = 36.0;
+        return ClipRect(
+          child: AnimatedBuilder(
+            animation: Listenable.merge([_scrollController!, _fadeController!]),
+            builder: (context, _) {
+              final eased = Curves.easeInOutCubic.transform(_scrollController!.value);
+	              return Transform.translate(
+	                offset: Offset(-_travel * eased, 0),
+	                child: SizedBox(
+	                  height: textHeight,
+	                  child: Opacity(
+	                    opacity: _fadeController!.value,
+	                    child: OverflowBox(
+	                      minHeight: textHeight,
+	                      maxHeight: textHeight,
+	                      maxWidth: double.infinity,
+	                      alignment: Alignment.centerLeft,
+	                      child: Row(
+	                        mainAxisSize: MainAxisSize.min,
+	                        children: [
+	                          SizedBox(
+	                            width: textWidth,
+	                            child: Text(
+	                              widget.text,
+	                              maxLines: 1,
+	                              softWrap: false,
+	                              style: widget.style,
+	                              textAlign: TextAlign.left,
+	                            ),
+	                          ),
+	                          const SizedBox(width: gap),
+	                          SizedBox(
+	                            width: textWidth,
+	                            child: Text(
+	                              widget.text,
+	                              maxLines: 1,
+	                              softWrap: false,
+	                              style: widget.style,
+	                              textAlign: TextAlign.left,
+	                            ),
+	                          ),
+	                        ],
+	                      ),
+	                    ),
+	                  ),
+	                ),
+	              );
+	            },
+          ),
+        );
+      },
+    );
+  }
+
+  void _ensureControllers() {
+    _scrollController ??= AnimationController(
+      vsync: this,
+      duration: _scrollDuration,
+      value: 0,
+    );
+    _fadeController ??= AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+      value: 1,
+    );
+  }
+
+  void _restartCycle() {
+    _cycleEpoch++;
+    _cycleRunning = false;
+    _scrollController?.stop();
+    _fadeController?.stop();
+    _scrollController?.value = 0;
+    _fadeController?.value = 1;
+  }
+
+  void _startCycleIfNeeded() {
+    if (_cycleRunning) return;
+    _cycleRunning = true;
+    final token = _cycleEpoch;
+    unawaited(_runCycle(token));
+  }
+
+  Future<void> _runCycle(int token) async {
+    var firstPass = true;
+    while (mounted && token == _cycleEpoch && _overflow > 1) {
+      if (!firstPass) {
+        await Future<void>.delayed(const Duration(seconds: 15));
+        if (!mounted || token != _cycleEpoch || _overflow <= 1) return;
+      }
+      firstPass = false;
+
+      try {
+        await _scrollController!.animateTo(
+          1,
+          duration: _scrollDuration,
+          curve: Curves.easeInOutCubic,
+        );
+      } catch (_) {
+        return;
+      }
+      if (!mounted || token != _cycleEpoch) return;
+
+      try {
+        await _fadeController!.animateTo(
+          0,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+        );
+      } catch (_) {
+        return;
+      }
+      if (!mounted || token != _cycleEpoch) return;
+
+      _scrollController!.value = 0;
+
+      try {
+        await _fadeController!.animateTo(
+          1,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeInCubic,
+        );
+      } catch (_) {
+        return;
+      }
+    }
+    if (token == _cycleEpoch) {
+      _cycleRunning = false;
+    }
+  }
+}
+
 class _CompactNowPlayingHeader extends StatelessWidget {
   final VideoPlayerManager manager;
+  final VoidCallback onArtistTap;
 
   const _CompactNowPlayingHeader({
     super.key,
     required this.manager,
+    required this.onArtistTap,
   });
 
   @override
@@ -734,14 +1146,18 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                           ),
                     ),
                     const SizedBox(height: 3),
-                    Text(
-                      manager.trackArtist ?? 'Artista desconocido',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                            fontSize: 14,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                          ),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onArtistTap,
+                      child: Text(
+                        manager.trackArtist ?? 'Artista desconocido',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                              fontSize: 14,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                            ),
+                      ),
                     ),
                   ],
                 ),
@@ -974,15 +1390,16 @@ class _QueueRow extends StatelessWidget {
               child: Row(
                 children: [
                   ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(10),
                     child: Image.network(
                       item.thumbnailUrl,
-                      width: 78,
-                      height: 46,
+                      width: 56,
+                      height: 56,
                       fit: BoxFit.cover,
+                      alignment: Alignment.center,
                       errorBuilder: (context, error, stackTrace) => Container(
-                        width: 78,
-                        height: 46,
+                        width: 56,
+                        height: 56,
                         color: Theme.of(context).colorScheme.surfaceContainerHighest,
                         alignment: Alignment.center,
                         child: const Icon(Icons.music_note_rounded),
@@ -1429,27 +1846,31 @@ class _ArtworkImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        width: size,
-        height: size,
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        child: url == null || url!.isEmpty
-            ? Icon(
-                Icons.music_note_rounded,
-                size: size * 0.4,
-                color: Theme.of(context).colorScheme.primary,
-              )
-            : Image.network(
-                url!,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => Icon(
+    return SizedBox.square(
+      dimension: size,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: ColoredBox(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          child: url == null || url!.isEmpty
+              ? Icon(
                   Icons.music_note_rounded,
                   size: size * 0.4,
                   color: Theme.of(context).colorScheme.primary,
+                )
+              : Image.network(
+                  url!,
+                  width: size,
+                  height: size,
+                  fit: BoxFit.cover,
+                  alignment: Alignment.center,
+                  errorBuilder: (context, error, stackTrace) => Icon(
+                    Icons.music_note_rounded,
+                    size: size * 0.4,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
                 ),
-              ),
+        ),
       ),
     );
   }

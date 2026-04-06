@@ -35,8 +35,22 @@ class PlaybackQueueItem {
   });
 }
 
+class _QueueHistoryProfile {
+  final List<String> topArtists;
+  final List<String> topTitleTokens;
+
+  const _QueueHistoryProfile({
+    required this.topArtists,
+    required this.topTitleTokens,
+  });
+}
+
 // Mantiene el nombre para no romper imports, pero ahora gestiona audio estilo app musical.
 class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+  static const _QueueHistoryProfile _emptyHistoryProfile = _QueueHistoryProfile(
+    topArtists: [],
+    topTitleTokens: [],
+  );
   final HistoryService _historyService = HistoryService();
   final AudioHandler _audioHandler;
   final AudioPlayer _player = AudioPlayer();
@@ -77,6 +91,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _skipHistoryPushOnce = false;
   bool _isResettingEngines = false;
   bool _isSwitchingEngine = false;
+  bool _isTogglingPlayPause = false;
   String? _currentStreamUrl;
   List<PlaybackQueueItem> _playbackQueue = const [];
   bool _isQueueLoading = false;
@@ -195,7 +210,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     bool isLocal = false,
   }) {}
 
-  Future<void> play(String videoId, {bool isLocalVideo = false}) async {
+  Future<void> play(
+    String videoId, {
+    bool isLocalVideo = false,
+    String? preferredThumbnailUrl,
+    String? preferredTitle,
+    String? preferredArtist,
+    Duration? preferredDuration,
+  }) async {
     _rememberCurrentForHistory();
     await _resetEngines();
     _isLoading = true;
@@ -207,12 +229,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _position = Duration.zero;
     _bufferedPosition = Duration.zero;
     _completionHandledForCurrent = false;
+    _trackTitle = (preferredTitle != null && preferredTitle.trim().isNotEmpty)
+        ? preferredTitle.trim()
+        : null;
+    _trackArtist = (preferredArtist != null && preferredArtist.trim().isNotEmpty)
+        ? preferredArtist.trim()
+        : null;
+    _trackDuration = preferredDuration ?? Duration.zero;
+    _trackThumbnailUrl = null;
+    if (preferredThumbnailUrl != null && preferredThumbnailUrl.isNotEmpty) {
+      _trackThumbnailUrl = preferredThumbnailUrl;
+    }
     _resetLyricsState();
     notifyListeners();
 
     try {
-      final manifest = await _getManifestWithRetry(videoId);
-      final video = await _getVideoWithRetry(videoId);
+      final manifestFuture = _getManifestWithRetry(videoId);
+      final videoFuture = _getVideoWithRetry(videoId);
+      final manifest = await manifestFuture;
 
       final audioStreams = manifest.audioOnly.toList();
       if (audioStreams.isEmpty) {
@@ -220,14 +254,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       final orderedStreams = _prioritizeAudioStreams(audioStreams);
-      _trackTitle = video.title;
-      _trackThumbnailUrl = video.thumbnails.highResUrl;
-      _trackArtist = video.author;
-      _trackDuration = video.duration ?? Duration.zero;
-      final hasLocalLyrics = (_lyricsText?.isNotEmpty ?? false) || _syncedLyrics.isNotEmpty;
-      if (_isLyricsLayout && !hasLocalLyrics) {
-        unawaited(_loadLyricsForCurrentTrack());
-      }
 
       Object? lastAudioError;
       var started = false;
@@ -278,25 +304,45 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
-      if (_autoplayEnabled) {
-        unawaited(_loadOnlineQueue(video, currentVideoId: videoId));
-      } else {
+      if (!_autoplayEnabled) {
         _clearQueueForAutoplayDisabled();
       }
 
-      try {
-        await _historyService.addVideoToHistory(
-          VideoHistory(
-            videoId: videoId,
-            title: _trackTitle ?? 'Sin título',
-            thumbnailUrl: _trackThumbnailUrl ?? '',
-            channelTitle: _trackArtist ?? '',
-            watchedAt: DateTime.now(),
-          ),
-        );
-      } catch (e, s) {
-        log('No se pudo guardar historial', error: e, stackTrace: s);
-      }
+      // Metadata/cola/historial en segundo plano para no bloquear inicio de reproducción.
+      unawaited(() async {
+        Video? video;
+        try {
+          video = await videoFuture.timeout(const Duration(seconds: 6));
+        } catch (e, s) {
+          log('No se pudo resolver metadata de video a tiempo', error: e, stackTrace: s);
+        }
+
+        if (_currentVideoId != videoId) return;
+
+        if (video != null) {
+          _trackTitle = video.title;
+          _trackThumbnailUrl =
+              (preferredThumbnailUrl != null && preferredThumbnailUrl.isNotEmpty)
+                  ? preferredThumbnailUrl
+                  : video.thumbnails.highResUrl;
+          _trackArtist = video.author;
+          _trackDuration = video.duration ?? Duration.zero;
+          notifyListeners();
+        }
+
+        final hasLocalLyrics = (_lyricsText?.isNotEmpty ?? false) || _syncedLyrics.isNotEmpty;
+        if (_isLyricsLayout && !hasLocalLyrics) {
+          await _loadLyricsForCurrentTrack();
+        }
+
+        if (_autoplayEnabled && video != null && _currentVideoId == videoId) {
+          await _loadOnlineQueue(video, currentVideoId: videoId);
+        }
+
+        if (_currentVideoId == videoId) {
+          await _addCurrentTrackToHistory(videoId);
+        }
+      }());
     } catch (e, s) {
       log('Error reproduciendo audio', error: e, stackTrace: s);
       _errorMessage = 'No se pudo reproducir esta canción.';
@@ -309,6 +355,28 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _addCurrentTrackToHistory(String videoId) async {
+    final title = _trackTitle;
+    final thumbnail = _trackThumbnailUrl;
+    final artist = _trackArtist;
+    if (title == null || title.isEmpty || thumbnail == null || thumbnail.isEmpty || artist == null) {
+      return;
+    }
+    try {
+      await _historyService.addVideoToHistory(
+        VideoHistory(
+          videoId: videoId,
+          title: title,
+          thumbnailUrl: thumbnail,
+          channelTitle: artist,
+          watchedAt: DateTime.now(),
+        ),
+      );
+    } catch (e, s) {
+      log('No se pudo guardar historial', error: e, stackTrace: s);
+    }
+  }
+
   Future<StreamManifest> _getManifestWithRetry(String videoId) async {
     final cached = _manifestCache[videoId];
     if (cached != null) return cached;
@@ -317,6 +385,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     final future = _runYoutubeWithRetry(
       () => _ytExplode.videos.streamsClient.getManifest(videoId),
+      maxAttempts: 2,
     );
     _manifestRequests[videoId] = future;
     try {
@@ -336,6 +405,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     final future = _runYoutubeWithRetry(
       () => _ytExplode.videos.get(VideoId(videoId)),
+      maxAttempts: 2,
     );
     _videoRequests[videoId] = future;
     try {
@@ -355,65 +425,62 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final inFlight = _relatedQueueRequests[key];
     if (inFlight != null) return inFlight;
 
-    final future = _runYoutubeWithRetry(() async {
-      final related = await _ytExplode.videos.getRelatedVideos(video);
-      var queue = <PlaybackQueueItem>[];
+    final future = () async {
+      final candidates = <Video>[];
+      List<Video>? related;
 
-      if (related != null) {
-        queue = related
-            .where((item) => item.id.value != key)
-            .take(30)
-            .map(
-              (item) => PlaybackQueueItem(
-                videoId: item.id.value,
-                title: item.title,
-                thumbnailUrl: item.thumbnails.mediumResUrl,
-                artist: item.author,
-                isLocal: false,
-              ),
-            )
-            .toList();
+      try {
+        related = await _runYoutubeWithRetry(
+          () => _ytExplode.videos.getRelatedVideos(video),
+          maxAttempts: 2,
+        );
+      } catch (e, s) {
+        log('Related videos falló, seguimos con búsqueda', error: e, stackTrace: s);
       }
 
-      if (queue.isNotEmpty) return _uniqueQueue(queue);
+      if (related != null && related.isNotEmpty) {
+        final fastQueue = _buildSmartQueue(
+          related,
+          currentVideoId: key,
+          primaryArtist: video.author,
+          historyProfile: _emptyHistoryProfile,
+        );
+        // Fast-path: con related suficiente ya no hacemos más requests.
+        if (fastQueue.length >= 18) return fastQueue;
+        candidates.addAll(related.take(50));
+      }
 
-      // Fallback: búsqueda por artista + título cuando YouTube no entrega related.
-      final combinedQuery = '${video.author} ${video.title}';
-      final combinedSearch = await _ytExplode.search.search(combinedQuery);
-      queue = combinedSearch
-          .where((item) => item.id.value != key)
-          .take(30)
-          .map(
-            (item) => PlaybackQueueItem(
-              videoId: item.id.value,
-              title: item.title,
-              thumbnailUrl: item.thumbnails.mediumResUrl,
-              artist: item.author,
-              isLocal: false,
-            ),
-          )
-          .toList();
+      final historyProfile = await _buildQueueHistoryProfile(primaryArtist: video.author);
 
-      if (queue.isNotEmpty) return _uniqueQueue(queue);
+      // Búsqueda base por artista + título.
+      final combinedQuery = _buildRecommendationQuery(video.author, video.title);
+      final batchedSearches = <Future<List<Video>>>[
+        _safeSearchVideos(combinedQuery, limit: 24),
+      ];
 
-      // Segundo fallback: solo título.
-      final titleSearch = await _ytExplode.search.search(video.title);
-      return _uniqueQueue(
-        titleSearch
-            .where((item) => item.id.value != key)
-            .take(30)
-            .map(
-              (item) => PlaybackQueueItem(
-                videoId: item.id.value,
-                title: item.title,
-                thumbnailUrl: item.thumbnails.mediumResUrl,
-                artist: item.author,
-                isLocal: false,
-              ),
-            )
-            .toList(),
+      // Refuerzo por historial: artistas más escuchados.
+      for (final artist in historyProfile.topArtists.take(1)) {
+        batchedSearches.add(_safeSearchVideos('$artist topic', limit: 12));
+        batchedSearches.add(_safeSearchVideos('$artist official audio', limit: 12));
+      }
+      final batchResults = await Future.wait(batchedSearches);
+      for (final batch in batchResults) {
+        candidates.addAll(batch);
+      }
+
+      // Fallback final: solo título si no hay suficientes candidatos.
+      if (candidates.length < 8) {
+        final titleQuery = _sanitizeSearchQuery(video.title);
+        candidates.addAll(await _safeSearchVideos(titleQuery, limit: 20));
+      }
+
+      return _buildSmartQueue(
+        candidates,
+        currentVideoId: key,
+        primaryArtist: video.author,
+        historyProfile: historyProfile,
       );
-    });
+    }();
 
     _relatedQueueRequests[key] = future;
     try {
@@ -427,16 +494,280 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  List<PlaybackQueueItem> _uniqueQueue(List<PlaybackQueueItem> items) {
-    final seen = <String>{};
+  List<PlaybackQueueItem> _buildSmartQueue(
+    Iterable<Video> source, {
+    required String currentVideoId,
+    required String primaryArtist,
+    required _QueueHistoryProfile historyProfile,
+  }) {
+    final normalizedPrimaryArtist = primaryArtist.toLowerCase().trim();
+    final filtered = source
+        .where((item) => item.id.value != currentVideoId)
+        .where(_looksLikeMusicVideo)
+        .toList();
+
+    filtered.sort((a, b) {
+      final scoreA = _recommendationScore(a, normalizedPrimaryArtist, historyProfile);
+      final scoreB = _recommendationScore(b, normalizedPrimaryArtist, historyProfile);
+      return scoreB.compareTo(scoreA);
+    });
+
+    final seenIds = <String>{};
+    final seenNormalizedTitles = <String>{};
     final output = <PlaybackQueueItem>[];
-    for (final item in items) {
-      if (seen.add(item.videoId)) {
-        output.add(item);
+
+    for (final item in filtered) {
+      final id = item.id.value;
+      if (!seenIds.add(id)) continue;
+
+      final normalizedTitle = _normalizeTitleForQueueDedup(item.title);
+      if (normalizedTitle.isNotEmpty && !seenNormalizedTitles.add(normalizedTitle)) {
+        continue;
       }
+
+      output.add(
+        PlaybackQueueItem(
+          videoId: id,
+          title: item.title,
+          thumbnailUrl: item.thumbnails.mediumResUrl,
+          artist: item.author,
+          isLocal: false,
+        ),
+      );
+
+      if (output.length >= 30) break;
     }
+
     return output;
   }
+
+  int _recommendationScore(
+    Video item,
+    String normalizedPrimaryArtist,
+    _QueueHistoryProfile historyProfile,
+  ) {
+    final title = item.title.toLowerCase();
+    final author = item.author.toLowerCase();
+    var score = 0;
+
+    final isTopic = _isTopicAuthor(author);
+    if (isTopic) score += 3200;
+    if (author.contains(normalizedPrimaryArtist)) score += 340;
+    if (title.contains(normalizedPrimaryArtist)) score += 180;
+    if (isTopic && author.contains(normalizedPrimaryArtist)) score += 320;
+
+    for (final artist in historyProfile.topArtists.take(5)) {
+      final normalizedArtist = artist.toLowerCase();
+      if (author.contains(normalizedArtist)) {
+        score += isTopic ? 520 : 300;
+      }
+      if (title.contains(normalizedArtist)) {
+        score += 170;
+      }
+    }
+
+    for (final token in historyProfile.topTitleTokens.take(10)) {
+      if (token.length < 3) continue;
+      if (title.contains(token)) score += 48;
+    }
+
+    score += _musicKeywordScore(title, author);
+
+    final views = item.engagement.viewCount;
+    if (views > 0) {
+      score += (views / 100000).floor().clamp(0, 500);
+    }
+
+    return score;
+  }
+
+  int _musicKeywordScore(String title, String author) {
+    final text = '$title $author';
+    var score = 0;
+    for (final keyword in _musicKeywords) {
+      if (text.contains(keyword)) score += 25;
+    }
+    return score;
+  }
+
+  bool _looksLikeMusicVideo(Video item) {
+    final text = '${item.title} ${item.author}'.toLowerCase();
+    return _musicKeywords.any(text.contains);
+  }
+
+  bool _isTopicAuthor(String authorLower) {
+    final author = authorLower.trim();
+    return author.endsWith('- topic') || author.endsWith('topic');
+  }
+
+  String _normalizeTitleForQueueDedup(String title) {
+    var normalized = title.toLowerCase();
+    normalized = normalized.replaceAll(RegExp(r'\s*[\(\[\{].*?[\)\]\}]'), ' ');
+    normalized = normalized.replaceAll(
+      RegExp(
+        r'\b(official|video|audio|lyric|lyrics|visualizer|live|session|en vivo|remix|feat\.?|ft\.?)\b',
+      ),
+      ' ',
+    );
+    normalized = normalized.replaceAll(RegExp(r'[^a-z0-9\s]'), ' ');
+    normalized = normalized.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return normalized;
+  }
+
+  String _buildRecommendationQuery(String artist, String title) {
+    final normalizedArtist = _normalizeArtistName(artist);
+    var normalizedTitle = _normalizeTitleForQueueDedup(title);
+    if (normalizedArtist.isNotEmpty && normalizedTitle.startsWith(normalizedArtist)) {
+      normalizedTitle = normalizedTitle.substring(normalizedArtist.length).trim();
+    }
+    return _sanitizeSearchQuery('$artist $normalizedTitle');
+  }
+
+  String _sanitizeSearchQuery(String query) {
+    var normalized = query
+        .replaceAll(RegExp(r'\s*[\(\[\{].*?[\)\]\}]'), ' ')
+        .replaceAll(RegExp(r'\bofficial\b', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'\bvisualizer\b', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'\bvideo\b', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    if (normalized.isEmpty) return normalized;
+
+    final seen = <String>{};
+    final compact = <String>[];
+    for (final token in normalized.split(' ')) {
+      final key = token.toLowerCase();
+      if (key.isEmpty) continue;
+      if (!seen.add(key)) continue;
+      compact.add(token);
+      if (compact.length >= 8) break;
+    }
+
+    return compact.join(' ').trim();
+  }
+
+  Future<List<Video>> _safeSearchVideos(
+    String rawQuery, {
+    required int limit,
+  }) async {
+    final query = _sanitizeSearchQuery(rawQuery);
+    if (query.isEmpty) return const [];
+    try {
+      final results = await _ytExplode.search.search(query);
+      return results.take(limit).toList();
+    } catch (e, s) {
+      log('Busqueda de recomendados falló: $query', error: e, stackTrace: s);
+      return const [];
+    }
+  }
+
+  Future<_QueueHistoryProfile> _buildQueueHistoryProfile({
+    required String primaryArtist,
+  }) async {
+    final artistCounter = <String, int>{};
+    final tokenCounter = <String, int>{};
+
+    void addArtist(String? raw) {
+      if (raw == null || raw.trim().isEmpty) return;
+      final normalized = _normalizeArtistName(raw);
+      if (normalized.isEmpty) return;
+      artistCounter[normalized] = (artistCounter[normalized] ?? 0) + 1;
+    }
+
+    void addTitleTokens(String? rawTitle) {
+      if (rawTitle == null || rawTitle.trim().isEmpty) return;
+      final normalized = _normalizeTitleForQueueDedup(rawTitle);
+      if (normalized.isEmpty) return;
+      for (final token in normalized.split(' ')) {
+        if (token.length < 3) continue;
+        if (_historyStopwords.contains(token)) continue;
+        tokenCounter[token] = (tokenCounter[token] ?? 0) + 1;
+      }
+    }
+
+    addArtist(primaryArtist);
+    addArtist(_trackArtist);
+    addTitleTokens(_trackTitle);
+
+    for (final item in _playbackHistory.reversed.take(30)) {
+      addArtist(item.artist);
+      addTitleTokens(item.title);
+    }
+
+    try {
+      final history = await _historyService.getHistory();
+      for (final item in history.take(40)) {
+        addArtist(item.channelTitle);
+        addTitleTokens(item.title);
+      }
+    } catch (_) {
+      // Si falla historial, seguimos con la señal local de sesión.
+    }
+
+    final topArtists = artistCounter.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final topTokens = tokenCounter.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+
+    return _QueueHistoryProfile(
+      topArtists: topArtists.map((e) => e.key).toList(),
+      topTitleTokens: topTokens.map((e) => e.key).toList(),
+    );
+  }
+
+  String _normalizeArtistName(String input) {
+    return input
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s*[-–—]\s*topic$', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\btopic\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bvevo\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bofficial\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\brecords?\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\bmusic\b', caseSensitive: false), '')
+        .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  static const List<String> _musicKeywords = [
+    'official audio',
+    'audio',
+    'lyric',
+    'lyrics',
+    'music video',
+    'vevo',
+    'topic',
+    'official video',
+    'visualizer',
+    'live',
+    'session',
+    'en vivo',
+    'acoustic',
+    'remix',
+  ];
+
+  static const Set<String> _historyStopwords = {
+    'the',
+    'and',
+    'with',
+    'from',
+    'para',
+    'con',
+    'del',
+    'de',
+    'los',
+    'las',
+    'una',
+    'uno',
+    'official',
+    'video',
+    'audio',
+    'lyrics',
+    'lyric',
+    'live',
+    'topic',
+  };
 
   Future<T> _runYoutubeWithRetry<T>(
     Future<T> Function() action, {
@@ -578,41 +909,78 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   List<AudioOnlyStreamInfo> _prioritizeAudioStreams(List<AudioOnlyStreamInfo> streams) {
-    final sortedByBitrate = [...streams]
-      ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+    final targetBitrate = Platform.isIOS ? 160000 : 128000;
+    final sorted = [...streams]
+      ..sort((a, b) {
+        final aContainer = a.container.name.toLowerCase();
+        final bContainer = b.container.name.toLowerCase();
+        final aPreferredContainer = (aContainer == 'mp4' || aContainer == 'm4a') ? 1 : 0;
+        final bPreferredContainer = (bContainer == 'mp4' || bContainer == 'm4a') ? 1 : 0;
 
-    if (!Platform.isIOS) {
-      return sortedByBitrate;
-    }
+        if (aPreferredContainer != bPreferredContainer) {
+          return bPreferredContainer.compareTo(aPreferredContainer);
+        }
 
-    final preferred = <AudioOnlyStreamInfo>[];
-    final fallback = <AudioOnlyStreamInfo>[];
+        final aDistance = (a.bitrate.bitsPerSecond - targetBitrate).abs();
+        final bDistance = (b.bitrate.bitsPerSecond - targetBitrate).abs();
+        if (aDistance != bDistance) return aDistance.compareTo(bDistance);
 
-    for (final stream in sortedByBitrate) {
-      final container = stream.container.name.toLowerCase();
-      if (container == 'mp4' || container == 'm4a') {
-        preferred.add(stream);
-      } else {
-        fallback.add(stream);
-      }
-    }
-
-    return [...preferred, ...fallback];
+        return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+      });
+    return sorted;
   }
 
   Future<void> togglePlayPause() async {
-    if (_usingHiddenVideo && _hiddenVideoController != null) {
-      if (_hiddenVideoController!.value.isPlaying) {
-        await _hiddenVideoController!.pause();
-      } else {
-        await _hiddenVideoController!.play();
+    if (_isResettingEngines || _isTogglingPlayPause) return;
+    _isTogglingPlayPause = true;
+    try {
+      if (_usingHiddenVideo && _hiddenVideoController != null) {
+        final controller = _hiddenVideoController!;
+        final shouldPlay = !controller.value.isPlaying;
+
+        // Feedback inmediato para que el botón cambie sin esperar al stream.
+        _isPlaying = shouldPlay;
+        notifyListeners();
+
+        try {
+          if (shouldPlay) {
+            await controller.play();
+          } else {
+            await controller.pause();
+          }
+        } catch (e, s) {
+          log('togglePlayPause en hidden video falló', error: e, stackTrace: s);
+        } finally {
+          final value = controller.value;
+          _isPlaying = value.isPlaying;
+          _isBuffering = value.isBuffering;
+          notifyListeners();
+        }
+        return;
       }
-      return;
-    }
-    if (_isPlaying) {
-      await _player.pause();
-    } else {
-      await _player.play();
+
+      final shouldPlay = !_isPlaying;
+      _isPlaying = shouldPlay;
+      if (shouldPlay) {
+        _isBuffering = true;
+      }
+      notifyListeners();
+
+      try {
+        if (shouldPlay) {
+          await _player.play();
+        } else {
+          await _player.pause();
+        }
+      } catch (e, s) {
+        log('togglePlayPause en audio falló', error: e, stackTrace: s);
+      } finally {
+        _isPlaying = _player.playing;
+        _isBuffering = false;
+        notifyListeners();
+      }
+    } finally {
+      _isTogglingPlayPause = false;
     }
   }
 

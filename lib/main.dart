@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:myapp/account_page.dart';
+import 'package:myapp/app_tab_state.dart';
 import 'package:myapp/audio_handler.dart';
 import 'package:myapp/downloads_page.dart';
 import 'package:myapp/models/downloaded_video.dart';
@@ -18,6 +19,7 @@ import 'package:myapp/search_page.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/search_view_state.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/music_player_page.dart';
 import 'package:provider/provider.dart';
@@ -45,6 +47,8 @@ void main() async {
       providers: [
         ChangeNotifierProvider(create: (_) => VideoPlayerManager(audioHandler)),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => AppTabState()),
+        ChangeNotifierProvider(create: (_) => SearchViewState()),
         Provider(create: (_) => HistoryService()),
         Provider(create: (_) => PlaylistService()),
         ChangeNotifierProvider(create: (_) => DownloadService()),      ],
@@ -181,7 +185,7 @@ class MainTabs extends StatefulWidget {
 }
 
 class _MainTabsState extends State<MainTabs> {
-  int _selectedIndex = 0;
+  int _fallbackSelectedIndex = 0;
 
   static const List<Widget> _pages = <Widget>[
     SearchPage(),
@@ -190,16 +194,26 @@ class _MainTabsState extends State<MainTabs> {
   ];
 
   void _onItemTapped(int index) {
-    if (_selectedIndex == index) return;
+    final tabState = context.read<AppTabState?>();
+    if (tabState != null) {
+      tabState.setIndex(index);
+      return;
+    }
+    if (_fallbackSelectedIndex == index) return;
     setState(() {
-      _selectedIndex = index;
+      _fallbackSelectedIndex = index;
     });
   }
 
   @override
   Widget build(BuildContext context) {
+    final tabState = context.watch<AppTabState?>();
+    final selectedIndex = tabState?.selectedIndex ?? _fallbackSelectedIndex;
     final isFullScreen = context.watch<VideoPlayerManager>().isFullScreen;
+    final searchViewState = context.watch<SearchViewState>();
     final themeProvider = Provider.of<ThemeProvider>(context);
+    final hideMainAppBar =
+        selectedIndex == 2 || (selectedIndex == 0 && searchViewState.isArtistFullscreen);
 
     return Stack(
       children: [
@@ -207,7 +221,7 @@ class _MainTabsState extends State<MainTabs> {
         Scaffold(
           extendBody: true,
           backgroundColor: Colors.transparent,
-          appBar: _selectedIndex == 2
+          appBar: hideMainAppBar
               ? null
               : AppBar(
                   backgroundColor: Colors.transparent,
@@ -237,13 +251,13 @@ class _MainTabsState extends State<MainTabs> {
                   ],
                 ),
           body: IndexedStack(
-            index: _selectedIndex,
+            index: selectedIndex,
             children: _pages,
           ),
           bottomNavigationBar: isFullScreen
               ? null
               : _GlassBottomNavBar(
-                  currentIndex: _selectedIndex,
+                  currentIndex: selectedIndex,
                   onTap: _onItemTapped,
                 ),
         ),
