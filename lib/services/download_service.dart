@@ -336,6 +336,10 @@ class DownloadService with ChangeNotifier {
         title: title,
         artist: channelTitle,
       );
+      final localThumbnailPath = await _downloadThumbnailSafe(
+        videoId: videoId,
+        thumbnailUrl: thumbnailUrl,
+      );
       final downloadedVideo = DownloadedVideo(
         videoId: videoId,
         title: title,
@@ -344,6 +348,7 @@ class DownloadService with ChangeNotifier {
         filePath: successfulPath,
         plainLyrics: lyrics?.plainLyrics,
         syncedLyrics: lyrics?.rawSyncedLyrics,
+        localThumbnailPath: localThumbnailPath,
       );
 
       final box = await _downloadsBox;
@@ -459,6 +464,10 @@ class DownloadService with ChangeNotifier {
         title: title,
         artist: channelTitle,
       );
+      final localThumbnailPath = await _downloadThumbnailSafe(
+        videoId: videoId,
+        thumbnailUrl: thumbnailUrl,
+      );
       final downloadedVideo = DownloadedVideo(
         videoId: videoId,
         title: title,
@@ -467,6 +476,7 @@ class DownloadService with ChangeNotifier {
         filePath: targetPath,
         plainLyrics: lyrics?.plainLyrics,
         syncedLyrics: lyrics?.rawSyncedLyrics,
+        localThumbnailPath: localThumbnailPath,
       );
 
       final box = await _downloadsBox;
@@ -493,6 +503,13 @@ class DownloadService with ChangeNotifier {
       final file = File(video.filePath);
       if (await file.exists()) {
         await file.delete();
+      }
+      final thumbPath = video.localThumbnailPath;
+      if (thumbPath != null && thumbPath.isNotEmpty) {
+        final thumbFile = File(thumbPath);
+        if (await thumbFile.exists()) {
+          await thumbFile.delete();
+        }
       }
       await box.delete(videoId);
       _downloadStatus.remove(videoId);
@@ -788,5 +805,52 @@ class DownloadService with ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  Future<String?> _downloadThumbnailSafe({
+    required String videoId,
+    required String thumbnailUrl,
+  }) async {
+    final url = thumbnailUrl.trim();
+    if (url.isEmpty) return null;
+
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final ext = _inferThumbnailExtension(url);
+      final targetPath = '${appDir.path}/${videoId}_thumb.$ext';
+      final file = File(targetPath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+
+      await _dio.download(
+        url,
+        targetPath,
+        options: Options(
+          headers: _youtubeHeaders,
+          followRedirects: true,
+          receiveTimeout: const Duration(seconds: 25),
+          sendTimeout: const Duration(seconds: 10),
+        ),
+      );
+
+      final downloaded = File(targetPath);
+      if (!await downloaded.exists() || await downloaded.length() == 0) {
+        return null;
+      }
+      return targetPath;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _inferThumbnailExtension(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final ext = p.extension(uri.path).replaceFirst('.', '').toLowerCase();
+      const allowed = {'jpg', 'jpeg', 'png', 'webp'};
+      if (allowed.contains(ext)) return ext == 'jpeg' ? 'jpg' : ext;
+    } catch (_) {}
+    return 'jpg';
   }
 }

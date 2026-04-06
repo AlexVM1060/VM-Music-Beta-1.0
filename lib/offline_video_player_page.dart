@@ -60,7 +60,10 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
           controller: _videoPlayerController!,
           streamUrl: widget.video.filePath, 
           title: widget.video.title,
-          thumbnailUrl: widget.video.thumbnailUrl,
+          thumbnailUrl: (widget.video.localThumbnailPath != null &&
+                  widget.video.localThumbnailPath!.isNotEmpty)
+              ? widget.video.localThumbnailPath!
+              : widget.video.thumbnailUrl,
           channelTitle: widget.video.channelTitle,
           isLocal: true,
         );

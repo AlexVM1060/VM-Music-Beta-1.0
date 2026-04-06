@@ -186,12 +186,26 @@ class MainTabs extends StatefulWidget {
 
 class _MainTabsState extends State<MainTabs> {
   int _fallbackSelectedIndex = 0;
+  PageController? _pageController;
+  int _displayedPageIndex = 0;
 
   static const List<Widget> _pages = <Widget>[
-    SearchPage(),
-    DownloadsPage(),
-    AccountPage(),
+    _KeepAlivePage(child: SearchPage()),
+    _KeepAlivePage(child: DownloadsPage()),
+    _KeepAlivePage(child: AccountPage()),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController(initialPage: _displayedPageIndex);
+  }
+
+  @override
+  void dispose() {
+    _pageController?.dispose();
+    super.dispose();
+  }
 
   void _onItemTapped(int index) {
     final tabState = context.read<AppTabState?>();
@@ -209,11 +223,25 @@ class _MainTabsState extends State<MainTabs> {
   Widget build(BuildContext context) {
     final tabState = context.watch<AppTabState?>();
     final selectedIndex = tabState?.selectedIndex ?? _fallbackSelectedIndex;
+    _pageController ??= PageController(initialPage: _displayedPageIndex);
+    final controller = _pageController!;
     final isFullScreen = context.watch<VideoPlayerManager>().isFullScreen;
     final searchViewState = context.watch<SearchViewState>();
     final themeProvider = Provider.of<ThemeProvider>(context);
     final hideMainAppBar =
         selectedIndex == 2 || (selectedIndex == 0 && searchViewState.isArtistFullscreen);
+
+    if (_displayedPageIndex != selectedIndex) {
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted || !controller.hasClients) return;
+        _displayedPageIndex = selectedIndex;
+        await controller.animateToPage(
+          selectedIndex,
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeOutCubic,
+        );
+      });
+    }
 
     return Stack(
       children: [
@@ -250,8 +278,9 @@ class _MainTabsState extends State<MainTabs> {
                     ),
                   ],
                 ),
-          body: IndexedStack(
-            index: selectedIndex,
+          body: PageView(
+            controller: controller,
+            physics: const NeverScrollableScrollPhysics(),
             children: _pages,
           ),
           bottomNavigationBar: isFullScreen
@@ -353,6 +382,29 @@ class _GlowOrb extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _KeepAlivePage extends StatefulWidget {
+  final Widget child;
+
+  const _KeepAlivePage({
+    required this.child,
+  });
+
+  @override
+  State<_KeepAlivePage> createState() => _KeepAlivePageState();
+}
+
+class _KeepAlivePageState extends State<_KeepAlivePage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
   }
 }
 

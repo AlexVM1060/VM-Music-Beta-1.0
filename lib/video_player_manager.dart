@@ -1081,7 +1081,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
 
-      final shouldPlay = !_isPlaying;
+      // Usamos el estado real del motor para evitar desincronizaciones del UI flag.
+      final shouldPlay = !_player.playing;
       _isPlaying = shouldPlay;
       if (shouldPlay) {
         _isBuffering = true;
@@ -1090,13 +1091,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       try {
         if (shouldPlay) {
-          await _player.play();
+          // En just_audio, play() puede mantener el Future vivo durante la reproducción.
+          // No esperamos aquí para no bloquear taps siguientes.
+          unawaited(_player.play());
         } else {
           await _player.pause();
         }
       } catch (e, s) {
         log('togglePlayPause en audio falló', error: e, stackTrace: s);
       } finally {
+        if (shouldPlay) {
+          // Damos un frame para que el estado interno se sincronice.
+          await Future<void>.delayed(const Duration(milliseconds: 40));
+        }
         _isPlaying = _player.playing;
         _isBuffering = false;
         notifyListeners();
@@ -1361,7 +1368,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           PlaybackQueueItem(
             videoId: item.videoId,
             title: item.title,
-            thumbnailUrl: item.thumbnailUrl,
+            thumbnailUrl: (item.localThumbnailPath != null &&
+                    item.localThumbnailPath!.isNotEmpty)
+                ? item.localThumbnailPath!
+                : item.thumbnailUrl,
             artist: item.channelTitle,
             isLocal: true,
             localFilePath: item.filePath,

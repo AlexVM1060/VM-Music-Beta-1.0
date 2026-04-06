@@ -15,7 +15,7 @@ class AccountPage extends StatefulWidget {
 }
 
 class _AccountPageState extends State<AccountPage> {
-  int _tab = 0;
+  int _tab = 1;
   Playlist? _selectedPlaylist;
   int _playlistTransitionDirection = 1;
 

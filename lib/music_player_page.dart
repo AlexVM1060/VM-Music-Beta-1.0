@@ -2350,19 +2350,39 @@ class _ArtworkImage extends StatelessWidget {
                   size: size * 0.4,
                   color: Theme.of(context).colorScheme.primary,
                 )
-              : Image.network(
-                  url!,
-                  width: size,
-                  height: size,
-                  fit: BoxFit.cover,
-                  alignment: Alignment.center,
-                  errorBuilder: (context, error, stackTrace) => Icon(
-                    Icons.music_note_rounded,
-                    size: size * 0.4,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                ),
+              : _buildArtworkImage(context),
         ),
+      ),
+    );
+  }
+
+  Widget _buildArtworkImage(BuildContext context) {
+    final raw = url!;
+    final looksLikeLocalPath = raw.startsWith('/');
+    if (looksLikeLocalPath) {
+      return Image.file(
+        File(raw),
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        alignment: Alignment.center,
+        errorBuilder: (context, error, stackTrace) => Icon(
+          Icons.music_note_rounded,
+          size: size * 0.4,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+      );
+    }
+    return Image.network(
+      raw,
+      width: size,
+      height: size,
+      fit: BoxFit.cover,
+      alignment: Alignment.center,
+      errorBuilder: (context, error, stackTrace) => Icon(
+        Icons.music_note_rounded,
+        size: size * 0.4,
+        color: Theme.of(context).colorScheme.primary,
       ),
     );
   }

@@ -25,6 +25,9 @@ class DownloadedVideo extends HiveObject {
   @HiveField(6)
   final String? syncedLyrics;
 
+  @HiveField(7)
+  final String? localThumbnailPath;
+
   DownloadedVideo({
     required this.videoId,
     required this.title,
@@ -33,5 +36,6 @@ class DownloadedVideo extends HiveObject {
     required this.filePath,
     this.plainLyrics,
     this.syncedLyrics,
+    this.localThumbnailPath,
   });
 }

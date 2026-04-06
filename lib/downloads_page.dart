@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
@@ -40,6 +41,11 @@ class DownloadsPage extends StatelessWidget {
               itemCount: songs.length,
               itemBuilder: (context, index) {
                 final song = songs[index];
+                final localThumbPath = song.localThumbnailPath;
+                final hasLocalThumb =
+                    localThumbPath != null &&
+                    localThumbPath.isNotEmpty &&
+                    File(localThumbPath).existsSync();
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 2.0),
                   child: ClipRRect(
@@ -55,7 +61,9 @@ class DownloadsPage extends StatelessWidget {
                               id: song.videoId,
                               filePath: song.filePath,
                               title: song.title,
-                              thumbnailUrl: song.thumbnailUrl,
+                              thumbnailUrl: hasLocalThumb
+                                  ? localThumbPath
+                                  : song.thumbnailUrl,
                               artist: song.channelTitle,
                               localPlainLyrics: song.plainLyrics,
                               localSyncedLyrics: song.syncedLyrics,
@@ -82,20 +90,41 @@ class DownloadsPage extends StatelessWidget {
                               children: [
                                 ClipRRect(
                                   borderRadius: BorderRadius.circular(10.0),
-                                  child: Image.network(
-                                    song.thumbnailUrl,
-                                    width: 64,
-                                    height: 64,
-                                    fit: BoxFit.cover,
-                                    alignment: Alignment.center,
-                                    errorBuilder: (context, error, stackTrace) => Container(
-                                      width: 64,
-                                      height: 64,
-                                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                      alignment: Alignment.center,
-                                      child: const Icon(Icons.music_note_rounded),
-                                    ),
-                                  ),
+                                  child: hasLocalThumb
+                                      ? Image.file(
+                                          File(localThumbPath),
+                                          width: 64,
+                                          height: 64,
+                                          fit: BoxFit.cover,
+                                          alignment: Alignment.center,
+                                          errorBuilder: (context, error, stackTrace) =>
+                                              Container(
+                                            width: 64,
+                                            height: 64,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .surfaceContainerHighest,
+                                            alignment: Alignment.center,
+                                            child: const Icon(Icons.music_note_rounded),
+                                          ),
+                                        )
+                                      : Image.network(
+                                          song.thumbnailUrl,
+                                          width: 64,
+                                          height: 64,
+                                          fit: BoxFit.cover,
+                                          alignment: Alignment.center,
+                                          errorBuilder: (context, error, stackTrace) =>
+                                              Container(
+                                            width: 64,
+                                            height: 64,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .surfaceContainerHighest,
+                                            alignment: Alignment.center,
+                                            child: const Icon(Icons.music_note_rounded),
+                                          ),
+                                        ),
                                 ),
                                 const SizedBox(width: 16),
                                 Expanded(

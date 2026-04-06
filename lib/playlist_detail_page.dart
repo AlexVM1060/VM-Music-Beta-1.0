@@ -139,11 +139,15 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           if (!context.mounted) return;
 
                           if (local != null) {
+                            final thumb = (local.localThumbnailPath != null &&
+                                    local.localThumbnailPath!.isNotEmpty)
+                                ? local.localThumbnailPath!
+                                : local.thumbnailUrl;
                             await videoManager.playLocalFile(
                               id: local.videoId,
                               filePath: local.filePath,
                               title: local.title,
-                              thumbnailUrl: local.thumbnailUrl,
+                              thumbnailUrl: thumb,
                               artist: local.channelTitle,
                               localPlainLyrics: local.plainLyrics,
                               localSyncedLyrics: local.syncedLyrics,

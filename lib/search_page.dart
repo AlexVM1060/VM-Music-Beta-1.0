@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/download_service.dart';
+import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:provider/provider.dart';
@@ -67,6 +68,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
   bool _showArtists = true;
   _SelectedArtistView? _selectedArtistView;
   int _artistTransitionDirection = 1;
+  List<Video> _initialRecommendations = const [];
+  bool _initialRecommendationsLoading = false;
+  String? _initialRecommendationQuery;
   SearchViewState? _searchViewState;
   AnimationController? _searchBarGlowController;
 
@@ -82,6 +86,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
         glow.stop();
       }
       if (mounted) setState(() {});
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_loadInitialRecommendations());
     });
   }
 
@@ -201,6 +208,63 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     }
   }
 
+  Future<void> _loadInitialRecommendations() async {
+    if (!mounted) return;
+    setState(() {
+      _initialRecommendationsLoading = true;
+    });
+
+    final query = await _pickInitialRecommendationQuery();
+    try {
+      final videos = await _searchWithCache(query);
+      if (!mounted) return;
+      setState(() {
+        _initialRecommendationQuery = query;
+        _initialRecommendations = _prioritizedVideos(videos).take(12).toList();
+        _initialRecommendationsLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _initialRecommendationQuery = query;
+        _initialRecommendations = const [];
+        _initialRecommendationsLoading = false;
+      });
+    }
+  }
+
+  Future<String> _pickInitialRecommendationQuery() async {
+    try {
+      final history = await context.read<HistoryService>().getHistory();
+      final byArtist = history
+          .map((h) => h.channelTitle.trim())
+          .where((artist) => artist.isNotEmpty)
+          .toSet()
+          .toList();
+      if (byArtist.isNotEmpty) {
+        final artist = byArtist[math.Random().nextInt(byArtist.length)];
+        return artist;
+      }
+
+      final byTitle = history
+          .map((h) => h.title.trim())
+          .where((title) => title.isNotEmpty)
+          .toList();
+      if (byTitle.isNotEmpty) {
+        return byTitle[math.Random().nextInt(byTitle.length)];
+      }
+    } catch (_) {
+      // Si falla historial, usamos fallback.
+    }
+
+    const fallbackQueries = [
+      'Regional mexicano',
+      'musica en ingles',
+      'rels b',
+    ];
+    return fallbackQueries[math.Random().nextInt(fallbackQueries.length)];
+  }
+
   Future<void> _openChannel(SearchChannelWithSubscribers channelData) async {
     final channel = channelData.channel;
     setState(() {
@@ -251,11 +315,15 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
 
     if (!mounted) return;
     if (local != null) {
+      final thumb =
+          (local.localThumbnailPath != null && local.localThumbnailPath!.isNotEmpty)
+          ? local.localThumbnailPath!
+          : local.thumbnailUrl;
       await videoManager.playLocalFile(
         id: local.videoId,
         filePath: local.filePath,
         title: local.title,
-        thumbnailUrl: local.thumbnailUrl,
+        thumbnailUrl: thumb,
         artist: local.channelTitle,
         localPlainLyrics: local.plainLyrics,
         localSyncedLyrics: local.syncedLyrics,
@@ -1182,11 +1250,42 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       case SearchState.noResults:
         return const Center(child: Text('No se encontraron videos.'));
       case SearchState.initial:
-        return Center(
-          child: Text(
-            'Comienza haciendo',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
+        final downloadService = context.watch<DownloadService>();
+        if (_initialRecommendationsLoading && _initialRecommendations.isEmpty) {
+          return const Center(child: CupertinoActivityIndicator(radius: 14));
+        }
+        if (_initialRecommendations.isEmpty) {
+          return Center(
+            child: Text(
+              'Comienza haciendo',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+          );
+        }
+        return ListView(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                _initialRecommendationQuery == null
+                    ? 'Recomendado para ti'
+                    : 'Recomendado para ti • $_initialRecommendationQuery',
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ),
+            ..._initialRecommendations.map(
+              (video) => VideoCard(
+                video: video,
+                isDownloaded:
+                    downloadService.getDownloadStatus(video.id.value) ==
+                    DownloadStatus.downloaded,
+                onPlay: () => _playVideoPreferLocal(video),
+                onMenuTap: () => _showVideoOptionsMenu(video),
+              ),
+            ),
+          ],
         );
       case SearchState.success:
         final downloadService = context.watch<DownloadService>();
@@ -1610,11 +1709,7 @@ class TopArtistCard extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: onOpenChannel,
-                    icon: const Icon(Icons.music_note_rounded),
-                    label: const Text('Ver videos musicales'),
-                  ),
+                  _ArtistVideosActionButton(onPressed: onOpenChannel),
                 ],
               ),
             ),
@@ -1633,6 +1728,129 @@ class TopArtistCard extends StatelessWidget {
       return channelData.channel.thumbnails.first.url.toString();
     }
     return '';
+  }
+}
+
+class _ArtistVideosActionButton extends StatefulWidget {
+  final VoidCallback onPressed;
+
+  const _ArtistVideosActionButton({
+    required this.onPressed,
+  });
+
+  @override
+  State<_ArtistVideosActionButton> createState() => _ArtistVideosActionButtonState();
+}
+
+class _ArtistVideosActionButtonState extends State<_ArtistVideosActionButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _borderController;
+
+  @override
+  void initState() {
+    super.initState();
+    _borderController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _borderController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final borderRadius = BorderRadius.circular(14);
+    return AnimatedBuilder(
+      animation: _borderController,
+      builder: (context, _) {
+        return CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: Size.zero,
+          onPressed: widget.onPressed,
+          child: Container(
+            padding: const EdgeInsets.all(1.2),
+            decoration: BoxDecoration(
+              borderRadius: borderRadius,
+              gradient: SweepGradient(
+                transform: GradientRotation(_borderController.value * math.pi * 2),
+                colors: [
+                  const Color(0xFFE79A52).withValues(alpha: 0.82),
+                  const Color(0xFFEDB567).withValues(alpha: 0.82),
+                  const Color(0xFFF1CB86).withValues(alpha: 0.82),
+                  const Color(0xFFE9A15A).withValues(alpha: 0.82),
+                  const Color(0xFFE79A52).withValues(alpha: 0.82),
+                ],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFFDA9A57).withValues(alpha: 0.14),
+                  blurRadius: 10,
+                  spreadRadius: 0,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: borderRadius,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+                child: Container(
+                  height: 36,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        const Color(0xFFEABF81).withValues(alpha: 0.50),
+                        const Color(0xFFE5AE6D).withValues(alpha: 0.56),
+                        const Color(0xFFDF995A).withValues(alpha: 0.54),
+                      ],
+                    ),
+                    borderRadius: borderRadius,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.14),
+                      width: 0.45,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFFDDA15F).withValues(alpha: 0.10),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(
+                        Icons.music_note_rounded,
+                        size: 16,
+                        color: Colors.white,
+                      ),
+                      SizedBox(width: 7),
+                      Text(
+                        'Ver videos musicales',
+                        style: TextStyle(
+                          fontFamily: '.SF Pro Text',
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 }
 
@@ -2418,11 +2636,15 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
 
     if (!mounted) return;
     if (local != null) {
+      final thumb =
+          (local.localThumbnailPath != null && local.localThumbnailPath!.isNotEmpty)
+          ? local.localThumbnailPath!
+          : local.thumbnailUrl;
       await videoManager.playLocalFile(
         id: local.videoId,
         filePath: local.filePath,
         title: local.title,
-        thumbnailUrl: local.thumbnailUrl,
+        thumbnailUrl: thumb,
         artist: local.channelTitle,
         localPlainLyrics: local.plainLyrics,
         localSyncedLyrics: local.syncedLyrics,
