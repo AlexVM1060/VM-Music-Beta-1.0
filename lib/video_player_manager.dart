@@ -35,6 +35,16 @@ class PlaybackQueueItem {
   });
 }
 
+class DownloadSourceInfo {
+  final String sourceUrl;
+  final bool isVideoSource;
+
+  const DownloadSourceInfo({
+    required this.sourceUrl,
+    required this.isVideoSource,
+  });
+}
+
 class _QueueHistoryProfile {
   final List<String> topArtists;
   final List<String> topTitleTokens;
@@ -414,6 +424,98 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return video;
     } finally {
       _videoRequests.remove(videoId);
+    }
+  }
+
+  Future<DownloadSourceInfo?> resolveDownloadSourceSilently(String videoId) async {
+    try {
+      final manifest = await _getManifestWithRetry(videoId);
+      final audioStreams = manifest.audioOnly.toList();
+      if (audioStreams.isNotEmpty) {
+        final selectedAudio = _prioritizeAudioStreams(audioStreams).first;
+        return DownloadSourceInfo(
+          sourceUrl: selectedAudio.url.toString(),
+          isVideoSource: false,
+        );
+      }
+
+      final muxedStreams = manifest.muxed.toList();
+      if (muxedStreams.isNotEmpty) {
+        final selectedMuxed = _prioritizeMuxedStreams(muxedStreams).first;
+        return DownloadSourceInfo(
+          sourceUrl: selectedMuxed.url.toString(),
+          isVideoSource: true,
+        );
+      }
+
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<DownloadSourceInfo?> resolveDownloadSourceIsolated(String videoId) async {
+    try {
+      final manifest = await _getManifestWithRetry(videoId);
+      final audioStreams = _prioritizeAudioStreams(manifest.audioOnly.toList());
+      for (final stream in audioStreams.take(6)) {
+        final ok = await _probeAudioStreamSilently(stream.url);
+        if (ok) {
+          return DownloadSourceInfo(
+            sourceUrl: stream.url.toString(),
+            isVideoSource: false,
+          );
+        }
+      }
+
+      final muxedStreams = _prioritizeMuxedStreams(manifest.muxed.toList());
+      for (final stream in muxedStreams.take(4)) {
+        final ok = await _probeVideoStreamSilently(stream.url);
+        if (ok) {
+          return DownloadSourceInfo(
+            sourceUrl: stream.url.toString(),
+            isVideoSource: true,
+          );
+        }
+      }
+
+      // Fallback final: regresar mejor esfuerzo sin probe.
+      return resolveDownloadSourceSilently(videoId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _probeAudioStreamSilently(Uri url) async {
+    final probe = AudioPlayer();
+    try {
+      await probe.setVolume(0);
+      await probe.setAudioSource(
+        AudioSource.uri(url, headers: _youtubeHeaders),
+      );
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      await probe.dispose();
+    }
+  }
+
+  Future<bool> _probeVideoStreamSilently(Uri url) async {
+    VideoPlayerController? controller;
+    try {
+      controller = VideoPlayerController.networkUrl(
+        url,
+        httpHeaders: _youtubeHeaders,
+      );
+      await controller.initialize();
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      try {
+        await controller?.dispose();
+      } catch (_) {}
     }
   }
 

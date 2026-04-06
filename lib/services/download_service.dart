@@ -7,6 +7,8 @@ import 'package:hive/hive.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/lyrics_service.dart';
+import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/video_player_manager.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
@@ -21,6 +23,16 @@ class PlaylistDownloadSummary {
     required this.queued,
     required this.alreadyDownloaded,
     required this.alreadyInProgress,
+  });
+}
+
+class _PlaybackDownloadSource {
+  final String url;
+  final bool isVideoSource;
+
+  const _PlaybackDownloadSource({
+    required this.url,
+    required this.isVideoSource,
   });
 }
 
@@ -55,24 +67,97 @@ class DownloadService with ChangeNotifier {
 
   Future<void> _loadAutoDownloadPlaylists() async {
     final box = await _autoDownloadBox;
+    if (box.containsKey('Videos favoritos') &&
+        !box.containsKey(PlaylistService.favoritesPlaylistName)) {
+      await box.put(
+        PlaylistService.favoritesPlaylistName,
+        PlaylistService.favoritesPlaylistName,
+      );
+      await box.delete('Videos favoritos');
+    }
     _autoDownloadPlaylists = box.values.toSet();
     notifyListeners();
   }
 
   Future<void> setPlaylistAutoDownload(String playlistName, bool enabled) async {
     final box = await _autoDownloadBox;
+    final normalized = PlaylistService.isFavoritesPlaylistName(playlistName)
+        ? PlaylistService.favoritesPlaylistName
+        : playlistName;
     if (enabled) {
-      await box.put(playlistName, playlistName);
-      _autoDownloadPlaylists.add(playlistName);
+      await box.put(normalized, normalized);
+      _autoDownloadPlaylists.add(normalized);
+      if (normalized == PlaylistService.favoritesPlaylistName) {
+        await box.delete('Videos favoritos');
+        _autoDownloadPlaylists.remove('Videos favoritos');
+      }
     } else {
-      await box.delete(playlistName);
-      _autoDownloadPlaylists.remove(playlistName);
+      await box.delete(normalized);
+      _autoDownloadPlaylists.remove(normalized);
+      if (normalized == PlaylistService.favoritesPlaylistName) {
+        await box.delete('Videos favoritos');
+        _autoDownloadPlaylists.remove('Videos favoritos');
+      }
     }
     notifyListeners();
   }
 
+  Future<bool> autoDownloadIfEnabled(
+    String playlistName,
+    VideoHistory video,
+  ) async {
+    if (!isPlaylistAutoDownload(playlistName)) return false;
+    return downloadVideoLikePlayer(
+      video.videoId,
+      video.title,
+      video.thumbnailUrl,
+      video.channelTitle,
+    );
+  }
+
+  Future<bool> autoDownloadIfEnabledUsingClone(
+    String playlistName,
+    VideoHistory video, {
+    required VideoPlayerManager videoManager,
+  }) async {
+    if (!isPlaylistAutoDownload(playlistName)) return false;
+    return downloadVideoUsingClone(
+      video: video,
+      videoManager: videoManager,
+    );
+  }
+
+  Future<bool> downloadVideoUsingClone({
+    required VideoHistory video,
+    required VideoPlayerManager videoManager,
+  }) async {
+    final source = await videoManager.resolveDownloadSourceIsolated(video.videoId);
+    if (source != null && source.sourceUrl.isNotEmpty) {
+      return downloadFromPlaybackSource(
+        videoId: video.videoId,
+        title: video.title,
+        thumbnailUrl: video.thumbnailUrl,
+        channelTitle: video.channelTitle,
+        sourceUrl: source.sourceUrl,
+        isVideoSource: source.isVideoSource,
+      );
+    }
+
+    return downloadVideoLikePlayer(
+      video.videoId,
+      video.title,
+      video.thumbnailUrl,
+      video.channelTitle,
+    );
+  }
+
   bool isPlaylistAutoDownload(String playlistName) {
-    return _autoDownloadPlaylists.contains(playlistName);
+    if (_autoDownloadPlaylists.contains(playlistName)) return true;
+    if (PlaylistService.isFavoritesPlaylistName(playlistName)) {
+      return _autoDownloadPlaylists.contains(PlaylistService.favoritesPlaylistName) ||
+          _autoDownloadPlaylists.contains('Videos favoritos');
+    }
+    return false;
   }
 
   Future<PlaylistDownloadSummary> downloadPlaylistVideos(List<VideoHistory> videos) async {
@@ -94,11 +179,47 @@ class DownloadService with ChangeNotifier {
 
       // Encolamos sin esperar a que finalice para que "Descargar todo" sea inmediato.
       unawaited(
-        downloadVideo(
+        downloadVideoLikePlayer(
           video.videoId,
           video.title,
           video.thumbnailUrl,
           video.channelTitle,
+        ),
+      );
+      queuedCount++;
+    }
+
+    return PlaylistDownloadSummary(
+      queued: queuedCount,
+      alreadyDownloaded: alreadyDownloadedCount,
+      alreadyInProgress: alreadyInProgressCount,
+    );
+  }
+
+  Future<PlaylistDownloadSummary> downloadPlaylistVideosUsingClone(
+    List<VideoHistory> videos, {
+    required VideoPlayerManager videoManager,
+  }) async {
+    var queuedCount = 0;
+    var alreadyDownloadedCount = 0;
+    var alreadyInProgressCount = 0;
+
+    for (final video in videos) {
+      final isDownloaded = await isVideoDownloaded(video.videoId);
+      if (isDownloaded) {
+        alreadyDownloadedCount++;
+        continue;
+      }
+
+      if (_downloadStatus[video.videoId] == DownloadStatus.downloading) {
+        alreadyInProgressCount++;
+        continue;
+      }
+
+      unawaited(
+        downloadVideoUsingClone(
+          video: video,
+          videoManager: videoManager,
         ),
       );
       queuedCount++;
@@ -146,23 +267,20 @@ class DownloadService with ChangeNotifier {
         }
 
         try {
-          await _dio.download(
-            streamInfo.url.toString(),
-            filePath,
-            options: Options(
-              headers: _youtubeHeaders,
-              responseType: ResponseType.bytes,
-              followRedirects: true,
-              receiveTimeout: const Duration(minutes: 3),
-              sendTimeout: const Duration(minutes: 1),
-            ),
-            onReceiveProgress: (received, total) {
-              if (total > 0) {
-                _downloadProgress[videoId] = received / total;
-                notifyListeners();
-              }
-            },
-          );
+          final sink = file.openWrite();
+          final stream = _yt.videos.streamsClient.get(streamInfo);
+          final totalBytes = streamInfo.size.totalBytes;
+          var receivedBytes = 0;
+          await for (final chunk in stream) {
+            sink.add(chunk);
+            receivedBytes += chunk.length;
+            if (totalBytes > 0) {
+              _downloadProgress[videoId] = receivedBytes / totalBytes;
+              notifyListeners();
+            }
+          }
+          await sink.flush();
+          await sink.close();
 
           final downloadedFile = File(filePath);
           if (!await downloadedFile.exists() || await downloadedFile.length() == 0) {
@@ -175,6 +293,37 @@ class DownloadService with ChangeNotifier {
           lastError = e;
           if (await file.exists()) {
             await file.delete();
+          }
+          // Fallback por URL directa para casos donde falle el stream client.
+          try {
+            await _dio.download(
+              streamInfo.url.toString(),
+              filePath,
+              options: Options(
+                headers: _youtubeHeaders,
+                responseType: ResponseType.bytes,
+                followRedirects: true,
+                receiveTimeout: const Duration(minutes: 3),
+                sendTimeout: const Duration(minutes: 1),
+              ),
+              onReceiveProgress: (received, total) {
+                if (total > 0) {
+                  _downloadProgress[videoId] = received / total;
+                  notifyListeners();
+                }
+              },
+            );
+            final downloadedFile = File(filePath);
+            if (!await downloadedFile.exists() || await downloadedFile.length() == 0) {
+              throw Exception('Archivo descargado vacío');
+            }
+            successfulPath = filePath;
+            break;
+          } catch (dioError) {
+            lastError = dioError;
+            if (await file.exists()) {
+              await file.delete();
+            }
           }
         }
       }
@@ -210,6 +359,36 @@ class DownloadService with ChangeNotifier {
       _downloadErrors[videoId] = _toUserFriendlyDownloadError(e);
       notifyListeners();
       return false;
+    }
+  }
+
+  Future<bool> downloadVideoLikePlayer(
+    String videoId,
+    String title,
+    String thumbnailUrl,
+    String channelTitle,
+  ) async {
+    final existing = await getDownloadedVideoById(videoId);
+    if (_downloadStatus[videoId] == DownloadStatus.downloading || existing != null) {
+      return false;
+    }
+
+    try {
+      final sources = await _resolvePlaybackDownloadSources(videoId);
+      for (final source in sources.take(8)) {
+        final ok = await downloadFromPlaybackSource(
+          videoId: videoId,
+          title: title,
+          thumbnailUrl: thumbnailUrl,
+          channelTitle: channelTitle,
+          sourceUrl: source.url,
+          isVideoSource: source.isVideoSource,
+        );
+        if (ok) return true;
+      }
+      return false;
+    } catch (_) {
+      return downloadVideo(videoId, title, thumbnailUrl, channelTitle);
     }
   }
 
@@ -329,6 +508,10 @@ class DownloadService with ChangeNotifier {
     return DownloadStatus.notDownloaded;
   }
 
+  bool isDownloading(String videoId) {
+    return _downloadStatus[videoId] == DownloadStatus.downloading;
+  }
+
   double getDownloadProgress(String videoId) {
     return _downloadProgress[videoId] ?? 0.0;
   }
@@ -388,6 +571,67 @@ class DownloadService with ChangeNotifier {
     for (final stream in sortedByBitrate) {
       final container = stream.container.name.toLowerCase();
       if (container == 'mp4' || container == 'm4a') {
+        preferred.add(stream);
+      } else {
+        fallback.add(stream);
+      }
+    }
+
+    return [...preferred, ...fallback];
+  }
+
+  Future<List<_PlaybackDownloadSource>> _resolvePlaybackDownloadSources(String videoId) async {
+    final manifest = await _getManifestWithRetry(videoId);
+    final sources = <_PlaybackDownloadSource>[];
+    final seen = <String>{};
+
+    final audioStreams = manifest.audioOnly.toList();
+    if (audioStreams.isNotEmpty) {
+      for (final stream in _prioritizeAudioStreams(audioStreams)) {
+        final url = stream.url.toString();
+        if (!seen.add(url)) continue;
+        sources.add(
+          _PlaybackDownloadSource(
+            url: url,
+            isVideoSource: false,
+          ),
+        );
+      }
+    }
+
+    final muxedStreams = manifest.muxed.toList();
+    if (muxedStreams.isNotEmpty) {
+      for (final stream in _prioritizeMuxedStreams(muxedStreams)) {
+        final url = stream.url.toString();
+        if (!seen.add(url)) continue;
+        sources.add(
+          _PlaybackDownloadSource(
+            url: url,
+            isVideoSource: true,
+          ),
+        );
+      }
+    }
+
+    if (sources.isEmpty) {
+      throw Exception('No hay streams disponibles para descargar.');
+    }
+    return sources;
+  }
+
+  List<MuxedStreamInfo> _prioritizeMuxedStreams(List<MuxedStreamInfo> streams) {
+    final sortedByQuality = [...streams]
+      ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+
+    if (!Platform.isIOS) {
+      return sortedByQuality;
+    }
+
+    final preferred = <MuxedStreamInfo>[];
+    final fallback = <MuxedStreamInfo>[];
+    for (final stream in sortedByQuality) {
+      final container = stream.container.name.toLowerCase();
+      if (container == 'mp4') {
         preferred.add(stream);
       } else {
         fallback.add(stream);
@@ -503,8 +747,8 @@ class DownloadService with ChangeNotifier {
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         return await action();
-      } on RequestLimitExceededException {
-        rethrow;
+      } on RequestLimitExceededException catch (e) {
+        lastError = e;
       } on SocketException catch (e) {
         lastError = e;
       } on HttpException catch (e) {
@@ -514,7 +758,8 @@ class DownloadService with ChangeNotifier {
       }
 
       if (attempt < maxAttempts) {
-        final waitSeconds = attempt * 2;
+        // Backoff más agresivo para límites temporales de YouTube.
+        final waitSeconds = attempt * 4;
         await Future<void>.delayed(Duration(seconds: waitSeconds));
       }
     }

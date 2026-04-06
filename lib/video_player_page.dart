@@ -413,8 +413,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                     IconButton(
                       icon: const Icon(Icons.favorite_border),
                       tooltip: 'Añadir a favoritos',
-                      onPressed: () {
+                      onPressed: () async {
                         if (_video == null) return;
+                        final downloadService =
+                            Provider.of<DownloadService>(context, listen: false);
                         final videoHistory = VideoHistory(
                           videoId: _video!.id.value,
                           title: _video!.title,
@@ -422,10 +424,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                           channelTitle: _video!.author,
                           watchedAt: DateTime.now(),
                         );
-                        playlistService.addVideoToPlaylist(
-                          'Videos favoritos',
+                        await playlistService.addVideoToPlaylist(
+                          PlaylistService.favoritesPlaylistName,
                           videoHistory,
                         );
+                        await downloadService.autoDownloadIfEnabledUsingClone(
+                          PlaylistService.favoritesPlaylistName,
+                          videoHistory,
+                          videoManager: _manager,
+                        );
+                        if (!mounted) return;
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text('Añadido a favoritos')),
                         );

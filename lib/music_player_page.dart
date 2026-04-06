@@ -266,15 +266,6 @@ class _FullPlayer extends StatelessWidget {
                       icon: CupertinoIcons.list_bullet,
                       onPressed: () => _showQueueSheet(context),
                     ),
-                    if (canAddToPlaylist)
-                      _TopGlassIconButton(
-                        icon: CupertinoIcons.add,
-                        onPressed: () => _showAddToPlaylistSheet(
-                          context: context,
-                          playlistService: playlistService,
-                          manager: manager,
-                        ),
-                      ),
                     if (canDownload)
                       _DownloadButton(
                         videoId: videoId,
@@ -327,11 +318,37 @@ class _FullPlayer extends StatelessWidget {
                                 key: const ValueKey('compact_now_playing_header'),
                                 manager: manager,
                                 onArtistTap: () => _openArtistProfile(context),
+                                canAddToPlaylist: canAddToPlaylist,
+                                onAddToPlaylist: () => _showAddToPlaylistSheet(
+                                  context: context,
+                                  playlistService: playlistService,
+                                  downloadService: downloadService,
+                                  manager: manager,
+                                ),
+                                onAddToFavorites: () => _addCurrentTrackToFavorites(
+                                  context: context,
+                                  playlistService: playlistService,
+                                  downloadService: downloadService,
+                                  manager: manager,
+                                ),
                               )
                             : _DefaultNowPlayingHero(
                                 key: const ValueKey('default_now_playing_hero'),
                                 manager: manager,
                                 onArtistTap: () => _openArtistProfile(context),
+                                canAddToPlaylist: canAddToPlaylist,
+                                onAddToPlaylist: () => _showAddToPlaylistSheet(
+                                  context: context,
+                                  playlistService: playlistService,
+                                  downloadService: downloadService,
+                                  manager: manager,
+                                ),
+                                onAddToFavorites: () => _addCurrentTrackToFavorites(
+                                  context: context,
+                                  playlistService: playlistService,
+                                  downloadService: downloadService,
+                                  manager: manager,
+                                ),
                               ),
                       ),
                       if (manager.errorMessage != null) ...[
@@ -407,6 +424,7 @@ class _FullPlayer extends StatelessWidget {
   Future<void> _showAddToPlaylistSheet({
     required BuildContext context,
     required PlaylistService playlistService,
+    required DownloadService downloadService,
     required VideoPlayerManager manager,
   }) async {
     final playlists = await playlistService.getPlaylists();
@@ -421,33 +439,110 @@ class _FullPlayer extends StatelessWidget {
 
     await showModalBottomSheet<void>(
       context: context,
-      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
       builder: (sheetContext) {
         return SafeArea(
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              const ListTile(
-                title: Text(
-                  'Añadir a playlist',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-              ),
-              ...playlists.map(
-                (playlist) => ListTile(
-                  leading: const Icon(Icons.queue_music),
-                  title: Text(playlist.name),
-                  subtitle: Text('${playlist.videos.length} canciones'),
-                  onTap: () => _addCurrentTrackToPlaylist(
-                    context: context,
-                    sheetContext: sheetContext,
-                    playlistService: playlistService,
-                    manager: manager,
-                    playlist: playlist,
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(sheetContext).size.height * 0.78,
+                  ),
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.systemGrey6
+                        .resolveFrom(sheetContext)
+                        .withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: CupertinoColors.white.withValues(alpha: 0.24),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(sheetContext)
+                              .withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Row(
+                          children: [
+                            Text(
+                              'Añadir a playlist',
+                              style: CupertinoTheme.of(sheetContext)
+                                  .textTheme
+                                  .navTitleTextStyle
+                                  .copyWith(fontWeight: FontWeight.w700),
+                            ),
+                            const Spacer(),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minimumSize: const Size(34, 34),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                              child: Icon(
+                                CupertinoIcons.xmark_circle_fill,
+                                size: 24,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(sheetContext),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Flexible(
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
+                          itemCount: playlists.length,
+                          itemBuilder: (context, index) {
+                            final playlist = playlists[index];
+                            final cover = playlist.videos.isNotEmpty
+                                ? playlist.videos.first.thumbnailUrl
+                                : null;
+                            final isFavorites =
+                                PlaylistService.isFavoritesPlaylistName(playlist.name);
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: _PlaylistPickerRow(
+                                name: playlist.name,
+                                songsCount: playlist.videos.length,
+                                coverUrl: cover,
+                                isFavorites: isFavorites,
+                                onTap: () {
+                                  Navigator.of(sheetContext).pop();
+                                  _addCurrentTrackToPlaylist(
+                                    context: context,
+                                    playlistService: playlistService,
+                                    downloadService: downloadService,
+                                    manager: manager,
+                                    playlist: playlist,
+                                  );
+                                },
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-            ],
+            ),
           ),
         );
       },
@@ -456,8 +551,8 @@ class _FullPlayer extends StatelessWidget {
 
   Future<void> _addCurrentTrackToPlaylist({
     required BuildContext context,
-    required BuildContext sheetContext,
     required PlaylistService playlistService,
+    required DownloadService downloadService,
     required VideoPlayerManager manager,
     required app_models.Playlist playlist,
   }) async {
@@ -473,14 +568,85 @@ class _FullPlayer extends StatelessWidget {
     );
 
     await playlistService.addVideoToPlaylist(playlist.name, track);
-    if (sheetContext.mounted) {
-      Navigator.of(sheetContext).pop();
-    }
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Añadida a ${playlist.name}')),
-      );
-    }
+    await downloadService.autoDownloadIfEnabledUsingClone(
+      playlist.name,
+      track,
+      videoManager: manager,
+    );
+    if (!context.mounted) return;
+    _showIosTopToast(
+      context,
+      message: 'Añadida a ${playlist.name}',
+      icon: CupertinoIcons.check_mark_circled_solid,
+    );
+  }
+
+  Future<void> _addCurrentTrackToFavorites({
+    required BuildContext context,
+    required PlaylistService playlistService,
+    required DownloadService downloadService,
+    required VideoPlayerManager manager,
+  }) async {
+    final playlists = await playlistService.getPlaylists();
+    final favorites = playlists.firstWhere(
+      (playlist) => PlaylistService.isFavoritesPlaylistName(playlist.name),
+      orElse: () => app_models.Playlist(name: PlaylistService.favoritesPlaylistName),
+    );
+
+    final videoId = manager.currentVideoId;
+    if (videoId == null) return;
+
+    final track = VideoHistory(
+      videoId: videoId,
+      title: manager.trackTitle ?? 'Sin título',
+      thumbnailUrl: manager.trackThumbnailUrl ?? '',
+      channelTitle: manager.trackArtist ?? '',
+      watchedAt: DateTime.now(),
+    );
+
+    await playlistService.addVideoToPlaylist(favorites.name, track);
+    await downloadService.autoDownloadIfEnabledUsingClone(
+      favorites.name,
+      track,
+      videoManager: manager,
+    );
+    if (!context.mounted) return;
+    _showIosTopToast(
+      context,
+      message: 'Añadida a Favoritos',
+      icon: CupertinoIcons.star_fill,
+    );
+  }
+
+  void _showIosTopToast(
+    BuildContext context, {
+    required String message,
+    required IconData icon,
+  }) {
+    final overlay = Overlay.of(context, rootOverlay: true);
+
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (overlayContext) {
+        final bottomInset = MediaQuery.of(overlayContext).padding.bottom;
+        return IgnorePointer(
+          ignoring: true,
+          child: Positioned.fill(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: EdgeInsets.only(bottom: bottomInset + 130),
+                child: _IosTopToast(message: message, icon: icon),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    overlay.insert(entry);
+    Timer(const Duration(milliseconds: 1900), () {
+      entry.remove();
+    });
   }
 
   Future<void> _showQueueSheet(BuildContext context) async {
@@ -838,11 +1004,17 @@ class _InlineLyricsButtonState extends State<_InlineLyricsButton>
 class _DefaultNowPlayingHero extends StatelessWidget {
   final VideoPlayerManager manager;
   final VoidCallback onArtistTap;
+  final bool canAddToPlaylist;
+  final VoidCallback onAddToPlaylist;
+  final VoidCallback onAddToFavorites;
 
   const _DefaultNowPlayingHero({
     super.key,
     required this.manager,
     required this.onArtistTap,
+    required this.canAddToPlaylist,
+    required this.onAddToPlaylist,
+    required this.onAddToFavorites,
   });
 
   @override
@@ -864,19 +1036,34 @@ class _DefaultNowPlayingHero extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        SizedBox(
-          width: double.infinity,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: onArtistTap,
-            child: _AutoScrollText(
-              text: manager.trackArtist ?? 'Artista desconocido',
-              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                    fontSize: 20,
-                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                  ),
+        Row(
+          children: [
+            Expanded(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onArtistTap,
+                child: _AutoScrollText(
+                  text: manager.trackArtist ?? 'Artista desconocido',
+                  style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                        fontSize: 20,
+                        color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                      ),
+                ),
+              ),
             ),
-          ),
+            if (canAddToPlaylist) ...[
+              const SizedBox(width: 8),
+              _InlineArtistActionButton(
+                icon: CupertinoIcons.add,
+                onPressed: onAddToPlaylist,
+              ),
+              const SizedBox(width: 6),
+              _InlineArtistActionButton(
+                icon: CupertinoIcons.star_fill,
+                onPressed: onAddToFavorites,
+              ),
+            ],
+          ],
         ),
       ],
     );
@@ -1104,11 +1291,17 @@ class _AutoScrollTextState extends State<_AutoScrollText>
 class _CompactNowPlayingHeader extends StatelessWidget {
   final VideoPlayerManager manager;
   final VoidCallback onArtistTap;
+  final bool canAddToPlaylist;
+  final VoidCallback onAddToPlaylist;
+  final VoidCallback onAddToFavorites;
 
   const _CompactNowPlayingHeader({
     super.key,
     required this.manager,
     required this.onArtistTap,
+    required this.canAddToPlaylist,
+    required this.onAddToPlaylist,
+    required this.onAddToFavorites,
   });
 
   @override
@@ -1146,23 +1339,322 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                           ),
                     ),
                     const SizedBox(height: 3),
-                    GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTap: onArtistTap,
-                      child: Text(
-                        manager.trackArtist ?? 'Artista desconocido',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                              fontSize: 14,
-                              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: onArtistTap,
+                            child: Text(
+                              manager.trackArtist ?? 'Artista desconocido',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                                    fontSize: 14,
+                                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                  ),
                             ),
-                      ),
+                          ),
+                        ),
+                        if (canAddToPlaylist) ...[
+                          const SizedBox(width: 8),
+                          _InlineArtistActionButton(
+                            icon: CupertinoIcons.add,
+                            onPressed: onAddToPlaylist,
+                            compact: true,
+                          ),
+                          const SizedBox(width: 6),
+                          _InlineArtistActionButton(
+                            icon: CupertinoIcons.star_fill,
+                            onPressed: onAddToFavorites,
+                            compact: true,
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineArtistActionButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onPressed;
+  final bool compact;
+
+  const _InlineArtistActionButton({
+    required this.icon,
+    required this.onPressed,
+    this.compact = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size = compact ? 26.0 : 30.0;
+    final iconSize = compact ? 14.0 : 16.0;
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      minimumSize: Size(size, size),
+      onPressed: onPressed,
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: CupertinoColors.systemGrey6.resolveFrom(context).withValues(alpha: 0.58),
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: CupertinoColors.white.withValues(alpha: 0.2),
+            width: 0.5,
+          ),
+        ),
+        child: Icon(
+          icon,
+          size: iconSize,
+          color: CupertinoColors.label.resolveFrom(context),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlaylistPickerRow extends StatelessWidget {
+  final String name;
+  final int songsCount;
+  final String? coverUrl;
+  final bool isFavorites;
+  final VoidCallback onTap;
+
+  const _PlaylistPickerRow({
+    required this.name,
+    required this.songsCount,
+    required this.coverUrl,
+    required this.isFavorites,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.05),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: CupertinoColors.white.withValues(alpha: 0.18),
+                  width: 0.6,
+                ),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.08),
+                    Colors.white.withValues(alpha: 0.02),
+                  ],
+                ),
+              ),
+              child: Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: SizedBox(
+                      width: 52,
+                      height: 52,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          coverUrl == null || coverUrl!.isEmpty
+                              ? Container(
+                                  color: CupertinoColors.systemGrey4.resolveFrom(context),
+                                  alignment: Alignment.center,
+                                  child: Icon(
+                                    isFavorites
+                                        ? CupertinoIcons.star_fill
+                                        : CupertinoIcons.music_note_list,
+                                    size: 20,
+                                    color: CupertinoColors.white,
+                                  ),
+                                )
+                              : Image.network(
+                                  coverUrl!,
+                                  fit: BoxFit.cover,
+                                  alignment: Alignment.center,
+                                  errorBuilder: (context, _, stackTrace) => Container(
+                                    color: CupertinoColors.systemGrey4.resolveFrom(context),
+                                    alignment: Alignment.center,
+                                    child: Icon(
+                                      isFavorites
+                                          ? CupertinoIcons.star_fill
+                                          : CupertinoIcons.music_note_list,
+                                      size: 20,
+                                      color: CupertinoColors.white,
+                                    ),
+                                  ),
+                                ),
+                          if (isFavorites)
+                            Align(
+                              alignment: Alignment.topRight,
+                              child: Container(
+                                margin: const EdgeInsets.all(3),
+                                width: 15,
+                                height: 15,
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withValues(alpha: 0.42),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  CupertinoIcons.star_fill,
+                                  size: 9,
+                                  color: Color(0xFFFFD24A),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontWeight: FontWeight.w700,
+                            fontSize: 15,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '$songsCount canciones',
+                          style: TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontSize: 12,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    CupertinoIcons.chevron_right,
+                    size: 17,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _IosTopToast extends StatefulWidget {
+  final String message;
+  final IconData icon;
+
+  const _IosTopToast({
+    required this.message,
+    required this.icon,
+  });
+
+  @override
+  State<_IosTopToast> createState() => _IosTopToastState();
+}
+
+class _IosTopToastState extends State<_IosTopToast>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _fade;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+      reverseDuration: const Duration(milliseconds: 240),
+    );
+    _fade = CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic);
+    _slide = Tween<Offset>(
+      begin: const Offset(0, -0.06),
+      end: Offset.zero,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+    _controller.forward();
+    Timer(const Duration(milliseconds: 1400), () {
+      if (mounted) {
+        _controller.reverse();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(
+        position: _slide,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 330),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? Colors.black.withValues(alpha: 0.72)
+                    : Colors.white.withValues(alpha: 0.86),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.white.withValues(alpha: 0.14)
+                      : Colors.black.withValues(alpha: 0.08),
+                  width: 0.6,
+                ),
+              ),
+              child: Text(
+                widget.message,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: '.SF Pro Text',
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14,
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.white
+                      : Colors.black,
+                  decoration: TextDecoration.none,
+                ),
+              ),
+            ),
           ),
         ),
       ),

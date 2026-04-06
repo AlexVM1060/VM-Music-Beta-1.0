@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/services/download_service.dart';
@@ -37,83 +39,104 @@ class DownloadsPage extends StatelessWidget {
               itemCount: songs.length,
               itemBuilder: (context, index) {
                 final song = songs[index];
-                return Card(
-                  elevation: 2,
-                  margin: const EdgeInsets.symmetric(vertical: 8),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () {
-                      manager.playLocalFile(
-                        id: song.videoId,
-                        filePath: song.filePath,
-                        title: song.title,
-                        thumbnailUrl: song.thumbnailUrl,
-                        artist: song.channelTitle,
-                        localPlainLyrics: song.plainLyrics,
-                        localSyncedLyrics: song.syncedLyrics,
-                      );
-                    },
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Row(
-                        children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              song.thumbnailUrl,
-                              width: 120,
-                              height: 67.5,
-                              fit: BoxFit.cover,
-                              errorBuilder: (context, error, stackTrace) => Container(
-                                width: 120,
-                                height: 67.5,
-                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                alignment: Alignment.center,
-                                child: const Icon(Icons.music_note_rounded),
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2.0),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                      child: Material(
+                        color: Colors.white.withValues(alpha: 0.035),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () {
+                            manager.playLocalFile(
+                              id: song.videoId,
+                              filePath: song.filePath,
+                              title: song.title,
+                              thumbnailUrl: song.thumbnailUrl,
+                              artist: song.channelTitle,
+                              localPlainLyrics: song.plainLyrics,
+                              localSyncedLyrics: song.syncedLyrics,
+                            );
+                          },
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.14),
+                                width: 0.6,
+                              ),
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Colors.white.withValues(alpha: 0.075),
+                                  Colors.white.withValues(alpha: 0.02),
+                                ],
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
+                            child: Row(
                               children: [
-                                Text(
-                                  song.title,
-                                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(10.0),
+                                  child: Image.network(
+                                    song.thumbnailUrl,
+                                    width: 64,
+                                    height: 64,
+                                    fit: BoxFit.cover,
+                                    alignment: Alignment.center,
+                                    errorBuilder: (context, error, stackTrace) => Container(
+                                      width: 64,
+                                      height: 64,
+                                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                      alignment: Alignment.center,
+                                      child: const Icon(Icons.music_note_rounded),
+                                    ),
+                                  ),
                                 ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  song.channelTitle,
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        song.title,
+                                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        song.channelTitle,
+                                        style: Theme.of(context).textTheme.bodySmall,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline),
+                                  tooltip: 'Eliminar descarga',
+                                  onPressed: () async {
+                                    await downloadService.deleteVideo(song.videoId);
+                                    if (!context.mounted) return;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Canción eliminada de descargas.'),
+                                      ),
+                                    );
+                                  },
                                 ),
                               ],
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            icon: const Icon(Icons.delete_outline),
-                            tooltip: 'Eliminar descarga',
-                            onPressed: () async {
-                              await downloadService.deleteVideo(song.videoId);
-                              if (!context.mounted) return;
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Canción eliminada de descargas.'),
-                                ),
-                              );
-                            },
-                          ),
-                        ],
+                        ),
                       ),
                     ),
                   ),

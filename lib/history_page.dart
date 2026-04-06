@@ -64,7 +64,12 @@ class _HistoryPageState extends State<HistoryPage> {
             ),
             Expanded(
               child: ListView.builder(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 20),
+                padding: EdgeInsets.fromLTRB(
+                  12,
+                  8,
+                  12,
+                  _accountBottomOverlayReserve(context),
+                ),
                 itemCount: history.length,
                 itemBuilder: (context, index) {
                   final video = history[index];
@@ -77,6 +82,12 @@ class _HistoryPageState extends State<HistoryPage> {
       },
     );
   }
+
+  double _accountBottomOverlayReserve(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    const baseReserve = 108.0;
+    return baseReserve + bottomInset;
+  }
 }
 
 class _HistoryCard extends StatelessWidget {
@@ -86,66 +97,94 @@ class _HistoryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 2,
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: () {
-          Provider.of<VideoPlayerManager>(context, listen: false).play(video.videoId);
-        },
-        borderRadius: BorderRadius.circular(12),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.network(
-                  video.thumbnailUrl,
-                  width: 120,
-                  height: 67.5,
-                  fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) => Container(
-                    width: 120,
-                    height: 67.5,
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                    alignment: Alignment.center,
-                    child: const Icon(Icons.music_note_rounded),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2.0),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: Material(
+            color: Colors.white.withValues(alpha: 0.035),
+            child: InkWell(
+              onTap: () {
+                Provider.of<VideoPlayerManager>(context, listen: false).play(
+                  video.videoId,
+                  preferredThumbnailUrl: video.thumbnailUrl,
+                  preferredTitle: video.title,
+                  preferredArtist: video.channelTitle,
+                );
+              },
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    width: 0.6,
+                  ),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.white.withValues(alpha: 0.075),
+                      Colors.white.withValues(alpha: 0.02),
+                    ],
                   ),
                 ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
+                child: Row(
                   children: [
-                    Text(
-                      video.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontFamily: '.SF Pro Text',
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.1,
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10.0),
+                      child: Image.network(
+                        video.thumbnailUrl,
+                        width: 64,
+                        height: 64,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          width: 64,
+                          height: 64,
+                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                          alignment: Alignment.center,
+                          child: const Icon(Icons.music_note_rounded),
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      video.channelTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontFamily: '.SF Pro Text',
-                        fontSize: 13,
-                        color: Theme.of(context).textTheme.bodySmall?.color,
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            video.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.1,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            video.channelTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontSize: 13,
+                              color: Theme.of(context).textTheme.bodySmall?.color,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
-            ],
+            ),
           ),
         ),
       ),
