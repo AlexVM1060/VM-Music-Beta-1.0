@@ -23,18 +23,52 @@ class ArtworkSubjectCutoutService {
 
         if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
           try {
+            if (kDebugMode) {
+              debugPrint(
+                '[cutout] iOS native request start key=$cacheKey bytes=${sourceBytes.length} zoom=$viewportZoom',
+              );
+            }
             final native = await _nativeChannel.invokeMethod<Uint8List>(
               'extractSubjectCutout',
               payload,
             );
             if (native != null && native.isNotEmpty) {
-              return native;
+              final nativeUsable = _isLikelyUsefulCutout(native);
+              if (kDebugMode) {
+                debugPrint(
+                  '[cutout] iOS native success key=$cacheKey outBytes=${native.length} usable=$nativeUsable',
+                );
+              }
+              if (nativeUsable) {
+                return native;
+              }
+              if (kDebugMode) {
+                debugPrint('[cutout] iOS native unusable key=$cacheKey -> fallback dart');
+              }
+            }
+            if (kDebugMode) {
+              debugPrint('[cutout] iOS native empty result key=$cacheKey -> fallback dart');
+            }
+          } on MissingPluginException catch (e) {
+            if (kDebugMode) {
+              debugPrint('[cutout] iOS native missing plugin key=$cacheKey error=$e');
+            }
+          } on PlatformException catch (e) {
+            if (kDebugMode) {
+              debugPrint(
+                '[cutout] iOS native platform error key=$cacheKey code=${e.code} message=${e.message}',
+              );
             }
           } catch (_) {
-            // Fallback to Dart implementation when native Vision is unavailable.
+            if (kDebugMode) {
+              debugPrint('[cutout] iOS native unknown error key=$cacheKey -> fallback dart');
+            }
           }
         }
 
+        if (kDebugMode) {
+          debugPrint('[cutout] Dart fallback start key=$cacheKey bytes=${sourceBytes.length}');
+        }
         return compute(_buildCutoutWorker, payload);
       },
     );
@@ -55,7 +89,12 @@ Uint8List? _buildCutoutWorker(Map<String, Object> payload) {
   final _ = (payload['viewportZoom'] as num?)?.toDouble() ?? 1.0;
 
   final decoded = img.decodeImage(sourceBytes);
-  if (decoded == null) return null;
+  if (decoded == null) {
+    if (kDebugMode) {
+      debugPrint('[cutout] Dart decodeImage failed');
+    }
+    return null;
+  }
 
   // Usar imagen cruda completa para el recorte de sujeto.
   final src = decoded;
@@ -204,6 +243,27 @@ Uint8List? _buildCutoutWorker(Map<String, Object> payload) {
   }
 
   return Uint8List.fromList(img.encodePng(out, level: 6));
+}
+
+bool _isLikelyUsefulCutout(Uint8List pngBytes) {
+  final image = img.decodeImage(pngBytes);
+  if (image == null) return false;
+  final total = image.width * image.height;
+  if (total <= 0) return false;
+
+  var solid = 0;
+  for (var y = 0; y < image.height; y++) {
+    for (var x = 0; x < image.width; x++) {
+      final a = image.getPixel(x, y).a;
+      if (a > 20) solid++;
+    }
+  }
+  final ratio = solid / total;
+  if (kDebugMode) {
+    debugPrint('[cutout] native alpha coverage=${ratio.toStringAsFixed(3)}');
+  }
+  // Too tiny or almost full-frame masks are usually not visually useful in this UI.
+  return ratio >= 0.07 && ratio <= 0.84;
 }
 
 List<_ComponentStats> _extractComponents(Uint8List binary, Float32List saliency, int w, int h) {

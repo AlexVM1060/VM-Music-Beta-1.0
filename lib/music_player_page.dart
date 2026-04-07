@@ -2,10 +2,10 @@ import 'dart:async';
 import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' show FontFeature, ImageFilter;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:myapp/app_tab_state.dart';
 import 'package:myapp/models/video_history.dart';
@@ -2771,12 +2771,18 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
 
   Future<void> _resolveSubjectCutout() async {
     final raw = widget.url?.trim();
+    if (kDebugMode) {
+      debugPrint('[cutout] resolve start url=$raw');
+    }
     if (raw == null || raw.isEmpty) {
       if (mounted && _subjectCutoutBytes != null) {
         setState(() {
           _subjectCutoutBytes = null;
           _lastSubjectUrl = null;
         });
+      }
+      if (kDebugMode) {
+        debugPrint('[cutout] resolve abort empty url');
       }
       return;
     }
@@ -2785,10 +2791,20 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
 
     try {
       final bytes = await _loadImageBytes(raw);
-      if (!mounted || _lastSubjectUrl != raw || bytes == null || bytes.isEmpty) return;
+      if (kDebugMode) {
+        debugPrint('[cutout] source bytes loaded url=$raw bytes=${bytes?.length ?? 0}');
+      }
+      if (!mounted || _lastSubjectUrl != raw || bytes == null || bytes.isEmpty) {
+        if (kDebugMode) {
+          debugPrint(
+            '[cutout] resolve abort mounted=$mounted sameUrl=${_lastSubjectUrl == raw} hasBytes=${bytes?.isNotEmpty == true}',
+          );
+        }
+        return;
+      }
 
       final cutout = await ArtworkSubjectCutoutService.buildCutout(
-        cacheKey: 'v10:$raw:raw-source:clean-mask',
+        cacheKey: 'v11:$raw:native-validated',
         sourceBytes: bytes,
         viewportZoom: 1.0,
       );
@@ -2796,18 +2812,29 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
       setState(() {
         _subjectCutoutBytes = cutout;
       });
+      if (kDebugMode) {
+        debugPrint('[cutout] resolve done url=$raw outBytes=${cutout?.length ?? 0}');
+      }
     } catch (_) {
       if (!mounted || _lastSubjectUrl != raw) return;
       setState(() {
         _subjectCutoutBytes = null;
       });
+      if (kDebugMode) {
+        debugPrint('[cutout] resolve failed url=$raw');
+      }
     }
   }
 
   Future<Uint8List?> _loadImageBytes(String raw) async {
     if (raw.startsWith('/')) {
       final file = File(raw);
-      if (!await file.exists()) return null;
+      if (!await file.exists()) {
+        if (kDebugMode) {
+          debugPrint('[cutout] local file not found path=$raw');
+        }
+        return null;
+      }
       return file.readAsBytes();
     }
     final client = HttpClient();
@@ -2816,13 +2843,21 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
       final req = await client.getUrl(uri);
       req.headers.set(HttpHeaders.userAgentHeader, 'VMMusic/1.0 (Flutter)');
       final res = await req.close();
-      if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        if (kDebugMode) {
+          debugPrint('[cutout] http image status=${res.statusCode} url=$raw');
+        }
+        return null;
+      }
       final chunks = <int>[];
       await for (final c in res) {
         chunks.addAll(c);
       }
       return Uint8List.fromList(chunks);
     } catch (_) {
+      if (kDebugMode) {
+        debugPrint('[cutout] http image load exception url=$raw');
+      }
       return null;
     } finally {
       client.close(force: true);
