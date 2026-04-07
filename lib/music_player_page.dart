@@ -1105,6 +1105,7 @@ class _DefaultNowPlayingHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final motionEnergy = _estimateTrackMotionEnergy(manager.trackTitle, manager.trackArtist);
     return Column(
       key: key,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1129,6 +1130,7 @@ class _DefaultNowPlayingHero extends StatelessWidget {
               size: 310,
               animated: true,
               isPlaying: manager.isPlaying,
+              motionEnergy: motionEnergy,
             ),
           ),
         ),
@@ -1176,6 +1178,56 @@ class _DefaultNowPlayingHero extends StatelessWidget {
       ],
     );
   }
+}
+
+double _estimateTrackMotionEnergy(String? title, String? artist) {
+  final text = '${title ?? ''} ${artist ?? ''}'.toLowerCase();
+  var score = 1.0;
+
+  const highEnergyHints = <String>[
+    'remix',
+    'live',
+    'edm',
+    'hardstyle',
+    'phonk',
+    'trap',
+    'drill',
+    'dnb',
+    'techno',
+    'house',
+    'rock',
+    'metal',
+    'boosted',
+    'nightcore',
+    'sped up',
+  ];
+  const lowEnergyHints = <String>[
+    'acoustic',
+    'piano',
+    'ballad',
+    'slowed',
+    'reverb',
+    'instrumental',
+    'lofi',
+    'lo-fi',
+    'ambient',
+    'soft',
+    'calm',
+    'sleep',
+  ];
+
+  for (final hint in highEnergyHints) {
+    if (text.contains(hint)) score += 0.06;
+  }
+  for (final hint in lowEnergyHints) {
+    if (text.contains(hint)) score -= 0.07;
+  }
+
+  final exclamations = '!'.allMatches(text).length;
+  if (exclamations > 0) score += (exclamations * 0.02).clamp(0, 0.08);
+  if (text.contains('feat.') || text.contains(' ft ')) score += 0.03;
+
+  return score.clamp(0.78, 1.32);
 }
 
 class _AutoScrollText extends StatefulWidget {
@@ -1414,6 +1466,7 @@ class _CompactNowPlayingHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final motionEnergy = _estimateTrackMotionEnergy(manager.trackTitle, manager.trackArtist);
     return ClipRRect(
       key: key,
       borderRadius: BorderRadius.circular(18),
@@ -1445,6 +1498,7 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                   key: ValueKey('compact-artwork-${manager.trackThumbnailUrl ?? ''}'),
                   url: manager.trackThumbnailUrl,
                   size: 62,
+                  motionEnergy: motionEnergy,
                 ),
               ),
               const SizedBox(width: 12),
@@ -2431,6 +2485,7 @@ class _ArtworkImage extends StatefulWidget {
   final double size;
   final bool animated;
   final bool isPlaying;
+  final double motionEnergy;
 
   const _ArtworkImage({
     super.key,
@@ -2438,6 +2493,7 @@ class _ArtworkImage extends StatefulWidget {
     required this.size,
     this.animated = false,
     this.isPlaying = false,
+    this.motionEnergy = 1.0,
   });
 
   @override
@@ -2513,19 +2569,25 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
         builder: (context, _) {
           final turn = _motionController.value * math.pi * 2;
           final playFactor = widget.isPlaying ? 1.0 : 0.38;
+          final energy = widget.motionEnergy.clamp(0.78, 1.32);
+          final motionGain = playFactor * energy;
           final glowColor = _enhanceGlowColor(_dominantColor);
 
-          final dx = enableMotion ? math.sin(turn) * widget.size * 0.0105 * playFactor : 0.0;
-          final dy = enableMotion ? math.cos(turn * 2) * widget.size * 0.0090 * playFactor : 0.0;
-          final zoom = enableMotion ? 1.10 + (math.sin(turn) * 0.020 * playFactor) : 1.10;
-          final tilt = enableMotion ? math.sin(turn * 2) * 0.012 * playFactor : 0.0;
-          final warpX = enableMotion ? math.sin(turn * 3) * 0.018 * playFactor : 0.0;
-          final warpY = enableMotion ? math.cos(turn * 2) * 0.015 * playFactor : 0.0;
+          final dx = enableMotion ? math.sin(turn) * widget.size * 0.0105 * motionGain : 0.0;
+          final dy = enableMotion ? math.cos(turn * 2) * widget.size * 0.0090 * motionGain : 0.0;
+          final zoom = enableMotion ? 1.10 + (math.sin(turn) * 0.020 * motionGain) : 1.10;
+          final tilt = enableMotion ? math.sin(turn * 2) * 0.012 * motionGain : 0.0;
+          final warpX = enableMotion ? math.sin(turn * 3) * 0.018 * motionGain : 0.0;
+          final warpY = enableMotion ? math.cos(turn * 2) * 0.015 * motionGain : 0.0;
           final glow =
-              enableMotion ? (0.36 + (_pulseController.value * 0.34)) * (widget.isPlaying ? 1.0 : 0.56) : 0.0;
+              enableMotion
+                  ? (0.36 + (_pulseController.value * 0.34)) *
+                      (widget.isPlaying ? 1.0 : 0.56) *
+                      (0.86 + (energy - 0.78) * 0.42)
+                  : 0.0;
           final focusAlignment = Alignment(
-            enableMotion ? math.sin(turn) * 0.20 * playFactor : 0,
-            enableMotion ? math.cos(turn) * 0.16 * playFactor : 0,
+            enableMotion ? math.sin(turn) * 0.20 * motionGain : 0,
+            enableMotion ? math.cos(turn) * 0.16 * motionGain : 0,
           );
           final hasSubjectLayer = enableMotion && _subjectCutoutBytes != null;
           final subjectStyle = _subjectMotionStyleForUrl(widget.url);
@@ -2700,18 +2762,18 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
                               opacity: 0.94 * (widget.isPlaying ? 1.0 : 0.76),
                               child: Transform(
                                 alignment: subjectAlignment,
-                                transform: Matrix4.identity()
-                                  ..setEntry(3, 2, 0.0018)
-                                  ..rotateX(math.sin(turn * subjectRotXFreq) * subjectRotXAmp * playFactor)
-                                  ..rotateY(math.cos(turn * subjectRotYFreq) * subjectRotYAmp * playFactor),
-                                child: Transform.translate(
-                                  offset: Offset(
-                                    math.sin(turn * subjectMoveXFreq) * subjectMoveXAmp * playFactor,
-                                    math.cos(turn * subjectMoveYFreq) * subjectMoveYAmp * playFactor,
-                                  ),
-                                  child: Transform.scale(
-                                    scale: (subjectScaleBase * _subjectSizeMultiplier) +
-                                        (math.sin(turn * subjectScaleFreq) * subjectScaleAmp * playFactor),
+                        transform: Matrix4.identity()
+                          ..setEntry(3, 2, 0.0018)
+                          ..rotateX(math.sin(turn * subjectRotXFreq) * subjectRotXAmp * motionGain)
+                          ..rotateY(math.cos(turn * subjectRotYFreq) * subjectRotYAmp * motionGain),
+                        child: Transform.translate(
+                          offset: Offset(
+                            math.sin(turn * subjectMoveXFreq) * subjectMoveXAmp * motionGain,
+                            math.cos(turn * subjectMoveYFreq) * subjectMoveYAmp * motionGain,
+                          ),
+                          child: Transform.scale(
+                            scale: (subjectScaleBase * _subjectSizeMultiplier) +
+                                (math.sin(turn * subjectScaleFreq) * subjectScaleAmp * motionGain),
                                     child: ClipRect(
                                       child: Align(
                                         alignment: Alignment.center,
