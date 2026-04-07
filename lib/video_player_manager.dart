@@ -135,14 +135,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
-  static const String _ytResolverBaseUrl = String.fromEnvironment(
-    'YT_RESOLVER_BASE_URL',
-    defaultValue: '',
-  );
-  static const String _ytResolverApiKey = String.fromEnvironment(
-    'YT_RESOLVER_API_KEY',
-    defaultValue: '',
-  );
+  static const String _youtubeiPlayerEndpoint =
+      'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
   static const Map<String, String> _youtubeHeaders = {
     'User-Agent':
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
@@ -611,10 +605,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           );
         }
       }
-      if (!isLocalVideo) {
-        final backendSource = await _resolveDownloadSourceFromBackend(videoId);
-        if (backendSource != null) {
-          final played = await _attemptPlaybackFromDownloadSource(backendSource);
+      if (!isLocalVideo && e is RequestLimitExceededException) {
+        final altSource = await _resolveDownloadSourceViaYoutubei(videoId);
+        if (altSource != null) {
+          final played = await _attemptPlaybackFromDownloadSource(altSource);
           if (played) {
             _errorMessage = null;
             _syncSystemNowPlaying();
@@ -719,8 +713,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       return null;
+    } on RequestLimitExceededException {
+      return _resolveDownloadSourceViaYoutubei(videoId);
     } catch (_) {
-      return _resolveDownloadSourceFromBackend(videoId);
+      return null;
     }
   }
 
@@ -751,56 +747,106 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       // Fallback final: regresar mejor esfuerzo sin probe.
       return resolveDownloadSourceSilently(videoId);
+    } on RequestLimitExceededException {
+      return _resolveDownloadSourceViaYoutubei(videoId);
     } catch (_) {
-      return _resolveDownloadSourceFromBackend(videoId);
+      return null;
     }
   }
 
-  Future<DownloadSourceInfo?> _resolveDownloadSourceFromBackend(String videoId) async {
-    final base = _ytResolverBaseUrl.trim();
-    if (base.isEmpty) return null;
-
-    final normalizedBase = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
-    final uri = Uri.parse('$normalizedBase/resolve').replace(
-      queryParameters: {'videoId': videoId},
-    );
-
+  Future<DownloadSourceInfo?> _resolveDownloadSourceViaYoutubei(String videoId) async {
     final client = HttpClient();
     try {
-      final req = await client.getUrl(uri);
-      req.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      if (_ytResolverApiKey.trim().isNotEmpty) {
-        req.headers.set('x-api-key', _ytResolverApiKey.trim());
-      }
-      final res = await req.close();
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        return null;
-      }
+      final candidates = <Map<String, Object>>[
+        {
+          'name': 'WEB',
+          'version': '2.20240224.11.00',
+          'ua':
+              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        },
+        {
+          'name': 'ANDROID',
+          'version': '19.09.37',
+          'ua': 'com.google.android.youtube/19.09.37 (Linux; U; Android 14)',
+        },
+        {
+          'name': 'IOS',
+          'version': '19.09.3',
+          'ua': 'com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_3 like Mac OS X)',
+        },
+      ];
 
-      final body = await utf8.decoder.bind(res).join();
-      final raw = jsonDecode(body);
-      if (raw is! Map<String, dynamic>) return null;
+      for (final clientDef in candidates) {
+        final req = await client.postUrl(Uri.parse(_youtubeiPlayerEndpoint));
+        req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+        req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+        req.headers.set(HttpHeaders.userAgentHeader, clientDef['ua'] as String);
 
-      String? sourceUrl = raw['sourceUrl']?.toString();
-      var isVideoSource = raw['isVideoSource'] == true;
+        final payload = <String, Object>{
+          'videoId': videoId,
+          'context': {
+            'client': {
+              'clientName': clientDef['name'] as String,
+              'clientVersion': clientDef['version'] as String,
+            },
+          },
+          'contentCheckOk': true,
+          'racyCheckOk': true,
+        };
+        req.add(utf8.encode(jsonEncode(payload)));
 
-      if (sourceUrl == null || sourceUrl.trim().isEmpty) {
-        final audio = raw['audio'];
-        final muxed = raw['muxed'];
-        if (audio is Map && audio['url'] != null) {
-          sourceUrl = audio['url'].toString();
-          isVideoSource = false;
-        } else if (muxed is Map && muxed['url'] != null) {
-          sourceUrl = muxed['url'].toString();
-          isVideoSource = true;
+        final res = await req.close();
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          continue;
+        }
+        final body = await utf8.decoder.bind(res).join();
+        final raw = jsonDecode(body);
+        if (raw is! Map<String, dynamic>) continue;
+
+        final streamingData = raw['streamingData'];
+        if (streamingData is! Map<String, dynamic>) continue;
+
+        String? pickedAudio;
+        String? pickedMuxed;
+
+        final adaptive = streamingData['adaptiveFormats'];
+        if (adaptive is List) {
+          final audioFormats = adaptive.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).where((f) {
+            final mime = (f['mimeType']?.toString() ?? '').toLowerCase();
+            return mime.contains('audio/') && (f['url']?.toString().isNotEmpty ?? false);
+          }).toList()
+            ..sort((a, b) => (b['bitrate'] as num? ?? 0).compareTo(a['bitrate'] as num? ?? 0));
+          if (audioFormats.isNotEmpty) {
+            pickedAudio = audioFormats.first['url']?.toString();
+          }
+        }
+
+        final formats = streamingData['formats'];
+        if (formats is List) {
+          final muxedFormats = formats.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).where((f) {
+            final hasUrl = f['url']?.toString().isNotEmpty ?? false;
+            final mime = (f['mimeType']?.toString() ?? '').toLowerCase();
+            return hasUrl && (mime.contains('video/') || mime.contains('mp4'));
+          }).toList()
+            ..sort((a, b) => (b['bitrate'] as num? ?? 0).compareTo(a['bitrate'] as num? ?? 0));
+          if (muxedFormats.isNotEmpty) {
+            pickedMuxed = muxedFormats.first['url']?.toString();
+          }
+        }
+
+        final hlsManifest = streamingData['hlsManifestUrl']?.toString();
+        if (pickedAudio != null && pickedAudio.trim().isNotEmpty) {
+          return DownloadSourceInfo(sourceUrl: pickedAudio.trim(), isVideoSource: false);
+        }
+        if (pickedMuxed != null && pickedMuxed.trim().isNotEmpty) {
+          return DownloadSourceInfo(sourceUrl: pickedMuxed.trim(), isVideoSource: true);
+        }
+        if (hlsManifest != null && hlsManifest.trim().isNotEmpty) {
+          return DownloadSourceInfo(sourceUrl: hlsManifest.trim(), isVideoSource: true);
         }
       }
 
-      if (sourceUrl == null || sourceUrl.trim().isEmpty) return null;
-      return DownloadSourceInfo(
-        sourceUrl: sourceUrl.trim(),
-        isVideoSource: isVideoSource,
-      );
+      return null;
     } catch (_) {
       return null;
     } finally {
