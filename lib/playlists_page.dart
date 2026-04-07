@@ -1,10 +1,14 @@
 import 'dart:ui' show ImageFilter;
+import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/playlist.dart';
+import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 
 class PlaylistsPage extends StatefulWidget {
@@ -84,6 +88,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final downloadService = context.watch<DownloadService>();
     return FutureBuilder<List<Playlist>>(
       future: _playlistsFuture,
       builder: (context, snapshot) {
@@ -95,8 +100,15 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
         }
 
         final playlists = snapshot.data ?? const <Playlist>[];
-        return Column(
-          children: [
+        return FutureBuilder<List<DownloadedVideo>>(
+          future: downloadService.getDownloadedVideos(),
+          builder: (context, downloadedSnapshot) {
+            final downloadedVideos = downloadedSnapshot.data ?? const <DownloadedVideo>[];
+            final downloadedById = <String, DownloadedVideo>{
+              for (final item in downloadedVideos) item.videoId: item,
+            };
+            return Column(
+              children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
               child: Align(
@@ -162,9 +174,19 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                         final playlist = playlists[index];
                         final isFavorites =
                             PlaylistService.isFavoritesPlaylistName(playlist.name);
-                        final cover = playlist.videos.isNotEmpty
-                            ? playlist.videos.first.thumbnailUrl
-                            : null;
+                        String? cover;
+                        String? localCoverPath;
+                        for (final video in playlist.videos) {
+                          cover ??= video.thumbnailUrl;
+                          final localPath = downloadedById[video.videoId]?.localThumbnailPath;
+                          if (localPath != null &&
+                              localPath.isNotEmpty &&
+                              File(localPath).existsSync()) {
+                            localCoverPath = localPath;
+                            break;
+                          }
+                        }
+                        final hasLocalCover = localCoverPath != null;
                         return Padding(
                           padding: const EdgeInsets.symmetric(vertical: 2.0),
                           child: ClipRRect(
@@ -211,7 +233,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                             child: Stack(
                                               fit: StackFit.expand,
                                               children: [
-                                                cover == null || cover.isEmpty
+                                                (cover == null || cover.isEmpty) && !hasLocalCover
                                                     ? Container(
                                                         color: Theme.of(context)
                                                             .colorScheme
@@ -223,23 +245,51 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                                               : CupertinoIcons.music_note_list,
                                                         ),
                                                       )
-                                                    : Image.network(
-                                                        cover,
-                                                        fit: BoxFit.cover,
-                                                        alignment: Alignment.center,
-                                                        errorBuilder: (context, error, stackTrace) =>
-                                                            Container(
-                                                          color: Theme.of(context)
-                                                              .colorScheme
-                                                              .surfaceContainerHighest,
-                                                          alignment: Alignment.center,
-                                                          child: Icon(
-                                                            isFavorites
-                                                                ? CupertinoIcons.star_fill
-                                                                : CupertinoIcons.music_note_list,
+                                                    : hasLocalCover
+                                                        ? SquareThumbnail.file(
+                                                            filePath: localCoverPath,
+                                                            size: 74,
+                                                            borderRadius: 0,
+                                                            fallback:
+                                                                cover == null || cover.isEmpty
+                                                                    ? Container(
+                                                                        color: Theme.of(context)
+                                                                            .colorScheme
+                                                                            .surfaceContainerHighest,
+                                                                        alignment: Alignment.center,
+                                                                        child: Icon(
+                                                                          isFavorites
+                                                                              ? CupertinoIcons.star_fill
+                                                                              : CupertinoIcons.music_note_list,
+                                                                        ),
+                                                                      )
+                                                                    : SquareThumbnail.network(
+                                                                        imageUrl: cover,
+                                                                        size: 74,
+                                                                        borderRadius: 0,
+                                                                        fallback: Container(
+                                                                          color: Theme.of(context)
+                                                                              .colorScheme
+                                                                              .surfaceContainerHighest,
+                                                                        ),
+                                                                      ),
+                                                          )
+                                                        : SquareThumbnail.network(
+                                                            imageUrl: cover!,
+                                                            size: 74,
+                                                            borderRadius: 0,
+                                                            fallback: Container(
+                                                              color: Theme.of(context)
+                                                                  .colorScheme
+                                                                  .surfaceContainerHighest,
+                                                              alignment: Alignment.center,
+                                                              child: Icon(
+                                                                isFavorites
+                                                                    ? CupertinoIcons.star_fill
+                                                                    : CupertinoIcons.music_note_list,
+                                                              ),
+                                                            ),
                                                           ),
-                                                        ),
-                                                      ),
                                                 if (isFavorites)
                                                   Align(
                                                     alignment: Alignment.topRight,
@@ -310,7 +360,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                       },
                     ),
             ),
-          ],
+              ],
+            );
+          },
         );
       },
     );

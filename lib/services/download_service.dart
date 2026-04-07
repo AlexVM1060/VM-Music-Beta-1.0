@@ -8,6 +8,7 @@ import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -811,34 +812,43 @@ class DownloadService with ChangeNotifier {
     required String videoId,
     required String thumbnailUrl,
   }) async {
-    final url = thumbnailUrl.trim();
-    if (url.isEmpty) return null;
+    final urls = buildThumbnailCandidates(
+      videoId: videoId,
+      thumbnailUrl: thumbnailUrl.trim(),
+    );
+    if (urls.isEmpty) return null;
 
     try {
       final appDir = await getApplicationDocumentsDirectory();
-      final ext = _inferThumbnailExtension(url);
-      final targetPath = '${appDir.path}/${videoId}_thumb.$ext';
-      final file = File(targetPath);
-      if (await file.exists()) {
-        await file.delete();
+      for (final url in urls) {
+        final ext = _inferThumbnailExtension(url);
+        final targetPath = '${appDir.path}/${videoId}_thumb.$ext';
+        final file = File(targetPath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+        try {
+          await _dio.download(
+            url,
+            targetPath,
+            options: Options(
+              headers: _youtubeHeaders,
+              followRedirects: true,
+              receiveTimeout: const Duration(seconds: 25),
+              sendTimeout: const Duration(seconds: 10),
+            ),
+          );
+          final downloaded = File(targetPath);
+          if (await downloaded.exists() && await downloaded.length() > 0) {
+            return targetPath;
+          }
+        } catch (_) {
+          if (await file.exists()) {
+            await file.delete();
+          }
+        }
       }
-
-      await _dio.download(
-        url,
-        targetPath,
-        options: Options(
-          headers: _youtubeHeaders,
-          followRedirects: true,
-          receiveTimeout: const Duration(seconds: 25),
-          sendTimeout: const Duration(seconds: 10),
-        ),
-      );
-
-      final downloaded = File(targetPath);
-      if (!await downloaded.exists() || await downloaded.length() == 0) {
-        return null;
-      }
-      return targetPath;
+      return null;
     } catch (_) {
       return null;
     }

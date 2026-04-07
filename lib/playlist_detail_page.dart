@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
@@ -9,6 +10,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 import 'package:collection/collection.dart';
 
@@ -84,6 +86,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             return const Center(child: CircularProgressIndicator());
           }
           final downloadedVideos = snapshot.data!;
+          final downloadedById = <String, DownloadedVideo>{
+            for (final item in downloadedVideos) item.videoId: item,
+          };
           final videos = _currentPlaylist.videos;
           final displayVideos = _isFavoritesPlaylist
               ? videos.reversed.toList(growable: false)
@@ -95,7 +100,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             itemCount: isEmpty ? 3 : displayVideos.length + 2,
             itemBuilder: (context, index) {
               if (index == 0) {
-                return _buildPlaylistCoverHeader(context);
+                return _buildPlaylistCoverHeader(
+                  context,
+                  downloadedById: downloadedById,
+                );
               }
 
               if (index == 1) {
@@ -121,6 +129,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               final downloadedVideo = downloadedVideos.firstWhereOrNull(
                 (v) => v.videoId == video.videoId,
               );
+              final localThumbPath = downloadedVideo?.localThumbnailPath;
+              final hasLocalThumb = localThumbPath != null &&
+                  localThumbPath.isNotEmpty &&
+                  File(localThumbPath).existsSync();
 
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
@@ -181,16 +193,29 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
                           child: Row(
                             children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: Image.network(
-                                  video.thumbnailUrl,
-                                  width: 64,
-                                  height: 64,
-                                  fit: BoxFit.cover,
-                                  alignment: Alignment.center,
-                                ),
-                              ),
+                              hasLocalThumb
+                                  ? SquareThumbnail.file(
+                                      filePath: localThumbPath,
+                                      size: 64,
+                                      borderRadius: 10,
+                                      zoom: 1.34,
+                                      fallback: Container(
+                                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                        alignment: Alignment.center,
+                                        child: const Icon(CupertinoIcons.music_note),
+                                      ),
+                                    )
+                                  : SquareThumbnail.network(
+                                      imageUrl: video.thumbnailUrl,
+                                      size: 64,
+                                      borderRadius: 10,
+                                      zoom: 1,
+                                      fallback: Container(
+                                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                        alignment: Alignment.center,
+                                        child: const Icon(CupertinoIcons.music_note),
+                                      ),
+                                    ),
                               const SizedBox(width: 12),
                               Expanded(
                                 child: Column(
@@ -401,12 +426,25 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     );
   }
 
-  Widget _buildPlaylistCoverHeader(BuildContext context) {
+  Widget _buildPlaylistCoverHeader(
+    BuildContext context, {
+    required Map<String, DownloadedVideo> downloadedById,
+  }) {
     final fallback = Theme.of(context).colorScheme.surfaceContainerHighest;
-    final cover = _currentPlaylist.videos.isNotEmpty
-        ? _currentPlaylist.videos.first.thumbnailUrl
-        : null;
-    final coverSize = (MediaQuery.of(context).size.width * 0.54).clamp(170.0, 228.0);
+    String? cover;
+    String? localCoverPath;
+    for (final video in _currentPlaylist.videos) {
+      cover ??= video.thumbnailUrl;
+      final localPath = downloadedById[video.videoId]?.localThumbnailPath;
+      if (localPath != null &&
+          localPath.isNotEmpty &&
+          File(localPath).existsSync()) {
+        localCoverPath = localPath;
+        break;
+      }
+    }
+    final hasLocalCover = localCoverPath != null;
+    final coverSize = (MediaQuery.of(context).size.width * 0.54).clamp(170.0, 228.0).toDouble();
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
       child: Column(
@@ -428,11 +466,37 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    if (cover != null && cover.isNotEmpty)
-                      Image.network(
-                        cover,
-                        fit: BoxFit.cover,
-                        alignment: Alignment.center,
+                    if (hasLocalCover)
+                      SquareThumbnail.file(
+                        filePath: localCoverPath,
+                        size: coverSize,
+                        borderRadius: 0,
+                        zoom: 1.34,
+                        fallback: Container(
+                          color: fallback,
+                          alignment: Alignment.center,
+                          child: const Icon(
+                            CupertinoIcons.music_note_list,
+                            size: 54,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      )
+                    else if (cover != null && cover.isNotEmpty)
+                      SquareThumbnail.network(
+                        imageUrl: cover,
+                        size: coverSize,
+                        borderRadius: 0,
+                        zoom: 1.34,
+                        fallback: Container(
+                          color: fallback,
+                          alignment: Alignment.center,
+                          child: const Icon(
+                            CupertinoIcons.music_note_list,
+                            size: 54,
+                            color: Colors.white70,
+                          ),
+                        ),
                       )
                     else
                       Container(

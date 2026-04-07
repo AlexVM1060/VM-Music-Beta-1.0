@@ -1,15 +1,19 @@
 import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:myapp/audio_handler.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
+import 'package:myapp/services/now_playing_artwork_service.dart';
+import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
@@ -108,6 +112,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String _queueTitle = 'Siguiente';
   int _queueEpoch = 0;
   final List<PlaybackQueueItem> _playbackHistory = [];
+  final Set<String> _sessionPlayedVideoIds = <String>{};
   final Map<String, StreamManifest> _manifestCache = {};
   final Map<String, Video> _videoCache = {};
   final Map<String, Future<StreamManifest>> _manifestRequests = {};
@@ -116,7 +121,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, Future<List<PlaybackQueueItem>>> _relatedQueueRequests = {};
   final Map<String, String> _lyricsCache = {};
   final Map<String, List<SyncedLyricLine>> _syncedLyricsCache = {};
+  final Map<String, String> _searchThumbnailOverrides = {};
+  final NowPlayingArtworkService _nowPlayingArtworkService = NowPlayingArtworkService();
+  final Map<String, Uri> _systemArtworkByVideoId = {};
+  final Map<String, String> _systemArtworkSourceByVideoId = {};
+  final MyAudioHandler? _appAudioHandler;
+  DateTime _lastSystemPlaybackSync = DateTime.fromMillisecondsSinceEpoch(0);
+  int _nowPlayingArtworkEpoch = 0;
+  DateTime? _lastYoutubeRequestAt;
   int _lyricsEpoch = 0;
+  static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
   static const Map<String, String> _youtubeHeaders = {
     'User-Agent':
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
@@ -125,21 +139,27 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     'Referer': 'https://www.youtube.com/',
   };
 
-  VideoPlayerManager(this._audioHandler) {
+  VideoPlayerManager(this._audioHandler)
+      : _appAudioHandler = _audioHandler is MyAudioHandler ? _audioHandler : null {
+    _bindSystemMediaControls();
     WidgetsBinding.instance.addObserver(this);
     _positionSub = _player.positionStream.listen((position) {
       _position = position;
+      _syncSystemPlaybackState();
       notifyListeners();
     });
 
     _bufferedSub = _player.bufferedPositionStream.listen((buffered) {
       _bufferedPosition = buffered;
+      _syncSystemPlaybackState();
       notifyListeners();
     });
 
     _durationSub = _player.durationStream.listen((duration) {
       if (duration != null) {
         _trackDuration = duration;
+        _syncSystemNowPlaying();
+        _syncSystemPlaybackState(force: true);
         notifyListeners();
       }
     });
@@ -152,6 +172,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _isPlaying = false;
         _onTrackCompleted();
       }
+      _syncSystemPlaybackState(force: true);
       notifyListeners();
     });
   }
@@ -205,6 +226,172 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  void _bindSystemMediaControls() {
+    _appAudioHandler?.bindCallbacks(
+      onPlayRequested: () async {
+        if (!_isPlaying) {
+          await togglePlayPause();
+        }
+      },
+      onPauseRequested: () async {
+        if (_isPlaying) {
+          await togglePlayPause();
+        }
+      },
+      onSkipNextRequested: () async {
+        await playNextInQueue();
+      },
+      onSkipPreviousRequested: () async {
+        await playPreviousInQueue();
+      },
+      onSeekRequested: (position) async {
+        await seekTo(position);
+      },
+      onStopRequested: () async {
+        await close();
+      },
+    );
+  }
+
+  Uri? _buildArtUri(String? rawThumb) {
+    if (rawThumb == null || rawThumb.trim().isEmpty) return null;
+    final value = rawThumb.trim();
+    if (value.startsWith('/')) {
+      return Uri.file(value);
+    }
+    return Uri.tryParse(value);
+  }
+
+  Uri? _cachedSystemArtUri({
+    required String videoId,
+    required String? thumbnailSource,
+  }) {
+    final source = thumbnailSource?.trim() ?? '';
+    if (source.isEmpty) return null;
+    final storedSource = _systemArtworkSourceByVideoId[videoId];
+    if (storedSource == source) {
+      return _systemArtworkByVideoId[videoId];
+    }
+    _systemArtworkByVideoId.remove(videoId);
+    _systemArtworkSourceByVideoId.remove(videoId);
+    return null;
+  }
+
+  Future<Uri?> _prepareSystemArtwork({
+    required String videoId,
+    required String? thumbnailSource,
+  }) async {
+    final source = thumbnailSource?.trim() ?? '';
+    if (videoId.trim().isEmpty || source.isEmpty) return null;
+    final cached = _cachedSystemArtUri(
+      videoId: videoId,
+      thumbnailSource: source,
+    );
+    if (cached != null) return cached;
+    final processed = await _nowPlayingArtworkService.resolveNowPlayingArtUri(
+      videoId: videoId,
+      thumbnailSource: source,
+    );
+    if (processed != null) {
+      _systemArtworkByVideoId[videoId] = processed;
+      _systemArtworkSourceByVideoId[videoId] = source;
+    }
+    return processed;
+  }
+
+  Future<void> _precacheQueueArtwork(Iterable<PlaybackQueueItem> items) async {
+    for (final item in items) {
+      try {
+        await _prepareSystemArtwork(
+          videoId: item.videoId,
+          thumbnailSource: item.thumbnailUrl,
+        );
+      } catch (_) {
+        // Best effort.
+      }
+    }
+  }
+
+  void _syncSystemNowPlaying() {
+    final handler = _appAudioHandler;
+    if (handler == null) return;
+    final videoId = _currentVideoId;
+    final title = (_trackTitle ?? '').trim();
+    final artist = (_trackArtist ?? '').trim();
+    final thumb = _trackThumbnailUrl;
+    if (videoId == null || videoId.isEmpty || title.isEmpty) return;
+    final fallbackArtUri = _buildArtUri(thumb);
+    final cachedArtUri = _cachedSystemArtUri(
+      videoId: videoId,
+      thumbnailSource: thumb,
+    );
+    final initialArtUri = cachedArtUri ?? fallbackArtUri;
+    handler.syncNowPlaying(
+      id: videoId,
+      title: title,
+      artist: artist.isEmpty ? 'Artista desconocido' : artist,
+      artUri: initialArtUri,
+      duration: _trackDuration > Duration.zero ? _trackDuration : null,
+      extras: {
+        'isLocal': _isLocal,
+      },
+    );
+
+    if (thumb == null || thumb.trim().isEmpty) return;
+    final requestEpoch = ++_nowPlayingArtworkEpoch;
+    unawaited(() async {
+      final processedUri = await _nowPlayingArtworkService.resolveNowPlayingArtUri(
+        videoId: videoId,
+        thumbnailSource: thumb,
+      );
+      if (processedUri == null) return;
+      if (requestEpoch != _nowPlayingArtworkEpoch) return;
+      if (_currentVideoId != videoId) return;
+      if ((_trackThumbnailUrl ?? '').trim() != thumb.trim()) return;
+      _systemArtworkByVideoId[videoId] = processedUri;
+      _systemArtworkSourceByVideoId[videoId] = thumb.trim();
+      if (initialArtUri?.toString() == processedUri.toString()) return;
+      handler.syncNowPlaying(
+        id: videoId,
+        title: title,
+        artist: artist.isEmpty ? 'Artista desconocido' : artist,
+        artUri: processedUri,
+        duration: _trackDuration > Duration.zero ? _trackDuration : null,
+        extras: {
+          'isLocal': _isLocal,
+        },
+      );
+    }());
+  }
+
+  void _syncSystemPlaybackState({bool force = false}) {
+    final handler = _appAudioHandler;
+    if (handler == null) return;
+    final now = DateTime.now();
+    if (!force && now.difference(_lastSystemPlaybackSync) < const Duration(milliseconds: 700)) {
+      return;
+    }
+    _lastSystemPlaybackSync = now;
+    handler.syncPlaybackState(
+      playing: _isPlaying,
+      buffering: _isBuffering || _isLoading,
+      position: _position,
+      bufferedPosition: _bufferedPosition,
+      speed: _isPlaying ? 1.0 : 0.0,
+    );
+  }
+
+  void _clearSystemNowPlaying() {
+    _nowPlayingArtworkEpoch++;
+    _appAudioHandler?.clearNowPlaying();
+    _appAudioHandler?.syncStopped();
+  }
+
+  void registerSearchThumbnail(String videoId, String? thumbnailUrl) {
+    if (thumbnailUrl == null || thumbnailUrl.trim().isEmpty) return;
+    _searchThumbnailOverrides[videoId] = thumbnailUrl.trim();
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
@@ -252,16 +439,33 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         ? preferredArtist.trim()
         : null;
     _trackDuration = preferredDuration ?? Duration.zero;
+    final effectivePreferredThumbnail =
+        (preferredThumbnailUrl != null && preferredThumbnailUrl.trim().isNotEmpty)
+        ? preferredThumbnailUrl.trim()
+        : _searchThumbnailOverrides[videoId];
+    if (effectivePreferredThumbnail != null && effectivePreferredThumbnail.isNotEmpty) {
+      _searchThumbnailOverrides[videoId] = effectivePreferredThumbnail;
+    }
     _trackThumbnailUrl = null;
-    if (preferredThumbnailUrl != null && preferredThumbnailUrl.isNotEmpty) {
-      _trackThumbnailUrl = preferredThumbnailUrl;
+    if (effectivePreferredThumbnail != null && effectivePreferredThumbnail.isNotEmpty) {
+      _trackThumbnailUrl = effectivePreferredThumbnail;
     }
     _resetLyricsState();
+    _syncSystemNowPlaying();
+    _syncSystemPlaybackState(force: true);
     notifyListeners();
 
     try {
+      final shouldFetchVideoMetadata =
+          _autoplayEnabled ||
+          _trackTitle == null ||
+          _trackArtist == null ||
+          _trackThumbnailUrl == null ||
+          _trackDuration == Duration.zero;
       final manifestFuture = _getManifestWithRetry(videoId);
-      final videoFuture = _getVideoWithRetry(videoId);
+      final Future<Video>? videoFuture = shouldFetchVideoMetadata
+          ? _getVideoWithRetry(videoId)
+          : null;
       final manifest = await manifestFuture;
 
       final audioStreams = manifest.audioOnly.toList();
@@ -324,11 +528,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _clearQueueForAutoplayDisabled();
       }
 
+      _sessionPlayedVideoIds.add(videoId);
+
       // Metadata/cola/historial en segundo plano para no bloquear inicio de reproducción.
       unawaited(() async {
         Video? video;
         try {
-          video = await videoFuture.timeout(const Duration(seconds: 6));
+          if (videoFuture != null) {
+            video = await videoFuture.timeout(const Duration(seconds: 6));
+          }
         } catch (e, s) {
           log('No se pudo resolver metadata de video a tiempo', error: e, stackTrace: s);
         }
@@ -338,11 +546,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         if (video != null) {
           _trackTitle = video.title;
           _trackThumbnailUrl =
-              (preferredThumbnailUrl != null && preferredThumbnailUrl.isNotEmpty)
-                  ? preferredThumbnailUrl
-                  : video.thumbnails.highResUrl;
+              (effectivePreferredThumbnail != null && effectivePreferredThumbnail.isNotEmpty)
+                  ? effectivePreferredThumbnail
+                  : bestThumbnailForVideo(video);
           _trackArtist = video.author;
           _trackDuration = video.duration ?? Duration.zero;
+          _syncSystemNowPlaying();
+          _syncSystemPlaybackState(force: true);
           notifyListeners();
         }
 
@@ -365,8 +575,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _isPlaying = false;
       _isBuffering = false;
       await _player.stop();
+      _syncSystemPlaybackState(force: true);
     } finally {
       _isLoading = false;
+      _syncSystemPlaybackState(force: true);
       notifyListeners();
     }
   }
@@ -552,6 +764,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           currentVideoId: key,
           primaryArtist: video.author,
           historyProfile: _emptyHistoryProfile,
+          relatedArtistHints: const [],
         );
         // Fast-path: con related suficiente ya no hacemos más requests.
         if (fastQueue.length >= 18) return fastQueue;
@@ -559,27 +772,62 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       final historyProfile = await _buildQueueHistoryProfile(primaryArtist: video.author);
+      final similarArtists = _buildSimilarArtistCandidates(
+        primaryArtist: video.author,
+        currentTitle: video.title,
+        relatedVideos: related ?? const [],
+      );
 
       // Búsqueda base por artista + título.
-      final combinedQuery = _buildRecommendationQuery(video.author, video.title);
+      final normalizedPrimaryArtist = _normalizeArtistName(video.author);
       final batchedSearches = <Future<List<Video>>>[
-        _safeSearchVideos(combinedQuery, limit: 24),
+        _searchTopicChannelUploads(video.author, limit: 28),
+        _safeSearchVideos('${video.author} topic', limit: 14, onlyTopic: true),
       ];
 
       // Refuerzo por historial: artistas más escuchados.
-      for (final artist in historyProfile.topArtists.take(1)) {
-        batchedSearches.add(_safeSearchVideos('$artist topic', limit: 12));
-        batchedSearches.add(_safeSearchVideos('$artist official audio', limit: 12));
+      for (final artist in similarArtists.take(6)) {
+        if (_normalizeArtistName(artist) == normalizedPrimaryArtist) continue;
+        batchedSearches.add(_searchTopicChannelUploads(artist, limit: 20));
+        batchedSearches.add(_safeSearchVideos('$artist topic', limit: 12, onlyTopic: true));
       }
+      batchedSearches.add(_pickRandomHistoryArtistVideos(historyProfile));
       final batchResults = await Future.wait(batchedSearches);
       for (final batch in batchResults) {
         candidates.addAll(batch);
       }
 
-      // Fallback final: solo título si no hay suficientes candidatos.
-      if (candidates.length < 8) {
-        final titleQuery = _sanitizeSearchQuery(video.title);
-        candidates.addAll(await _safeSearchVideos(titleQuery, limit: 20));
+      // Fallback: autogenerados de YouTube (sin videos/lyrics), usando artista actual y similares.
+      if (candidates.length < 12) {
+        final seenAutoArtists = <String>{};
+        final autoQueries = <Future<List<Video>>>[];
+        final fallbackArtists = <String>[
+          video.author,
+          ...similarArtists.take(8),
+          ...historyProfile.topArtists.take(2),
+        ];
+        for (final artist in fallbackArtists) {
+          final normalized = _normalizeArtistName(artist);
+          if (normalized.isEmpty || !seenAutoArtists.add(normalized)) continue;
+          autoQueries.add(
+            _safeSearchVideos(
+              '$artist provided to youtube by',
+              limit: 14,
+              onlyAutoGenerated: true,
+            ),
+          );
+          autoQueries.add(
+            _safeSearchVideos(
+              '$artist auto-generated by youtube',
+              limit: 14,
+              onlyAutoGenerated: true,
+            ),
+          );
+        }
+        final autoBatches = await Future.wait(autoQueries);
+        for (final batch in autoBatches) {
+          candidates.addAll(batch);
+        }
       }
 
       return _buildSmartQueue(
@@ -587,6 +835,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         currentVideoId: key,
         primaryArtist: video.author,
         historyProfile: historyProfile,
+        relatedArtistHints: similarArtists,
       );
     }();
 
@@ -607,26 +856,102 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required String currentVideoId,
     required String primaryArtist,
     required _QueueHistoryProfile historyProfile,
+    required List<String> relatedArtistHints,
   }) {
     final normalizedPrimaryArtist = primaryArtist.toLowerCase().trim();
+    final normalizedPrimary = _normalizeArtistName(primaryArtist);
+    final similarArtists = relatedArtistHints
+        .map(_normalizeArtistName)
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    similarArtists.remove(normalizedPrimary);
+    final historyArtists = historyProfile.topArtists
+        .map(_normalizeArtistName)
+        .where((value) => value.isNotEmpty && value != normalizedPrimary && !similarArtists.contains(value))
+        .take(2)
+        .toSet();
+    final allowedArtists = <String>{
+      normalizedPrimary,
+      ...similarArtists,
+      ...historyArtists,
+    }..removeWhere((value) => value.isEmpty);
     final filtered = source
         .where((item) => item.id.value != currentVideoId)
-        .where(_looksLikeMusicVideo)
+        .where((item) => !_sessionPlayedVideoIds.contains(item.id.value))
+        .where(_isPureYoutubeMusicAudio)
+        .where((item) {
+          if (allowedArtists.isEmpty) return true;
+          final author = _normalizeArtistName(item.author);
+          if (author.isEmpty) return false;
+          for (final artist in allowedArtists) {
+            if (author.contains(artist) || artist.contains(author)) return true;
+          }
+          return false;
+        })
         .toList();
 
-    filtered.sort((a, b) {
-      final scoreA = _recommendationScore(a, normalizedPrimaryArtist, historyProfile);
-      final scoreB = _recommendationScore(b, normalizedPrimaryArtist, historyProfile);
-      return scoreB.compareTo(scoreA);
-    });
+    final tier0 = <Video>[];
+    final tier1 = <Video>[];
+    final tier2 = <Video>[];
+    final tier3 = <Video>[];
+    for (final item in filtered) {
+      final tier = _artistPriorityTier(
+        author: item.author,
+        normalizedPrimary: normalizedPrimary,
+        similarArtists: similarArtists,
+        historyArtists: historyArtists,
+      );
+      if (tier == 0) {
+        tier0.add(item);
+      } else if (tier == 1) {
+        tier1.add(item);
+      } else if (tier == 2) {
+        tier2.add(item);
+      } else {
+        tier3.add(item);
+      }
+    }
+
+    void sortByScore(List<Video> list) {
+      list.sort((a, b) {
+        final scoreA = _recommendationScore(a, normalizedPrimaryArtist, historyProfile);
+        final scoreB = _recommendationScore(b, normalizedPrimaryArtist, historyProfile);
+        return scoreB.compareTo(scoreA);
+      });
+    }
+
+    sortByScore(tier0);
+    sortByScore(tier1);
+    sortByScore(tier2);
+    sortByScore(tier3);
+    final ordered = <Video>[...tier0, ...tier1, ...tier2, ...tier3];
 
     final seenIds = <String>{};
     final seenNormalizedTitles = <String>{};
+    final artistUsage = <String, int>{};
+    var acceptedSimilar = 0;
+    var acceptedPrimary = 0;
+    var acceptedHistory = 0;
     final output = <PlaybackQueueItem>[];
 
-    for (final item in filtered) {
+    for (final item in ordered) {
       final id = item.id.value;
       if (!seenIds.add(id)) continue;
+      final tier = _artistPriorityTier(
+        author: item.author,
+        normalizedPrimary: normalizedPrimary,
+        similarArtists: similarArtists,
+        historyArtists: historyArtists,
+      );
+      if (tier == 2 && acceptedHistory >= 2) continue;
+      if (tier == 1 && acceptedPrimary >= 10) continue;
+      if (tier == 0 && acceptedSimilar >= 18) continue;
+      final normalizedArtist = _normalizeArtistName(item.author);
+      if (normalizedArtist.isNotEmpty) {
+        final usage = artistUsage[normalizedArtist] ?? 0;
+        if (usage >= 4) continue;
+        artistUsage[normalizedArtist] = usage + 1;
+      }
 
       final normalizedTitle = _normalizeTitleForQueueDedup(item.title);
       if (normalizedTitle.isNotEmpty && !seenNormalizedTitles.add(normalizedTitle)) {
@@ -637,16 +962,141 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         PlaybackQueueItem(
           videoId: id,
           title: item.title,
-          thumbnailUrl: item.thumbnails.mediumResUrl,
+          thumbnailUrl: _bestThumbnailUrl(item),
           artist: item.author,
           isLocal: false,
         ),
       );
+      if (tier == 0) {
+        acceptedSimilar++;
+      } else if (tier == 1) {
+        acceptedPrimary++;
+      } else if (tier == 2) {
+        acceptedHistory++;
+      }
 
       if (output.length >= 30) break;
     }
 
     return output;
+  }
+
+  int _artistPriorityTier({
+    required String author,
+    required String normalizedPrimary,
+    required Set<String> similarArtists,
+    required Set<String> historyArtists,
+  }) {
+    final normalizedAuthor = _normalizeArtistName(author);
+    if (normalizedAuthor.isNotEmpty) {
+      if (_matchesArtistGroup(normalizedAuthor, similarArtists)) return 0;
+      if (_matchesArtistGroup(normalizedAuthor, {normalizedPrimary})) return 1;
+      if (_matchesArtistGroup(normalizedAuthor, historyArtists)) return 2;
+    }
+    return 3;
+  }
+
+  bool _matchesArtistGroup(String normalizedAuthor, Set<String> group) {
+    for (final artist in group) {
+      if (artist.isEmpty) continue;
+      if (normalizedAuthor.contains(artist) || artist.contains(normalizedAuthor)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  List<String> _buildSimilarArtistCandidates({
+    required String primaryArtist,
+    required String currentTitle,
+    required List<Video> relatedVideos,
+  }) {
+    final normalizedPrimary = _normalizeArtistName(primaryArtist);
+    final scores = <String, int>{};
+
+    void addScore(String rawArtist, int score) {
+      final normalized = _normalizeArtistName(rawArtist);
+      if (normalized.isEmpty || normalized == normalizedPrimary) return;
+      scores[normalized] = (scores[normalized] ?? 0) + score;
+    }
+
+    final collaborators = _extractCollaboratorArtists(currentTitle);
+    final currentTrackCollaborators = _extractCollaboratorArtists(_trackTitle ?? '');
+    for (final artist in collaborators) {
+      addScore(artist, 240);
+    }
+    for (final artist in currentTrackCollaborators) {
+      addScore(artist, 220);
+    }
+
+    final topRelatedTopicAuthors = _extractTopRelatedTopicAuthors(
+      relatedVideos: relatedVideos,
+      normalizedPrimaryArtist: normalizedPrimary,
+      limit: 10,
+    );
+    var relatedWeight = 170;
+    for (final artist in topRelatedTopicAuthors) {
+      addScore(artist, relatedWeight);
+      if (relatedWeight > 88) relatedWeight -= 12;
+    }
+
+    for (final video in relatedVideos.take(50)) {
+      if (!_isPureYoutubeMusicAudio(video)) continue;
+      final boost = _isTopicAuthor(video.author.toLowerCase()) ? 74 : 52;
+      addScore(video.author, boost);
+    }
+
+    final sorted = scores.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return sorted.map((e) => e.key).take(12).toList();
+  }
+
+  List<String> _extractCollaboratorArtists(String title) {
+    if (title.trim().isEmpty) return const [];
+    final cleaned = title
+        .replaceAll(RegExp(r'[\(\)\[\]\{\}]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final match = RegExp(
+      r'(?:feat\.?|ft\.?|with|x|&|y)\s+(.+)$',
+      caseSensitive: false,
+    ).firstMatch(cleaned);
+    if (match == null) return const [];
+
+    final tail = (match.group(1) ?? '')
+        .replaceAll(RegExp(r'\b(official|audio|video|lyrics|lyric)\b', caseSensitive: false), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (tail.isEmpty) return const [];
+
+    final seen = <String>{};
+    final artists = <String>[];
+    for (final raw in tail.split(RegExp(r'[,/;|•]| and ', caseSensitive: false))) {
+      final normalized = _normalizeArtistName(raw);
+      if (normalized.isEmpty || !seen.add(normalized)) continue;
+      artists.add(normalized);
+      if (artists.length >= 6) break;
+    }
+    return artists;
+  }
+
+  List<String> _extractTopRelatedTopicAuthors({
+    required List<Video> relatedVideos,
+    required String normalizedPrimaryArtist,
+    required int limit,
+  }) {
+    final counter = <String, int>{};
+    for (final video in relatedVideos.take(70)) {
+      final authorRaw = video.author.toLowerCase().trim();
+      if (!_isTopicAuthor(authorRaw) || _isBlockedRecommendationAuthor(authorRaw)) continue;
+      if (!_isPureYoutubeMusicAudio(video)) continue;
+      final normalized = _normalizeArtistName(video.author);
+      if (normalized.isEmpty || normalized == normalizedPrimaryArtist) continue;
+      counter[normalized] = (counter[normalized] ?? 0) + 1;
+    }
+    final sorted = counter.entries.toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    return sorted.map((e) => e.key).take(limit).toList();
   }
 
   int _recommendationScore(
@@ -659,18 +1109,20 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     var score = 0;
 
     final isTopic = _isTopicAuthor(author);
+    final isAutoGenerated = _hasAutoGeneratedSignal(item);
     if (isTopic) score += 3200;
+    if (isAutoGenerated) score += 2200;
     if (author.contains(normalizedPrimaryArtist)) score += 340;
     if (title.contains(normalizedPrimaryArtist)) score += 180;
     if (isTopic && author.contains(normalizedPrimaryArtist)) score += 320;
 
-    for (final artist in historyProfile.topArtists.take(5)) {
+    for (final artist in historyProfile.topArtists.take(2)) {
       final normalizedArtist = artist.toLowerCase();
       if (author.contains(normalizedArtist)) {
-        score += isTopic ? 520 : 300;
+        score += isTopic ? 170 : 90;
       }
       if (title.contains(normalizedArtist)) {
-        score += 170;
+        score += 52;
       }
     }
 
@@ -703,9 +1155,37 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return _musicKeywords.any(text.contains);
   }
 
+  bool _isPureYoutubeMusicAudio(Video item) {
+    final author = item.author.toLowerCase().trim();
+    if (_isBlockedRecommendationAuthor(author)) return false;
+    final title = item.title.toLowerCase();
+    final text = '$title $author';
+    final topic = _isTopicAuthor(author);
+    final autoGenerated = _hasAutoGeneratedSignal(item);
+    final hasVideoLikeSignal = _videoLikeKeywords.any(text.contains);
+    return (topic || autoGenerated) && !hasVideoLikeSignal;
+  }
+
+  bool _hasAutoGeneratedSignal(Video item) {
+    final title = item.title.toLowerCase();
+    final description = item.description.toLowerCase();
+    return _autoGeneratedKeywords.any((keyword) {
+      return title.contains(keyword) || description.contains(keyword);
+    });
+  }
+
   bool _isTopicAuthor(String authorLower) {
     final author = authorLower.trim();
     return author.endsWith('- topic') || author.endsWith('topic');
+  }
+
+  bool _isBlockedRecommendationAuthor(String authorLower) {
+    final author = authorLower.trim();
+    return author == 'release - topic' || author == 'release topic';
+  }
+
+  String _bestThumbnailUrl(Video video) {
+    return bestThumbnailForVideo(video);
   }
 
   String _normalizeTitleForQueueDedup(String title) {
@@ -720,15 +1200,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     normalized = normalized.replaceAll(RegExp(r'[^a-z0-9\s]'), ' ');
     normalized = normalized.replaceAll(RegExp(r'\s+'), ' ').trim();
     return normalized;
-  }
-
-  String _buildRecommendationQuery(String artist, String title) {
-    final normalizedArtist = _normalizeArtistName(artist);
-    var normalizedTitle = _normalizeTitleForQueueDedup(title);
-    if (normalizedArtist.isNotEmpty && normalizedTitle.startsWith(normalizedArtist)) {
-      normalizedTitle = normalizedTitle.substring(normalizedArtist.length).trim();
-    }
-    return _sanitizeSearchQuery('$artist $normalizedTitle');
   }
 
   String _sanitizeSearchQuery(String query) {
@@ -755,19 +1226,154 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return compact.join(' ').trim();
   }
 
+  Future<List<Video>> _searchTopicChannelUploads(
+    String artist, {
+    required int limit,
+  }) async {
+    final channel = await _resolveBestTopicChannel(artist);
+    if (channel == null) return const [];
+    if (_isBlockedRecommendationAuthor(channel.name.toLowerCase())) return const [];
+    try {
+      final uploads = await _runYoutubeWithRetry(
+        () => _ytExplode.channels.getUploads(channel.id.value).take(80).toList(),
+        maxAttempts: 1,
+      );
+      final prioritized = _prioritizeTopicStyleVideos(uploads);
+      return prioritized
+          .where(_isPureYoutubeMusicAudio)
+          .take(limit)
+          .toList();
+    } catch (e, s) {
+      log('No se pudieron cargar uploads de canal topic: ${channel.name}', error: e, stackTrace: s);
+      return const [];
+    }
+  }
+
+  Future<SearchChannel?> _resolveBestTopicChannel(String artist) async {
+    final normalizedArtist = _normalizeArtistName(artist);
+    if (normalizedArtist.isEmpty) return null;
+    try {
+      final raw = await _runYoutubeWithRetry(
+        () => _ytExplode.search.searchContent(artist, filter: TypeFilters.channel),
+        maxAttempts: 1,
+      );
+      final channels = raw.whereType<SearchChannel>().take(12).toList();
+      if (channels.isEmpty) return null;
+
+      final topicOnly = channels.where((channel) => _isTopicAuthor(channel.name.toLowerCase())).toList();
+      final filteredTopicOnly = topicOnly
+          .where((channel) => !_isBlockedRecommendationAuthor(channel.name.toLowerCase()))
+          .toList();
+      if (filteredTopicOnly.isEmpty) return null;
+
+      SearchChannel best = filteredTopicOnly.first;
+      var bestScore = -1;
+      for (final channel in filteredTopicOnly) {
+        final name = channel.name.toLowerCase().trim();
+        final description = channel.description.toLowerCase().trim();
+        var score = 0;
+        if (name.contains(normalizedArtist)) score += 6;
+        if (description.contains(normalizedArtist)) score += 2;
+        if (name == '$normalizedArtist - topic') score += 8;
+        if (name.endsWith('- topic') || name.endsWith('topic')) score += 4;
+        if (score > bestScore) {
+          bestScore = score;
+          best = channel;
+        }
+      }
+      return best;
+    } catch (e, s) {
+      log('No se pudo resolver canal topic para $artist', error: e, stackTrace: s);
+      return null;
+    }
+  }
+
+  List<Video> _prioritizeTopicStyleVideos(List<Video> source) {
+    final topic = <Video>[];
+    final music = <Video>[];
+    final others = <Video>[];
+    final seenIds = <String>{};
+
+    for (final video in source) {
+      final id = video.id.value;
+      if (!seenIds.add(id)) continue;
+      if (_isTopicAuthor(video.author.toLowerCase())) {
+        topic.add(video);
+      } else if (_looksLikeMusicVideo(video)) {
+        music.add(video);
+      } else {
+        others.add(video);
+      }
+    }
+
+    topic.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
+    music.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
+    others.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
+    return [...topic, ...music, ...others];
+  }
+
+  Future<void> _waitForYoutubeRequestSlot() async {
+    final last = _lastYoutubeRequestAt;
+    if (last == null) {
+      _lastYoutubeRequestAt = DateTime.now();
+      return;
+    }
+    final elapsed = DateTime.now().difference(last);
+    if (elapsed < _youtubeMinRequestGap) {
+      await Future<void>.delayed(_youtubeMinRequestGap - elapsed);
+    }
+    _lastYoutubeRequestAt = DateTime.now();
+  }
+
   Future<List<Video>> _safeSearchVideos(
     String rawQuery, {
     required int limit,
+    bool onlyTopic = false,
+    bool onlyAutoGenerated = false,
   }) async {
     final query = _sanitizeSearchQuery(rawQuery);
     if (query.isEmpty) return const [];
     try {
-      final results = await _ytExplode.search.search(query);
-      return results.take(limit).toList();
+      final results = await _runYoutubeWithRetry(
+        () => _ytExplode.search.search(query),
+        maxAttempts: 2,
+      );
+      final list = results.toList();
+      if (!onlyTopic) {
+        if (!onlyAutoGenerated) return list.take(limit).toList();
+        return list.where(_hasAutoGeneratedSignal).take(limit).toList();
+      }
+      Iterable<Video> filtered = list.where((item) => _isTopicAuthor(item.author.toLowerCase()));
+      filtered = filtered.where((item) => !_isBlockedRecommendationAuthor(item.author.toLowerCase()));
+      if (onlyAutoGenerated) {
+        filtered = filtered.where(_hasAutoGeneratedSignal);
+      }
+      return filtered.take(limit).toList();
     } catch (e, s) {
       log('Busqueda de recomendados falló: $query', error: e, stackTrace: s);
       return const [];
     }
+  }
+
+  Future<List<Video>> _pickRandomHistoryArtistVideos(
+    _QueueHistoryProfile historyProfile,
+  ) async {
+    final random = math.Random();
+    final picks = <Video>[];
+    final seenIds = <String>{};
+    for (final artist in historyProfile.topArtists.take(2)) {
+      try {
+        final pool = await _searchTopicChannelUploads(artist, limit: 30);
+        if (pool.isEmpty) continue;
+        final chosen = pool[random.nextInt(pool.length)];
+        if (seenIds.add(chosen.id.value)) {
+          picks.add(chosen);
+        }
+      } catch (_) {
+        // Si falla un artista, seguimos con el siguiente.
+      }
+    }
+    return picks;
   }
 
   Future<_QueueHistoryProfile> _buildQueueHistoryProfile({
@@ -845,7 +1451,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     'lyrics',
     'music video',
     'vevo',
-    'topic',
     'official video',
     'visualizer',
     'live',
@@ -853,6 +1458,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     'en vivo',
     'acoustic',
     'remix',
+  ];
+
+  static const List<String> _autoGeneratedKeywords = [
+    'provided to youtube by',
+    'auto-generated by youtube',
+  ];
+
+  static const List<String> _videoLikeKeywords = [
+    'official video',
+    'music video',
+    'video oficial',
+    'live',
+    'en vivo',
+    'concert',
+    'session',
+    'visualizer',
+    'performance',
+    'clip oficial',
   ];
 
   static const Set<String> _historyStopwords = {
@@ -884,9 +1507,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     Object? lastError;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        await _waitForYoutubeRequestSlot();
         return await action();
-      } on RequestLimitExceededException {
-        rethrow;
+      } on RequestLimitExceededException catch (e) {
+        lastError = e;
       } on SocketException catch (e) {
         lastError = e;
       } on HttpException catch (e) {
@@ -896,7 +1520,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       if (attempt < maxAttempts) {
-        final waitSeconds = attempt * 2;
+        final waitSeconds = attempt * 3;
         await Future<void>.delayed(Duration(seconds: waitSeconds));
       }
     }
@@ -951,12 +1575,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       plainLyrics: resolvedPlainLyrics,
       syncedLyrics: resolvedSyncedLyrics,
     );
+    _syncSystemNowPlaying();
+    _syncSystemPlaybackState(force: true);
     notifyListeners();
 
     final localFile = File(filePath);
     if (!await localFile.exists()) {
       _errorMessage = 'El archivo local no existe.';
       _isLoading = false;
+      _syncSystemPlaybackState(force: true);
       notifyListeners();
       return;
     }
@@ -964,7 +1591,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     try {
       await _player.setAudioSource(AudioSource.file(filePath));
       // No esperamos a que termine la reproducción para no bloquear la UI.
-      unawaited(_player.play());
+      unawaited(_playInBackgroundSafely(isLocalPlayback: true));
+      _sessionPlayedVideoIds.add(id);
       _usingHiddenVideo = false;
       if (_autoplayEnabled) {
         unawaited(_loadLocalQueue(currentVideoId: id));
@@ -974,6 +1602,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (_isLyricsLayout && !hasAppliedLocalLyrics) {
         unawaited(_loadLyricsForCurrentTrack());
       }
+      _syncSystemPlaybackState(force: true);
     } catch (e, s) {
       log('Error reproduciendo archivo local', error: e, stackTrace: s);
       _errorMessage = _buildPlaybackErrorMessage(
@@ -982,13 +1611,22 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
       _isPlaying = false;
       _isBuffering = false;
+      _syncSystemPlaybackState(force: true);
     } finally {
       _isLoading = false;
+      _syncSystemPlaybackState(force: true);
       notifyListeners();
     }
   }
 
   Future<void> playQueueItem(PlaybackQueueItem item) async {
+    await _prepareSystemArtwork(
+      videoId: item.videoId,
+      thumbnailSource: item.thumbnailUrl,
+    ).timeout(
+      const Duration(milliseconds: 500),
+      onTimeout: () => null,
+    );
     if (item.isLocal) {
       final path = item.localFilePath;
       if (path == null || path.isEmpty) return;
@@ -1003,7 +1641,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
       return;
     }
-    await play(item.videoId);
+    await play(
+      item.videoId,
+      preferredThumbnailUrl: item.thumbnailUrl,
+      preferredTitle: item.title,
+      preferredArtist: item.artist,
+    );
   }
 
   Future<void> playNextInQueue() async {
@@ -1061,6 +1704,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return sorted;
   }
 
+  Future<void> _playInBackgroundSafely({bool isLocalPlayback = false}) async {
+    try {
+      await _player.play();
+    } catch (e, s) {
+      log('play() en background falló', error: e, stackTrace: s);
+      _errorMessage = _buildPlaybackErrorMessage(
+        e,
+        isLocalPlayback: isLocalPlayback,
+      );
+      _isPlaying = false;
+      _isBuffering = false;
+      notifyListeners();
+    }
+  }
+
   Future<void> togglePlayPause() async {
     if (_isResettingEngines || _isTogglingPlayPause) return;
     _isTogglingPlayPause = true;
@@ -1102,7 +1760,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         if (shouldPlay) {
           // En just_audio, play() puede mantener el Future vivo durante la reproducción.
           // No esperamos aquí para no bloquear taps siguientes.
-          unawaited(_player.play());
+          unawaited(_playInBackgroundSafely(isLocalPlayback: _isLocal));
         } else {
           await _player.pause();
         }
@@ -1185,6 +1843,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _queueTitle = 'Siguiente';
     _completionHandledForCurrent = false;
 
+    _clearSystemNowPlaying();
     notifyListeners();
   }
 
@@ -1210,6 +1869,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _hiddenVideoController?.dispose();
     _player.dispose();
     _ytExplode.close();
+    _clearSystemNowPlaying();
     _audioHandler.stop();
     super.dispose();
   }
@@ -1268,6 +1928,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         remaining <= const Duration(milliseconds: 350)) {
       _onTrackCompleted();
     }
+    _syncSystemPlaybackState(force: true);
     notifyListeners();
   }
 
@@ -1299,6 +1960,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         await _player.play();
         _isPlaying = true;
         _isBuffering = false;
+        _syncSystemPlaybackState(force: true);
       } catch (e, s) {
         // Si falla el motor de audio, recuperamos fallback de video.
         log('Falló migración a audio, restaurando fallback', error: e, stackTrace: s);
@@ -1344,6 +2006,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       final related = await _getRelatedQueueWithRetry(currentVideo);
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) return;
       _playbackQueue = related;
+      unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
     } catch (e, s) {
       log('Error cargando recomendados', error: e, stackTrace: s);
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) return;
@@ -1391,6 +2054,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) return;
       _playbackQueue = queue;
+      unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
     } catch (e, s) {
       log('Error cargando cola local', error: e, stackTrace: s);
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) return;

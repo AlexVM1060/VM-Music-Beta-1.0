@@ -29,6 +29,8 @@ dependencies:
   hive_flutter: ^1.1.0
   dio: ^5.9.0
   collection: ^1.19.1
+  palette_generator: ^0.3.3+7
+  image: ^4.5.4
 
 dev_dependencies:
   flutter_test:

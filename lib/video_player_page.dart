@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
@@ -147,7 +148,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           controller: _videoPlayerController!,
           streamUrl: streamInfo.url.toString(),
           title: _videoTitle,
-          thumbnailUrl: _video!.thumbnails.mediumResUrl,
+          thumbnailUrl: _bestQualityThumbnail(_video!),
           channelTitle: _video!.author,
           duration: _video!.duration, // Se pasa la duración del video
         );
@@ -376,18 +377,22 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                   child: Center(
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(16),
-                      child: Image.network(
-                        _video!.thumbnails.highResUrl,
-                        width: 260,
-                        height: 260,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) =>
-                            Container(
-                              width: 260,
-                              height: 260,
-                              color: Colors.grey[300],
-                              child: const Icon(Icons.music_note, size: 80, color: Colors.grey),
-                            ),
+                      child: Transform.scale(
+                        scale: 1.06,
+                        child: Image.network(
+                          _bestQualityThumbnail(_video!),
+                          width: 260,
+                          height: 260,
+                          fit: BoxFit.cover,
+                          alignment: Alignment.center,
+                          errorBuilder: (context, error, stackTrace) =>
+                              Container(
+                                width: 260,
+                                height: 260,
+                                color: Colors.grey[300],
+                                child: const Icon(Icons.music_note, size: 80, color: Colors.grey),
+                              ),
+                        ),
                       ),
                     ),
                   ),
@@ -420,7 +425,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                         final videoHistory = VideoHistory(
                           videoId: _video!.id.value,
                           title: _video!.title,
-                          thumbnailUrl: _video!.thumbnails.mediumResUrl,
+                          thumbnailUrl: _bestQualityThumbnail(_video!),
                           channelTitle: _video!.author,
                           watchedAt: DateTime.now(),
                         );
@@ -573,11 +578,15 @@ class DownloadButton extends StatelessWidget {
             downloadService.downloadVideo(
               videoId,
               video!.title,
-              video!.thumbnails.mediumResUrl,
+              _bestQualityThumbnail(video!),
               video!.author,
             );
           },
         );
     }
   }
+}
+
+String _bestQualityThumbnail(Video video) {
+  return bestThumbnailForVideo(video);
 }

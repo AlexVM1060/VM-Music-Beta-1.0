@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 
 class HistoryPage extends StatefulWidget {
@@ -156,21 +157,16 @@ class _HistoryCard extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
                 child: Row(
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10.0),
-                      child: Image.network(
-                        video.thumbnailUrl,
+                    SquareThumbnail.network(
+                      imageUrl: video.thumbnailUrl,
+                      size: 64,
+                      borderRadius: 10,
+                      fallback: Container(
                         width: 64,
                         height: 64,
-                        fit: BoxFit.cover,
+                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
                         alignment: Alignment.center,
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          width: 64,
-                          height: 64,
-                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                          alignment: Alignment.center,
-                          child: const Icon(Icons.music_note_rounded),
-                        ),
+                        child: const Icon(Icons.music_note_rounded),
                       ),
                     ),
                     const SizedBox(width: 16),
