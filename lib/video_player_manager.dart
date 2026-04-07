@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'dart:math' as math;
@@ -68,7 +69,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final HistoryService _historyService = HistoryService();
   final AudioHandler _audioHandler;
   final AudioPlayer _player = AudioPlayer();
-  final YoutubeExplode _ytExplode = YoutubeExplode();
+  YoutubeExplode _ytExplode = YoutubeExplode();
   final LyricsService _lyricsService = LyricsService();
   VideoPlayerController? _hiddenVideoController;
 
@@ -129,8 +130,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   DateTime _lastSystemPlaybackSync = DateTime.fromMillisecondsSinceEpoch(0);
   int _nowPlayingArtworkEpoch = 0;
   DateTime? _lastYoutubeRequestAt;
+  DateTime? _youtubeSlowModeUntil;
   int _lyricsEpoch = 0;
   static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
+  static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
+  static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
+  static const String _ytResolverBaseUrl = String.fromEnvironment(
+    'YT_RESOLVER_BASE_URL',
+    defaultValue: '',
+  );
+  static const String _ytResolverApiKey = String.fromEnvironment(
+    'YT_RESOLVER_API_KEY',
+    defaultValue: '',
+  );
   static const Map<String, String> _youtubeHeaders = {
     'User-Agent':
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
@@ -420,6 +432,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String? preferredTitle,
     String? preferredArtist,
     Duration? preferredDuration,
+    bool isRecoveryAttempt = false,
   }) async {
     _rememberCurrentForHistory();
     await _resetEngines();
@@ -571,6 +584,45 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }());
     } catch (e, s) {
       log('Error reproduciendo audio', error: e, stackTrace: s);
+      if (e is RequestLimitExceededException && !isRecoveryAttempt && !isLocalVideo) {
+        _activateYoutubeSlowMode(const Duration(minutes: 2));
+        _manifestCache.remove(videoId);
+        _videoCache.remove(videoId);
+        _manifestRequests.remove(videoId);
+        _videoRequests.remove(videoId);
+        try {
+          await Future<void>.delayed(const Duration(milliseconds: 1400));
+          await _resetYoutubeClientForRecovery();
+          await play(
+            videoId,
+            isLocalVideo: isLocalVideo,
+            preferredThumbnailUrl: preferredThumbnailUrl,
+            preferredTitle: preferredTitle,
+            preferredArtist: preferredArtist,
+            preferredDuration: preferredDuration,
+            isRecoveryAttempt: true,
+          );
+          return;
+        } catch (recoveryError, recoveryStack) {
+          log(
+            'Recuperacion por RequestLimitExceeded falló',
+            error: recoveryError,
+            stackTrace: recoveryStack,
+          );
+        }
+      }
+      if (!isLocalVideo) {
+        final backendSource = await _resolveDownloadSourceFromBackend(videoId);
+        if (backendSource != null) {
+          final played = await _attemptPlaybackFromDownloadSource(backendSource);
+          if (played) {
+            _errorMessage = null;
+            _syncSystemNowPlaying();
+            _syncSystemPlaybackState(force: true);
+            return;
+          }
+        }
+      }
       _errorMessage = _buildPlaybackErrorMessage(e);
       _isPlaying = false;
       _isBuffering = false;
@@ -613,7 +665,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     final future = _runYoutubeWithRetry(
       () => _ytExplode.videos.streamsClient.getManifest(videoId),
-      maxAttempts: 2,
+      maxAttempts: _isYoutubeSlowModeActive ? 4 : 3,
     );
     _manifestRequests[videoId] = future;
     try {
@@ -633,7 +685,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     final future = _runYoutubeWithRetry(
       () => _ytExplode.videos.get(VideoId(videoId)),
-      maxAttempts: 2,
+      maxAttempts: _isYoutubeSlowModeActive ? 4 : 3,
     );
     _videoRequests[videoId] = future;
     try {
@@ -668,7 +720,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       return null;
     } catch (_) {
-      return null;
+      return _resolveDownloadSourceFromBackend(videoId);
     }
   }
 
@@ -700,8 +752,109 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       // Fallback final: regresar mejor esfuerzo sin probe.
       return resolveDownloadSourceSilently(videoId);
     } catch (_) {
-      return null;
+      return _resolveDownloadSourceFromBackend(videoId);
     }
+  }
+
+  Future<DownloadSourceInfo?> _resolveDownloadSourceFromBackend(String videoId) async {
+    final base = _ytResolverBaseUrl.trim();
+    if (base.isEmpty) return null;
+
+    final normalizedBase = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+    final uri = Uri.parse('$normalizedBase/resolve').replace(
+      queryParameters: {'videoId': videoId},
+    );
+
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(uri);
+      req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      if (_ytResolverApiKey.trim().isNotEmpty) {
+        req.headers.set('x-api-key', _ytResolverApiKey.trim());
+      }
+      final res = await req.close();
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return null;
+      }
+
+      final body = await utf8.decoder.bind(res).join();
+      final raw = jsonDecode(body);
+      if (raw is! Map<String, dynamic>) return null;
+
+      String? sourceUrl = raw['sourceUrl']?.toString();
+      var isVideoSource = raw['isVideoSource'] == true;
+
+      if (sourceUrl == null || sourceUrl.trim().isEmpty) {
+        final audio = raw['audio'];
+        final muxed = raw['muxed'];
+        if (audio is Map && audio['url'] != null) {
+          sourceUrl = audio['url'].toString();
+          isVideoSource = false;
+        } else if (muxed is Map && muxed['url'] != null) {
+          sourceUrl = muxed['url'].toString();
+          isVideoSource = true;
+        }
+      }
+
+      if (sourceUrl == null || sourceUrl.trim().isEmpty) return null;
+      return DownloadSourceInfo(
+        sourceUrl: sourceUrl.trim(),
+        isVideoSource: isVideoSource,
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<bool> _attemptPlaybackFromDownloadSource(DownloadSourceInfo source) async {
+    final uri = Uri.parse(source.sourceUrl);
+    final headers = _headersForStreamUri(uri) ?? const <String, String>{};
+
+    if (!source.isVideoSource) {
+      try {
+        await _player.setAudioSource(AudioSource.uri(uri, headers: headers));
+        await _player.play();
+        _usingHiddenVideo = false;
+        _currentStreamUrl = source.sourceUrl;
+        _isPlaying = true;
+        _isBuffering = false;
+        _syncSystemPlaybackState(force: true);
+        notifyListeners();
+        return true;
+      } catch (_) {}
+    }
+
+    try {
+      final controller = VideoPlayerController.networkUrl(
+        uri,
+        httpHeaders: headers,
+      );
+      await controller.initialize();
+      await controller.play();
+      _hiddenVideoController = controller;
+      _usingHiddenVideo = true;
+      _currentStreamUrl = source.sourceUrl;
+      _isPlaying = true;
+      _isBuffering = false;
+      _trackDuration = controller.value.duration;
+      controller.addListener(_syncFromHiddenVideo);
+      unawaited(_switchHiddenVideoToAudioEngine());
+      _syncSystemPlaybackState(force: true);
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Map<String, String>? _headersForStreamUri(Uri uri) {
+    final host = uri.host.toLowerCase();
+    if (host.contains('googlevideo.com') || host.contains('youtube.com') || host.contains('ytimg.com')) {
+      return _youtubeHeaders;
+    }
+    return null;
   }
 
   Future<bool> _probeAudioStreamSilently(Uri url) async {
@@ -1313,16 +1466,43 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _waitForYoutubeRequestSlot() async {
+    final now = DateTime.now();
+    final slowModeActive = _youtubeSlowModeUntil != null && now.isBefore(_youtubeSlowModeUntil!);
+    final effectiveGap = slowModeActive ? _youtubeSlowRequestGap : _youtubeMinRequestGap;
     final last = _lastYoutubeRequestAt;
     if (last == null) {
-      _lastYoutubeRequestAt = DateTime.now();
+      _lastYoutubeRequestAt = now;
       return;
     }
-    final elapsed = DateTime.now().difference(last);
-    if (elapsed < _youtubeMinRequestGap) {
-      await Future<void>.delayed(_youtubeMinRequestGap - elapsed);
+    final elapsed = now.difference(last);
+    if (elapsed < effectiveGap) {
+      await Future<void>.delayed(effectiveGap - elapsed);
+    }
+    if (slowModeActive) {
+      final jitterMs = 120 + math.Random().nextInt(420);
+      await Future<void>.delayed(Duration(milliseconds: jitterMs));
     }
     _lastYoutubeRequestAt = DateTime.now();
+  }
+
+  bool get _isYoutubeSlowModeActive {
+    final until = _youtubeSlowModeUntil;
+    return until != null && DateTime.now().isBefore(until);
+  }
+
+  void _activateYoutubeSlowMode([Duration duration = _youtubeRateLimitCooldown]) {
+    final now = DateTime.now();
+    final until = now.add(duration);
+    if (_youtubeSlowModeUntil == null || until.isAfter(_youtubeSlowModeUntil!)) {
+      _youtubeSlowModeUntil = until;
+    }
+  }
+
+  Future<void> _resetYoutubeClientForRecovery() async {
+    try {
+      _ytExplode.close();
+    } catch (_) {}
+    _ytExplode = YoutubeExplode();
   }
 
   Future<List<Video>> _safeSearchVideos(
@@ -1511,6 +1691,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return await action();
       } on RequestLimitExceededException catch (e) {
         lastError = e;
+        _activateYoutubeSlowMode(Duration(seconds: 35 + (attempt * 18)));
+        if (attempt < maxAttempts) {
+          await _resetYoutubeClientForRecovery();
+        }
       } on SocketException catch (e) {
         lastError = e;
       } on HttpException catch (e) {
@@ -1520,8 +1704,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       if (attempt < maxAttempts) {
-        final waitSeconds = attempt * 3;
-        await Future<void>.delayed(Duration(seconds: waitSeconds));
+        final waitSeconds = (lastError is RequestLimitExceededException)
+            ? (4 + (attempt * 4))
+            : (attempt * 3);
+        final jitterMs = 120 + math.Random().nextInt(380);
+        await Future<void>.delayed(Duration(seconds: waitSeconds, milliseconds: jitterMs));
       }
     }
     throw lastError ?? Exception('Error desconocido al contactar YouTube');
