@@ -160,12 +160,38 @@ class OverlayVideoPlayer extends StatelessWidget {
         return IgnorePointer(
           ignoring: !hasTrack,
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 320),
-            reverseDuration: const Duration(milliseconds: 240),
+            duration: const Duration(milliseconds: 520),
+            reverseDuration: const Duration(milliseconds: 420),
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
+            layoutBuilder: (currentChild, previousChildren) {
+              return Stack(
+                fit: StackFit.expand,
+                alignment: Alignment.bottomCenter,
+                children: [
+                  ...previousChildren,
+                  if (currentChild != null) currentChild,
+                ],
+              );
+            },
             transitionBuilder: (child, animation) {
-              return FadeTransition(opacity: animation, child: child);
+              final curved = CurvedAnimation(
+                parent: animation,
+                curve: Curves.easeOutCubic,
+                reverseCurve: Curves.easeInCubic,
+              );
+              final fade = Tween<double>(begin: 0.0, end: 1.0).animate(curved);
+              final slide = Tween<Offset>(
+                begin: const Offset(0, 0.05),
+                end: Offset.zero,
+              ).animate(curved);
+              return FadeTransition(
+                opacity: fade,
+                child: SlideTransition(
+                  position: slide,
+                  child: child,
+                ),
+              );
             },
             child: hasTrack
                 ? const MusicPlayerPage(key: ValueKey('overlay_player'))

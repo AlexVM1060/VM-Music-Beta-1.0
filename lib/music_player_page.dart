@@ -46,12 +46,14 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
         }
 
         return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 420),
-          reverseDuration: const Duration(milliseconds: 320),
+          duration: const Duration(milliseconds: 620),
+          reverseDuration: const Duration(milliseconds: 500),
           switchInCurve: Curves.easeOutCubic,
           switchOutCurve: Curves.easeInCubic,
           layoutBuilder: (currentChild, previousChildren) {
             return Stack(
+              fit: StackFit.expand,
+              alignment: Alignment.bottomCenter,
               children: [
                 ...previousChildren,
                 if (currentChild != null) currentChild,
@@ -59,20 +61,28 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
             );
           },
           transitionBuilder: (child, animation) {
+            final isMini = child.key == const ValueKey('mini_player');
+            final curved = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+              reverseCurve: Curves.easeInCubic,
+            );
+            final fade = Tween<double>(begin: 0.0, end: 1.0).animate(curved);
             final slide = Tween<Offset>(
-              begin: const Offset(0, 0.08),
+              begin: isMini ? const Offset(0, 0.22) : const Offset(0, 0.08),
               end: Offset.zero,
-            ).animate(
-              CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-            );
-            final scale = Tween<double>(begin: 0.985, end: 1).animate(
-              CurvedAnimation(parent: animation, curve: Curves.easeOutQuart),
-            );
-            return FadeTransition(
-              opacity: animation,
-              child: SlideTransition(
-                position: slide,
-                child: ScaleTransition(scale: scale, child: child),
+            ).animate(curved);
+            final scale = Tween<double>(
+              begin: isMini ? 0.965 : 0.99,
+              end: 1.0,
+            ).animate(curved);
+            return ClipRect(
+              child: FadeTransition(
+                opacity: fade,
+                child: SlideTransition(
+                  position: slide,
+                  child: ScaleTransition(scale: scale, child: child),
+                ),
               ),
             );
           },

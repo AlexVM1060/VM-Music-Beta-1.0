@@ -32,6 +32,10 @@ static inline float vm_bass_clamp(float value, float minValue, float maxValue) {
     return value;
 }
 
+static inline CMItemCount vm_min_frames(CMItemCount a, CMItemCount b) {
+    return a < b ? a : b;
+}
+
 static void vm_bass_tap_init(
     MTAudioProcessingTapRef tap,
     void *clientInfo,
@@ -108,18 +112,24 @@ static void vm_bass_tap_process(
 
     const float alpha = vm_bass_clamp(storage->alpha, 0.0005f, 0.95f);
     const float amount = vm_bass_clamp(storage->amount, 0.0f, 2.2f);
-    const CMItemCount frames = *numberFramesOut;
-    if (frames <= 0) return;
+    const CMItemCount requestedFrames = *numberFramesOut;
+    if (requestedFrames <= 0) return;
 
-    const UInt32 channels = storage->channels > 0 ? storage->channels : 2;
+    const UInt32 channels = storage->channels;
+    if (channels == 0) return;
     const UInt32 limitedChannels = channels > 8 ? 8 : channels;
 
     if (storage->isFloat) {
         if (storage->isInterleaved) {
             if (bufferListInOut->mNumberBuffers < 1) return;
-            float *samples = (float *)bufferListInOut->mBuffers[0].mData;
+            AudioBuffer *buffer = &bufferListInOut->mBuffers[0];
+            float *samples = (float *)buffer->mData;
             if (samples == NULL) return;
-            for (CMItemCount frame = 0; frame < frames; frame++) {
+            const size_t sampleCount = buffer->mDataByteSize / sizeof(float);
+            const CMItemCount availableFrames = (CMItemCount)(sampleCount / channels);
+            const CMItemCount framesToProcess = vm_min_frames(requestedFrames, availableFrames);
+            if (framesToProcess <= 0) return;
+            for (CMItemCount frame = 0; frame < framesToProcess; frame++) {
                 for (UInt32 channel = 0; channel < limitedChannels; channel++) {
                     const UInt32 idx = (UInt32)(frame * channels + channel);
                     const float dry = samples[idx];
@@ -136,9 +146,13 @@ static void vm_bass_tap_process(
             ? bufferListInOut->mNumberBuffers
             : limitedChannels;
         for (UInt32 channel = 0; channel < bufferChannels; channel++) {
-            float *samples = (float *)bufferListInOut->mBuffers[channel].mData;
+            AudioBuffer *buffer = &bufferListInOut->mBuffers[channel];
+            float *samples = (float *)buffer->mData;
             if (samples == NULL) continue;
-            for (CMItemCount frame = 0; frame < frames; frame++) {
+            const CMItemCount availableFrames = (CMItemCount)(buffer->mDataByteSize / sizeof(float));
+            const CMItemCount framesToProcess = vm_min_frames(requestedFrames, availableFrames);
+            if (framesToProcess <= 0) continue;
+            for (CMItemCount frame = 0; frame < framesToProcess; frame++) {
                 const float dry = samples[frame];
                 const float low = storage->prev[channel] + alpha * (dry - storage->prev[channel]);
                 storage->prev[channel] = low;
@@ -151,9 +165,14 @@ static void vm_bass_tap_process(
 
     if (storage->isInterleaved) {
         if (bufferListInOut->mNumberBuffers < 1) return;
-        int16_t *samples = (int16_t *)bufferListInOut->mBuffers[0].mData;
+        AudioBuffer *buffer = &bufferListInOut->mBuffers[0];
+        int16_t *samples = (int16_t *)buffer->mData;
         if (samples == NULL) return;
-        for (CMItemCount frame = 0; frame < frames; frame++) {
+        const size_t sampleCount = buffer->mDataByteSize / sizeof(int16_t);
+        const CMItemCount availableFrames = (CMItemCount)(sampleCount / channels);
+        const CMItemCount framesToProcess = vm_min_frames(requestedFrames, availableFrames);
+        if (framesToProcess <= 0) return;
+        for (CMItemCount frame = 0; frame < framesToProcess; frame++) {
             for (UInt32 channel = 0; channel < limitedChannels; channel++) {
                 const UInt32 idx = (UInt32)(frame * channels + channel);
                 const float dry = (float)samples[idx] / 32768.0f;
@@ -170,9 +189,13 @@ static void vm_bass_tap_process(
         ? bufferListInOut->mNumberBuffers
         : limitedChannels;
     for (UInt32 channel = 0; channel < bufferChannels; channel++) {
-        int16_t *samples = (int16_t *)bufferListInOut->mBuffers[channel].mData;
+        AudioBuffer *buffer = &bufferListInOut->mBuffers[channel];
+        int16_t *samples = (int16_t *)buffer->mData;
         if (samples == NULL) continue;
-        for (CMItemCount frame = 0; frame < frames; frame++) {
+        const CMItemCount availableFrames = (CMItemCount)(buffer->mDataByteSize / sizeof(int16_t));
+        const CMItemCount framesToProcess = vm_min_frames(requestedFrames, availableFrames);
+        if (framesToProcess <= 0) continue;
+        for (CMItemCount frame = 0; frame < framesToProcess; frame++) {
             const float dry = (float)samples[frame] / 32768.0f;
             const float low = storage->prev[channel] + alpha * (dry - storage->prev[channel]);
             storage->prev[channel] = low;

@@ -143,6 +143,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
+  static const double _defaultPlaybackVolume = 3;
   static const String _youtubeiPlayerEndpoint =
       'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
   static const Map<String, String> _youtubeHeaders = {
@@ -169,6 +170,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     } else {
       _player = AudioPlayer();
     }
+    unawaited(_applyDefaultPlaybackVolume());
     _bindSystemMediaControls();
     WidgetsBinding.instance.addObserver(this);
     _positionSub = _player.positionStream.listen((position) {
@@ -453,7 +455,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     bool isRecoveryAttempt = false,
   }) async {
     _rememberCurrentForHistory();
+    await _disableBassBoostOnTrackChange();
     await _resetEngines();
+    await _applyDefaultPlaybackVolume();
     _isLoading = true;
     _errorMessage = null;
     _currentVideoId = videoId;
@@ -1802,7 +1806,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String? localSyncedLyrics,
   }) async {
     _rememberCurrentForHistory();
+    await _disableBassBoostOnTrackChange();
     await _resetEngines();
+    await _applyDefaultPlaybackVolume();
     _isLoading = true;
     _errorMessage = null;
     _currentVideoId = id;
@@ -1958,6 +1964,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  Future<void> _disableBassBoostOnTrackChange() async {
+    if (!_bassBoostEnabled) return;
+    _bassBoostEnabled = false;
+    await _applyBassBoostEffect();
+    notifyListeners();
+  }
+
   Future<void> _applyBassBoostEffect() async {
     if (kIsWeb) return;
     if (Platform.isIOS) {
@@ -2016,6 +2029,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (_bassBoostConfigured) return;
       _bassBoostEnabled = false;
       _bassBoostConfigured = true;
+    }
+  }
+
+  Future<void> _applyDefaultPlaybackVolume() async {
+    try {
+      await _player.setVolume(_defaultPlaybackVolume);
+    } catch (_) {
+      // Best effort: algunos backends pueden limitar o ignorar >1.0.
     }
   }
 
