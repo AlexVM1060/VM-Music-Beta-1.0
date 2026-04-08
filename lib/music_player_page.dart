@@ -442,6 +442,12 @@ class _FullPlayer extends StatelessWidget {
                               isActive: manager.isLyricsLayout,
                               onPressed: manager.toggleLyricsLayout,
                             ),
+                            const SizedBox(width: 8),
+                            if (manager.isBassBoostSupported)
+                              _InlineBassBoostButton(
+                                isActive: manager.bassBoostEnabled,
+                                onPressed: manager.toggleBassBoost,
+                              ),
                             const Spacer(),
                             _InlineAutoplayButton(
                               isActive: manager.autoplayEnabled,
@@ -964,6 +970,140 @@ class _InlineAutoplayButton extends StatefulWidget {
 
   @override
   State<_InlineAutoplayButton> createState() => _InlineAutoplayButtonState();
+}
+
+class _InlineBassBoostButton extends StatefulWidget {
+  final bool isActive;
+  final VoidCallback onPressed;
+
+  const _InlineBassBoostButton({
+    required this.isActive,
+    required this.onPressed,
+  });
+
+  @override
+  State<_InlineBassBoostButton> createState() => _InlineBassBoostButtonState();
+}
+
+class _InlineBassBoostButtonState extends State<_InlineBassBoostButton>
+    with TickerProviderStateMixin {
+  AnimationController? _ringController;
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureController();
+  }
+
+  @override
+  void didUpdateWidget(covariant _InlineBassBoostButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _ensureController();
+    if (oldWidget.isActive == widget.isActive) return;
+    _ringController!.duration = widget.isActive
+        ? const Duration(milliseconds: 1100)
+        : const Duration(milliseconds: 2300);
+    _ringController!
+      ..reset()
+      ..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ringController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _ensureController();
+    return AnimatedBuilder(
+      animation: _ringController!,
+      builder: (context, _) {
+        final borderRadius = BorderRadius.circular(14);
+        const warmRed = Color(0xFFE65245);
+        const warmOrange = Color(0xFFFF8A3D);
+        return CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: Size.zero,
+          onPressed: widget.onPressed,
+          child: Container(
+            padding: const EdgeInsets.all(1.25),
+            decoration: BoxDecoration(
+              borderRadius: borderRadius,
+              gradient: SweepGradient(
+                transform: GradientRotation(_ringController!.value * 6.28318530718),
+                colors: const [
+                  Color(0xFFE65245),
+                  Color(0xFFFF8A3D),
+                  Color(0xFFFFB347),
+                  Color(0xFFD84315),
+                  Color(0xFFE65245),
+                ],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: warmOrange.withValues(alpha: widget.isActive ? 0.30 : 0.14),
+                  blurRadius: widget.isActive ? 18 : 10,
+                  spreadRadius: widget.isActive ? 0.8 : 0.0,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: borderRadius,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                child: Container(
+                  height: 30,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: widget.isActive
+                        ? warmRed.withValues(alpha: 0.24)
+                        : CupertinoColors.systemGrey6
+                            .resolveFrom(context)
+                            .withValues(alpha: 0.52),
+                    borderRadius: borderRadius,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        CupertinoIcons.waveform_path_ecg,
+                        size: 14,
+                        color: widget.isActive
+                            ? warmOrange
+                            : CupertinoColors.label.resolveFrom(context),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Bass Boost',
+                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: widget.isActive ? warmOrange : null,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _ensureController() {
+    if (_ringController != null) return;
+    _ringController = AnimationController(
+      vsync: this,
+      duration: widget.isActive
+          ? const Duration(milliseconds: 1100)
+          : const Duration(milliseconds: 2300),
+    )..repeat();
+  }
 }
 
 class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>

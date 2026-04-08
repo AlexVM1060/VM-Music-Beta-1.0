@@ -5,7 +5,9 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:hive/hive.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:myapp/audio_handler.dart';
@@ -62,13 +64,18 @@ class _QueueHistoryProfile {
 
 // Mantiene el nombre para no romper imports, pero ahora gestiona audio estilo app musical.
 class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+  static const MethodChannel _iosBassBoostChannel =
+      MethodChannel('com.vm.music.beta/ios_bass_boost');
   static const _QueueHistoryProfile _emptyHistoryProfile = _QueueHistoryProfile(
     topArtists: [],
     topTitleTokens: [],
   );
   final HistoryService _historyService = HistoryService();
   final AudioHandler _audioHandler;
-  final AudioPlayer _player = AudioPlayer();
+  late final AudioPlayer _player;
+  AndroidLoudnessEnhancer? _androidBassEnhancer;
+  AndroidEqualizer? _androidBassEqualizer;
+  bool _bassBoostConfigured = false;
   YoutubeExplode _ytExplode = YoutubeExplode();
   final LyricsService _lyricsService = LyricsService();
   VideoPlayerController? _hiddenVideoController;
@@ -96,6 +103,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _isBuffering = false;
   bool _usingHiddenVideo = false;
   bool _autoplayEnabled = true;
+  bool _bassBoostEnabled = false;
   bool _isLyricsLayout = false;
   bool _isLyricsLoading = false;
   String? _lyricsText;
@@ -147,6 +155,20 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   VideoPlayerManager(this._audioHandler)
       : _appAudioHandler = _audioHandler is MyAudioHandler ? _audioHandler : null {
+    if (!kIsWeb && Platform.isAndroid) {
+      _androidBassEnhancer = AndroidLoudnessEnhancer();
+      _androidBassEqualizer = AndroidEqualizer();
+      _player = AudioPlayer(
+        audioPipeline: AudioPipeline(
+          androidAudioEffects: [
+            _androidBassEnhancer!,
+            _androidBassEqualizer!,
+          ],
+        ),
+      );
+    } else {
+      _player = AudioPlayer();
+    }
     _bindSystemMediaControls();
     WidgetsBinding.instance.addObserver(this);
     _positionSub = _player.positionStream.listen((position) {
@@ -198,6 +220,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool get isLocal => _isLocal;
   bool get isUsingVideoFallback => _usingHiddenVideo;
   bool get autoplayEnabled => _autoplayEnabled;
+  bool get bassBoostEnabled => _bassBoostEnabled;
+  bool get isBassBoostSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
   bool get isLyricsLayout => _isLyricsLayout;
   bool get isLyricsLoading => _isLyricsLoading;
   String? get lyricsText => _lyricsText;
@@ -534,6 +558,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (!_autoplayEnabled) {
         _clearQueueForAutoplayDisabled();
       }
+      unawaited(_applyBassBoostEffect());
 
       _sessionPlayedVideoIds.add(videoId);
 
@@ -605,7 +630,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           );
         }
       }
-      if (!isLocalVideo && e is RequestLimitExceededException) {
+      if (!isLocalVideo &&
+          (e is RequestLimitExceededException ||
+              e is HandshakeException ||
+              e is SocketException ||
+              e is HttpException)) {
         final altSource = await _resolveDownloadSourceViaYoutubei(videoId);
         if (altSource != null) {
           final played = await _attemptPlaybackFromDownloadSource(altSource);
@@ -861,6 +890,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (!source.isVideoSource) {
       try {
         await _player.setAudioSource(AudioSource.uri(uri, headers: headers));
+        unawaited(_applyBassBoostEffect());
         await _player.play();
         _usingHiddenVideo = false;
         _currentStreamUrl = source.sourceUrl;
@@ -1743,6 +1773,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       } on SocketException catch (e) {
         lastError = e;
+      } on HandshakeException catch (e) {
+        lastError = e;
       } on HttpException catch (e) {
         lastError = e;
       } catch (e) {
@@ -1823,6 +1855,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       await _player.setAudioSource(AudioSource.file(filePath));
+      unawaited(_applyBassBoostEffect());
       // No esperamos a que termine la reproducción para no bloquear la UI.
       unawaited(_playInBackgroundSafely(isLocalPlayback: true));
       _sessionPlayedVideoIds.add(id);
@@ -1853,13 +1886,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> playQueueItem(PlaybackQueueItem item) async {
-    await _prepareSystemArtwork(
-      videoId: item.videoId,
-      thumbnailSource: item.thumbnailUrl,
-    ).timeout(
-      const Duration(milliseconds: 500),
-      onTimeout: () => null,
-    );
+    try {
+      await _prepareSystemArtwork(
+        videoId: item.videoId,
+        thumbnailSource: item.thumbnailUrl,
+      ).timeout(
+        const Duration(milliseconds: 500),
+        onTimeout: () => null,
+      );
+    } catch (e, s) {
+      log(
+        'No se pudo preparar artwork para cola',
+        error: e,
+        stackTrace: s,
+      );
+    }
     if (item.isLocal) {
       final path = item.localFilePath;
       if (path == null || path.isEmpty) return;
@@ -1904,6 +1945,78 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_reloadQueueForCurrentTrack());
     }
     notifyListeners();
+  }
+
+  void toggleBassBoost() {
+    if (!isBassBoostSupported) {
+      _bassBoostEnabled = false;
+      notifyListeners();
+      return;
+    }
+    _bassBoostEnabled = !_bassBoostEnabled;
+    unawaited(_applyBassBoostEffect());
+    notifyListeners();
+  }
+
+  Future<void> _applyBassBoostEffect() async {
+    if (kIsWeb) return;
+    if (Platform.isIOS) {
+      try {
+        await _iosBassBoostChannel.invokeMethod<void>(
+          'setBassBoost',
+          <String, Object>{
+            'enabled': _bassBoostEnabled,
+            'amount': _bassBoostEnabled ? 1.1 : 0.0,
+          },
+        );
+        _bassBoostConfigured = true;
+      } catch (e, s) {
+        log('No se pudo aplicar Bass Boost en iOS', error: e, stackTrace: s);
+        if (_bassBoostConfigured) return;
+        _bassBoostEnabled = false;
+        _bassBoostConfigured = true;
+      }
+      return;
+    }
+    if (!Platform.isAndroid) return;
+    final enhancer = _androidBassEnhancer;
+    final equalizer = _androidBassEqualizer;
+    if (enhancer == null || equalizer == null) return;
+
+    try {
+      await enhancer.setEnabled(_bassBoostEnabled);
+      await equalizer.setEnabled(_bassBoostEnabled);
+
+      final params = await equalizer.parameters;
+      final minDb = params.minDecibels;
+      final maxDb = params.maxDecibels;
+      for (final band in params.bands) {
+        double targetGain = 0.0;
+        if (_bassBoostEnabled) {
+          final f = band.centerFrequency;
+          if (f <= 90) {
+            targetGain = 6.0;
+          } else if (f <= 180) {
+            targetGain = 4.8;
+          } else if (f <= 320) {
+            targetGain = 2.4;
+          } else if (f <= 600) {
+            targetGain = 0.8;
+          } else {
+            targetGain = 0.0;
+          }
+        }
+        await band.setGain(targetGain.clamp(minDb, maxDb).toDouble());
+      }
+
+      await enhancer.setTargetGain(_bassBoostEnabled ? 1.8 : 0.0);
+      _bassBoostConfigured = true;
+    } catch (e, s) {
+      log('No se pudo aplicar Bass Boost', error: e, stackTrace: s);
+      if (_bassBoostConfigured) return;
+      _bassBoostEnabled = false;
+      _bassBoostConfigured = true;
+    }
   }
 
   void toggleLyricsLayout() {
@@ -2189,6 +2302,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         await _player.setAudioSource(
           AudioSource.uri(Uri.parse(streamUrl), headers: _youtubeHeaders),
         );
+        unawaited(_applyBassBoostEffect());
         await _player.seek(position);
         await _player.play();
         _isPlaying = true;
@@ -2513,6 +2627,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return isLocalPlayback
           ? 'No se pudo reproducir el archivo local por un problema de acceso al sistema de archivos.'
           : 'No se pudo reproducir por un problema de conexión a internet.';
+    }
+    if (error is HandshakeException) {
+      return 'No se pudo establecer una conexión segura (TLS) con el servidor de audio. Intenta de nuevo o cambia de red.';
     }
     if (error is HttpException) {
       return 'No se pudo reproducir porque el servidor respondió con un error de red.';
