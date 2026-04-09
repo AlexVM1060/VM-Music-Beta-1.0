@@ -345,6 +345,22 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     );
   }
 
+  void _queueVideo(Video video) {
+    final manager = context.read<VideoPlayerManager>();
+    final added = manager.addOnlineTrackToPlaybackQueue(
+      videoId: video.id.value,
+      title: video.title,
+      thumbnailUrl: _bestQualityThumbnail(video),
+      artist: video.author,
+    );
+    if (!mounted) return;
+    _showIosTopToast(
+      context,
+      message: added ? 'Se ha añadido a la cola' : 'Esta canción ya está en cola',
+      icon: added ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.info_circle_fill,
+    );
+  }
+
   Future<void> _openArtistFromVideo(Video video) async {
     try {
       final details = await _runYoutubeWithRetry(
@@ -1142,7 +1158,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
             ? KeyedSubtree(
                 key: const ValueKey('search_home'),
                 child: Scaffold(
-                  backgroundColor: Colors.transparent,
+                  backgroundColor: Theme.of(context).brightness == Brightness.dark
+                      ? Colors.black
+                      : CupertinoColors.systemGroupedBackground.resolveFrom(context),
                   body: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16.0),
                     child: Column(
@@ -1338,6 +1356,7 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
                     downloadService.getDownloadStatus(video.id.value) ==
                     DownloadStatus.downloaded,
                 onPlay: () => _playVideoPreferLocal(video),
+                onQueue: () => _queueVideo(video),
                 onMenuTap: () => _showVideoOptionsMenu(video),
               ),
             ),
@@ -1420,6 +1439,7 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
                     downloadService.getDownloadStatus(video.id.value) ==
                     DownloadStatus.downloaded,
                 onPlay: () => _playVideoPreferLocal(video),
+                onQueue: () => _queueVideo(video),
                 onMenuTap: () => _showVideoOptionsMenu(video),
               ),
             ),
@@ -1647,7 +1667,7 @@ class ChannelCard extends StatelessWidget {
                             style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w700,
-                                  color: Colors.white,
+                                  color: CupertinoColors.label.resolveFrom(context),
                                 ),
                           ),
                           const SizedBox(height: 2),
@@ -1657,14 +1677,17 @@ class ChannelCard extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                                   fontSize: 13,
-                                  color: Colors.white70,
+                                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
                                 ),
                           ),
                         ],
                       ),
                     ),
                     const SizedBox(width: 8),
-                    const Icon(Icons.chevron_right_rounded, color: Colors.white70),
+                    Icon(
+                      Icons.chevron_right_rounded,
+                      color: CupertinoColors.tertiaryLabel.resolveFrom(context),
+                    ),
                   ],
                 ),
               ),
@@ -1847,7 +1870,7 @@ class TopArtistCard extends StatelessWidget {
                               style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                                     fontSize: 26,
                                     fontWeight: FontWeight.w700,
-                                    color: Colors.white,
+                                    color: CupertinoColors.label.resolveFrom(context),
                                   ),
                             ),
                             const SizedBox(height: 4),
@@ -1857,7 +1880,7 @@ class TopArtistCard extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                               style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                                     fontSize: 14,
-                                    color: Colors.white70,
+                                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
                                   ),
                             ),
                             Text(
@@ -1866,7 +1889,7 @@ class TopArtistCard extends StatelessWidget {
                               overflow: TextOverflow.ellipsis,
                               style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                                     fontSize: 13,
-                                    color: Colors.white70,
+                                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
                                   ),
                             ),
                           ],
@@ -1970,7 +1993,7 @@ class _TopArtistFromVideoCard extends StatelessWidget {
                           style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                                 fontSize: 24,
                                 fontWeight: FontWeight.w700,
-                                color: Colors.white,
+                                color: CupertinoColors.label.resolveFrom(context),
                               ),
                         ),
                         const SizedBox(height: 4),
@@ -1980,14 +2003,17 @@ class _TopArtistFromVideoCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                                 fontSize: 13,
-                                color: Colors.white70,
+                                color: CupertinoColors.secondaryLabel.resolveFrom(context),
                               ),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(width: 8),
-                  const Icon(Icons.chevron_right_rounded, color: Colors.white70),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: CupertinoColors.tertiaryLabel.resolveFrom(context),
+                  ),
                 ],
               ),
             ),
@@ -2124,6 +2150,7 @@ class _ArtistVideosActionButtonState extends State<_ArtistVideosActionButton>
 class VideoCard extends StatelessWidget {
   final Video video;
   final VoidCallback onPlay;
+  final VoidCallback? onQueue;
   final VoidCallback onMenuTap;
   final bool isDownloaded;
   final bool highlightTop;
@@ -2132,6 +2159,7 @@ class VideoCard extends StatelessWidget {
     super.key,
     required this.video,
     required this.onPlay,
+    this.onQueue,
     required this.onMenuTap,
     this.isDownloaded = false,
     this.highlightTop = false,
@@ -2140,139 +2168,182 @@ class VideoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final borderRadius = BorderRadius.circular(14);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark
+        ? Colors.black
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final borderColor = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.14);
     final card = ClipRRect(
       borderRadius: borderRadius,
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Material(
-          color: Colors.white.withValues(alpha: 0.035),
-          child: InkWell(
-            onTap: onPlay,
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.14),
-                  width: 0.6,
-                ),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.075),
-                    Colors.white.withValues(alpha: 0.02),
-                  ],
-                ),
+      child: Material(
+        color: cardColor,
+        child: InkWell(
+          onTap: onPlay,
+          child: Container(
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: borderColor,
+                width: 0.6,
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
-              child: Row(
-                children: [
-                  SquareThumbnail.network(
-                    imageUrl: _bestQualityThumbnail(video),
-                    size: 64,
-                    borderRadius: 10,
-                    zoom: 1,
-                    fallback: const SizedBox(
-                      width: 64,
-                      height: 64,
-                      child: Icon(Icons.videocam_off_outlined, size: 26, color: Colors.grey),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          video.title,
-                          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white,
-                              ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          video.author,
-                          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                                color: Colors.white70,
-                              ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  if (isDownloaded) ...[
-                    Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.22),
-                        borderRadius: BorderRadius.circular(999),
-                        border: Border.all(
-                          color: CupertinoColors.white.withValues(alpha: 0.22),
-                          width: 0.5,
-                        ),
-                      ),
-                      child: const Icon(
-                        CupertinoIcons.arrow_down_circle_fill,
-                        size: 14,
-                        color: Color(0xFF5ED47E),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  CupertinoButton(
-                    padding: EdgeInsets.zero,
-                    minimumSize: const Size(32, 32),
-                    onPressed: onMenuTap,
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+            child: Row(
+              children: [
+                SquareThumbnail.network(
+                  imageUrl: _bestQualityThumbnail(video),
+                  size: 64,
+                  borderRadius: 10,
+                  zoom: 1,
+                  fallback: Container(
+                    width: 64,
+                    height: 64,
+                    color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                    alignment: Alignment.center,
                     child: Icon(
-                      CupertinoIcons.ellipsis_circle,
+                      Icons.videocam_off_outlined,
                       size: 24,
                       color: CupertinoColors.secondaryLabel.resolveFrom(context),
                     ),
                   ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        video.title,
+                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: CupertinoColors.label.resolveFrom(context),
+                              letterSpacing: -0.1,
+                            ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        video.author,
+                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                            ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (isDownloaded) ...[
+                  Container(
+                    padding: const EdgeInsets.all(5),
+                    decoration: BoxDecoration(
+                      color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.32),
+                        width: 0.5,
+                      ),
+                    ),
+                    child: const Icon(
+                      CupertinoIcons.arrow_down_circle_fill,
+                      size: 14,
+                      color: CupertinoColors.systemGreen,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
                 ],
-              ),
+                CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(32, 32),
+                  onPressed: onMenuTap,
+                  child: Icon(
+                    CupertinoIcons.ellipsis_circle,
+                    size: 24,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
       ),
     );
 
+    final swipeCard = onQueue == null
+        ? card
+        : Dismissible(
+            key: ObjectKey(video),
+            direction: DismissDirection.startToEnd,
+            dismissThresholds: const {
+              DismissDirection.startToEnd: 0.28,
+            },
+            confirmDismiss: (_) async {
+              onQueue?.call();
+              return false;
+            },
+            background: Container(
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              decoration: BoxDecoration(
+                borderRadius: borderRadius,
+                color: CupertinoColors.systemGreen.withValues(alpha: 0.18),
+                border: Border.all(
+                  color: CupertinoColors.systemGreen.withValues(alpha: 0.36),
+                  width: 0.8,
+                ),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    CupertinoIcons.add_circled_solid,
+                    color: CupertinoColors.systemGreen,
+                    size: 18,
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    'Añadir a la cola',
+                    style: TextStyle(
+                      fontFamily: '.SF Pro Text',
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      color: CupertinoColors.systemGreen,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            child: card,
+          );
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2.0),
       child: highlightTop
           ? Container(
-              padding: const EdgeInsets.all(1.1),
+              padding: const EdgeInsets.all(1),
               decoration: BoxDecoration(
                 borderRadius: borderRadius,
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: const [
-                    Color(0xFFFF3D00),
-                    Color(0xFFFF8A00),
-                    Color(0xFFFFC107),
-                  ].map((c) => c.withValues(alpha: 0.52)).toList(),
-                ),
+                color: CupertinoColors.systemPink.resolveFrom(context).withValues(alpha: 0.34),
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(0xFFFF6D00).withValues(alpha: 0.08),
-                    blurRadius: 8,
+                    color: CupertinoColors.systemPink.resolveFrom(context).withValues(alpha: 0.16),
+                    blurRadius: 10,
                     spreadRadius: 0,
                   ),
                 ],
               ),
-              child: card,
+              child: swipeCard,
             )
-          : card,
+          : swipeCard,
     );
   }
 }
@@ -2925,6 +2996,22 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     );
   }
 
+  void _queueVideo(Video video) {
+    final manager = context.read<VideoPlayerManager>();
+    final added = manager.addOnlineTrackToPlaybackQueue(
+      videoId: video.id.value,
+      title: video.title,
+      thumbnailUrl: _bestQualityThumbnail(video),
+      artist: video.author,
+    );
+    if (!mounted) return;
+    _showIosTopToast(
+      context,
+      message: added ? 'Añadida a la cola' : 'Esta canción ya está en cola',
+      icon: added ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.info_circle_fill,
+    );
+  }
+
   Future<void> _showVideoOptionsMenu(Video video) async {
     final action = await showModalBottomSheet<String>(
       context: context,
@@ -3264,7 +3351,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
                                                 .textTheme
                                                 .labelMedium
                                                 ?.copyWith(
-                                                  color: Colors.white70,
+                                                  color: CupertinoColors.secondaryLabel
+                                                      .resolveFrom(context),
                                                   letterSpacing: 0.25,
                                                 ),
                                           ),
@@ -3278,6 +3366,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
                                                 .titleLarge
                                                 ?.copyWith(
                                                   fontWeight: FontWeight.w800,
+                                                  color: CupertinoColors.label.resolveFrom(context),
                                                 ),
                                           ),
                                           const SizedBox(height: 3),
@@ -3287,7 +3376,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
                                                 .textTheme
                                                 .bodySmall
                                                 ?.copyWith(
-                                                  color: Colors.white70,
+                                                  color: CupertinoColors.secondaryLabel
+                                                      .resolveFrom(context),
                                                 ),
                                           ),
                                           const SizedBox(height: 12),
@@ -3344,6 +3434,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
                                   DownloadStatus.downloaded,
                               highlightTop: index < 3,
                               onPlay: () => _playVideoPreferLocal(video),
+                              onQueue: () => _queueVideo(video),
                               onMenuTap: () => _showVideoOptionsMenu(video),
                             );
                           },

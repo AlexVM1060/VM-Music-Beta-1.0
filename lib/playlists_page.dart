@@ -1,4 +1,3 @@
-import 'dart:ui' show ImageFilter;
 import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
@@ -93,7 +92,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       future: _playlistsFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
+          return const Center(child: CupertinoActivityIndicator(radius: 14));
         }
         if (snapshot.hasError) {
           return const Center(child: Text('No se pudieron cargar las playlists.'));
@@ -113,48 +112,30 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
               padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
               child: Align(
                 alignment: Alignment.centerRight,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(18),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-                    child: Material(
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.white.withValues(alpha: 0.10)
-                          : Colors.white.withValues(alpha: 0.65),
-                      child: InkWell(
-                        onTap: _createPlaylist,
-                        borderRadius: BorderRadius.circular(18),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(18),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.28),
-                              width: 0.6,
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                CupertinoIcons.add,
-                                size: 17,
-                                color: Theme.of(context).colorScheme.primary,
-                              ),
-                              const SizedBox(width: 6),
-                              const Text(
-                                'Nueva playlist',
-                                style: TextStyle(
-                                  fontFamily: '.SF Pro Text',
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ],
-                          ),
+                child: CupertinoButton(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  minimumSize: const Size(30, 30),
+                  color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                  borderRadius: BorderRadius.circular(12),
+                  onPressed: _createPlaylist,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        CupertinoIcons.add,
+                        size: 16,
+                        color: CupertinoColors.systemPink.resolveFrom(context),
+                      ),
+                      const SizedBox(width: 6),
+                      const Text(
+                        'Nueva playlist',
+                        style: TextStyle(
+                          fontFamily: '.SF Pro Text',
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
                         ),
                       ),
-                    ),
+                    ],
                   ),
                 ),
               ),
@@ -171,6 +152,15 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                       ),
                       itemCount: playlists.length,
                       itemBuilder: (context, index) {
+                        final isDark = Theme.of(context).brightness == Brightness.dark;
+                        final cardColor = isDark
+                            ? Colors.black
+                            : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
+                                context,
+                              );
+                        final cardBorder = isDark
+                            ? Colors.white.withValues(alpha: 0.12)
+                            : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
                         final playlist = playlists[index];
                         final isFavorites =
                             PlaylistService.isFavoritesPlaylistName(playlist.name);
@@ -191,40 +181,31 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                           padding: const EdgeInsets.symmetric(vertical: 2.0),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(14),
-                            child: BackdropFilter(
-                              filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                              child: Material(
-                                color: Colors.white.withValues(alpha: 0.035),
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(14),
-                                  onTap: () {
-                                    if (widget.onOpenPlaylist != null) {
-                                      widget.onOpenPlaylist!(playlist);
-                                      return;
-                                    }
-                                    context
-                                        .push('/playlist', extra: playlist)
-                                        .then((_) => _loadPlaylists());
-                                  },
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(14),
-                                      border: Border.all(
-                                        color: Colors.white.withValues(alpha: 0.14),
-                                        width: 0.6,
-                                      ),
-                                      gradient: LinearGradient(
-                                        begin: Alignment.topLeft,
-                                        end: Alignment.bottomRight,
-                                        colors: [
-                                          Colors.white.withValues(alpha: 0.075),
-                                          Colors.white.withValues(alpha: 0.02),
-                                        ],
-                                      ),
+                            child: Material(
+                              color: cardColor,
+                              surfaceTintColor: Colors.transparent,
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(14),
+                                onTap: () {
+                                  if (widget.onOpenPlaylist != null) {
+                                    widget.onOpenPlaylist!(playlist);
+                                    return;
+                                  }
+                                  context
+                                      .push('/playlist', extra: playlist)
+                                      .then((_) => _loadPlaylists());
+                                },
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(14),
+                                    border: Border.all(
+                                      color: cardBorder,
+                                      width: 0.5,
                                     ),
-                                    padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
-                                    child: Row(
-                                      children: [
+                                  ),
+                                  padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
+                                  child: Row(
+                                    children: [
                                         ClipRRect(
                                           borderRadius: BorderRadius.circular(10.0),
                                           child: SizedBox(
@@ -235,9 +216,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                               children: [
                                                 (cover == null || cover.isEmpty) && !hasLocalCover
                                                     ? Container(
-                                                        color: Theme.of(context)
-                                                            .colorScheme
-                                                            .surfaceContainerHighest,
+                                                        color: CupertinoColors
+                                                            .tertiarySystemFill
+                                                            .resolveFrom(context),
                                                         alignment: Alignment.center,
                                                         child: Icon(
                                                           isFavorites
@@ -253,9 +234,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                                             fallback:
                                                                 cover == null || cover.isEmpty
                                                                     ? Container(
-                                                                        color: Theme.of(context)
-                                                                            .colorScheme
-                                                                            .surfaceContainerHighest,
+                                                                        color: CupertinoColors
+                                                                            .tertiarySystemFill
+                                                                            .resolveFrom(context),
                                                                         alignment: Alignment.center,
                                                                         child: Icon(
                                                                           isFavorites
@@ -268,9 +249,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                                                         size: 74,
                                                                         borderRadius: 0,
                                                                         fallback: Container(
-                                                                          color: Theme.of(context)
-                                                                              .colorScheme
-                                                                              .surfaceContainerHighest,
+                                                                          color: CupertinoColors
+                                                                              .tertiarySystemFill
+                                                                              .resolveFrom(context),
                                                                         ),
                                                                       ),
                                                           )
@@ -279,9 +260,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                                             size: 74,
                                                             borderRadius: 0,
                                                             fallback: Container(
-                                                              color: Theme.of(context)
-                                                                  .colorScheme
-                                                                  .surfaceContainerHighest,
+                                                              color: CupertinoColors
+                                                                  .tertiarySystemFill
+                                                                  .resolveFrom(context),
                                                               alignment: Alignment.center,
                                                               child: Icon(
                                                                 isFavorites
@@ -298,12 +279,15 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                                       width: 16,
                                                       height: 16,
                                                       decoration: BoxDecoration(
-                                                        color: Colors.black.withValues(alpha: 0.4),
+                                                        color: CupertinoColors.label
+                                                            .resolveFrom(context)
+                                                            .withValues(alpha: 0.32),
                                                         shape: BoxShape.circle,
                                                       ),
-                                                      child: const Icon(
+                                                      child: Icon(
                                                         CupertinoIcons.star_fill,
-                                                        color: Colors.white,
+                                                        color: CupertinoColors.systemBackground
+                                                            .resolveFrom(context),
                                                         size: 10,
                                                       ),
                                                     ),
@@ -334,10 +318,8 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                                 style: TextStyle(
                                                   fontFamily: '.SF Pro Text',
                                                   fontSize: 13,
-                                                  color: Theme.of(context)
-                                                      .textTheme
-                                                      .bodySmall
-                                                      ?.color,
+                                                  color: CupertinoColors.secondaryLabel
+                                                      .resolveFrom(context),
                                                 ),
                                               ),
                                             ],
@@ -347,10 +329,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                         Icon(
                                           CupertinoIcons.chevron_right,
                                           size: 18,
-                                          color: Theme.of(context).colorScheme.outline,
+                                          color: CupertinoColors.tertiaryLabel.resolveFrom(context),
                                         ),
-                                      ],
-                                    ),
+                                    ],
                                   ),
                                 ),
                               ),

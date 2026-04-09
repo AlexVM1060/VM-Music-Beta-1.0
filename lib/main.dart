@@ -1,5 +1,3 @@
-import 'dart:ui' show ImageFilter;
-
 import 'dart:async';
 
 import 'package:audio_session/audio_session.dart';
@@ -11,6 +9,7 @@ import 'package:myapp/account_page.dart';
 import 'package:myapp/app_tab_state.dart';
 import 'package:myapp/audio_handler.dart';
 import 'package:myapp/downloads_page.dart';
+import 'package:myapp/home_page.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/playlist.dart';
 import 'package:myapp/models/video_history.dart';
@@ -109,13 +108,19 @@ class MyApp extends StatelessWidget {
         seedColor: const Color.fromARGB(255, 207, 21, 21),
         brightness: Brightness.light,
       ),
+      cupertinoOverrideTheme: const CupertinoThemeData(
+        brightness: Brightness.light,
+      ),
       textTheme: GoogleFonts.robotoTextTheme(),
     );
 
     final darkTheme = ThemeData(
       useMaterial3: true,
       colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color.fromARGB(255, 207, 21, 21),
+        seedColor: CupertinoColors.systemPink,
+        brightness: Brightness.dark,
+      ),
+      cupertinoOverrideTheme: const CupertinoThemeData(
         brightness: Brightness.dark,
       ),
       textTheme: GoogleFonts.robotoTextTheme(ThemeData(brightness: Brightness.dark).textTheme),
@@ -129,6 +134,7 @@ class MyApp extends StatelessWidget {
           theme: lightTheme,
           darkTheme: darkTheme,
           themeMode: themeProvider.themeMode,
+          debugShowCheckedModeBanner: false,
         );
       },
     );
@@ -216,6 +222,7 @@ class _MainTabsState extends State<MainTabs> {
   int _displayedPageIndex = 0;
 
   static const List<Widget> _pages = <Widget>[
+    _KeepAlivePage(child: HomePage()),
     _KeepAlivePage(child: SearchPage()),
     _KeepAlivePage(child: DownloadsPage()),
     _KeepAlivePage(child: AccountPage()),
@@ -254,8 +261,13 @@ class _MainTabsState extends State<MainTabs> {
     final isFullScreen = context.watch<VideoPlayerManager>().isFullScreen;
     final searchViewState = context.watch<SearchViewState>();
     final themeProvider = Provider.of<ThemeProvider>(context);
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final shellBackground = isDark
+        ? Colors.black
+        : CupertinoColors.systemGroupedBackground.resolveFrom(context);
     final hideMainAppBar =
-        selectedIndex == 2 || (selectedIndex == 0 && searchViewState.isArtistFullscreen);
+        selectedIndex == 3 || (selectedIndex == 1 && searchViewState.isArtistFullscreen);
 
     if (_displayedPageIndex != selectedIndex) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -271,38 +283,43 @@ class _MainTabsState extends State<MainTabs> {
 
     return Stack(
       children: [
-        const Positioned.fill(child: _AppInterfaceBackground()),
         Scaffold(
-          extendBody: true,
-          backgroundColor: Colors.transparent,
+          extendBody: false,
+          backgroundColor: shellBackground,
           appBar: hideMainAppBar
               ? null
-              : AppBar(
-                  backgroundColor: Colors.transparent,
-                  elevation: 0,
-                  surfaceTintColor: Colors.transparent,
-                  scrolledUnderElevation: 0,
-                  forceMaterialTransparency: true,
-                  title: const Text(
+              : CupertinoNavigationBar(
+                  transitionBetweenRoutes: false,
+                  backgroundColor: shellBackground,
+                  border: Border(
+                    bottom: BorderSide(
+                      color: isDark
+                          ? Colors.white.withValues(alpha: 0.12)
+                          : colorScheme.outlineVariant.withValues(alpha: 0.35),
+                      width: 0.0,
+                    ),
+                  ),
+                  middle: const Text(
                     'VM Music',
                     style: TextStyle(
                       fontFamily: '.SF Pro Display',
                       fontWeight: FontWeight.w700,
-                      fontSize: 32,
+                      fontSize: 20,
                       letterSpacing: -0.2,
                     ),
                   ),
-                  actions: [
-                    IconButton(
-                      icon: Icon(
-                        themeProvider.themeMode == ThemeMode.dark
-                            ? Icons.light_mode
-                            : Icons.dark_mode,
-                      ),
-                      onPressed: () => themeProvider.toggleTheme(),
-                      tooltip: 'Cambiar tema',
+                  trailing: CupertinoButton(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(28, 28),
+                    onPressed: () => themeProvider.toggleTheme(),
+                    child: Icon(
+                      themeProvider.themeMode == ThemeMode.dark
+                          ? CupertinoIcons.sun_max_fill
+                          : CupertinoIcons.moon_fill,
+                      size: 20,
+                      color: CupertinoColors.systemPink.resolveFrom(context),
                     ),
-                  ],
+                  ),
                 ),
           body: PageView(
             controller: controller,
@@ -311,102 +328,12 @@ class _MainTabsState extends State<MainTabs> {
           ),
           bottomNavigationBar: isFullScreen
               ? null
-              : _GlassBottomNavBar(
+              : _CupertinoRootTabBar(
                   currentIndex: selectedIndex,
                   onTap: _onItemTapped,
                 ),
         ),
       ],
-    );
-  }
-}
-
-class _AppInterfaceBackground extends StatelessWidget {
-  const _AppInterfaceBackground();
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: _appShellBackgroundDecoration(context),
-      child: Stack(
-        children: [
-          Positioned(
-            top: -70,
-            left: -40,
-            child: _GlowOrb(
-              size: 220,
-              color: Theme.of(context).colorScheme.primary.withValues(
-                    alpha: Theme.of(context).brightness == Brightness.dark
-                        ? 0.18
-                        : 0.20,
-                  ),
-            ),
-          ),
-          Positioned(
-            bottom: -90,
-            right: -50,
-            child: _GlowOrb(
-              size: 260,
-              color: Theme.of(context).colorScheme.primary.withValues(
-                    alpha: Theme.of(context).brightness == Brightness.dark
-                        ? 0.14
-                        : 0.16,
-                  ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-BoxDecoration _appShellBackgroundDecoration(BuildContext context) {
-  final isDark = Theme.of(context).brightness == Brightness.dark;
-  final primary = Theme.of(context).colorScheme.primary;
-  return BoxDecoration(
-    gradient: LinearGradient(
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-      colors: isDark
-          ? [
-              const Color(0xFF121015),
-              const Color(0xFF1A1311),
-              const Color(0xFF1C1613),
-            ]
-          : [
-              primary.withValues(alpha: 0.12),
-              const Color(0xFFF9F1EA),
-              const Color(0xFFF4EBE5),
-            ],
-    ),
-  );
-}
-
-class _GlowOrb extends StatelessWidget {
-  final double size;
-  final Color color;
-
-  const _GlowOrb({
-    required this.size,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: RadialGradient(
-            colors: [
-              color,
-              color.withValues(alpha: 0),
-            ],
-          ),
-        ),
-      ),
     );
   }
 }
@@ -434,145 +361,49 @@ class _KeepAlivePageState extends State<_KeepAlivePage>
   }
 }
 
-class _GlassBottomNavBar extends StatelessWidget {
+class _CupertinoRootTabBar extends StatelessWidget {
   final int currentIndex;
   final ValueChanged<int> onTap;
 
-  const _GlassBottomNavBar({
+  const _CupertinoRootTabBar({
     required this.currentIndex,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).padding.bottom;
+    final colorScheme = Theme.of(context).colorScheme;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final shellBackground = isDark
+        ? Colors.black
+        : CupertinoColors.systemGroupedBackground.resolveFrom(context);
     const items = <({IconData icon, String label})>[
+      (icon: CupertinoIcons.home, label: 'Inicio'),
       (icon: CupertinoIcons.search, label: 'Buscar'),
       (icon: CupertinoIcons.arrow_down_circle, label: 'Descargas'),
       (icon: CupertinoIcons.person_crop_circle, label: 'Cuenta'),
     ];
 
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(12, 4, 12, bottom > 0 ? 8 : 10),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(24),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-            child: Container(
-              height: 62,
-              decoration: BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? Colors.white.withValues(alpha: 0.10)
-                    : Colors.white.withValues(alpha: 0.72),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.26),
-                  width: 0.6,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.14),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: List.generate(items.length, (index) {
-                  final item = items[index];
-                  final isSelected = currentIndex == index;
-                  return Expanded(
-                    child: _GlassNavItem(
-                      icon: item.icon,
-                      label: item.label,
-                      selected: isSelected,
-                      onTap: () => onTap(index),
-                    ),
-                  );
-                }),
-              ),
-            ),
-          ),
+    return CupertinoTabBar(
+      currentIndex: currentIndex,
+      onTap: onTap,
+      iconSize: 24,
+      activeColor: CupertinoColors.systemPink.resolveFrom(context),
+      inactiveColor: CupertinoColors.secondaryLabel.resolveFrom(context),
+      border: Border(
+        top: BorderSide(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.12)
+              : colorScheme.outlineVariant.withValues(alpha: 0.35),
+          width: 0.0,
         ),
       ),
-    );
-  }
-}
-
-class _GlassNavItem extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _GlassNavItem({
-    required this.icon,
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final selectedColor = Theme.of(context).colorScheme.primary;
-    final defaultColor = CupertinoColors.secondaryLabel.resolveFrom(context);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(18),
-          onTap: onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 240),
-            curve: Curves.easeOutCubic,
-            decoration: BoxDecoration(
-              color: selected
-                  ? selectedColor.withValues(alpha: 0.13)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(
-                color: selected
-                    ? selectedColor.withValues(alpha: 0.26)
-                    : Colors.transparent,
-                width: 0.6,
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  AnimatedScale(
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeOutBack,
-                    scale: selected ? 1.06 : 1,
-                    child: Icon(
-                      icon,
-                      size: 20,
-                      color: selected ? selectedColor : defaultColor,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  AnimatedDefaultTextStyle(
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeOutCubic,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                      color: selected ? selectedColor : defaultColor,
-                      height: 1.0,
-                    ),
-                    child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  ),
-                ],
-              ),
-            ),
-          ),
+      backgroundColor: shellBackground,
+      items: List.generate(
+        items.length,
+        (index) => BottomNavigationBarItem(
+          icon: Icon(items[index].icon),
+          label: items[index].label,
         ),
       ),
     );

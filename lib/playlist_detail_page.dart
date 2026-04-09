@@ -1,7 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui' show ImageFilter;
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:myapp/models/downloaded_video.dart';
@@ -60,30 +58,53 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final trackCardColor = isDark
+        ? Colors.black
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final trackCardBorder = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
     final playlistService = Provider.of<PlaylistService>(context, listen: false);
     final downloadService = Provider.of<DownloadService>(context);
     final videoManager = Provider.of<VideoPlayerManager>(context, listen: false);
     final isAutoDownload = downloadService.isPlaylistAutoDownload(_currentPlaylist.name);
 
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
-        scrolledUnderElevation: 0,
+      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(context),
+      appBar: CupertinoNavigationBar(
+        transitionBetweenRoutes: false,
+        backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(context).withValues(alpha: 0.92),
+        border: Border(
+          bottom: BorderSide(
+            color: CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.18),
+            width: 0.0,
+          ),
+        ),
         leading: widget.onBack != null
-            ? IconButton(
-                icon: const Icon(CupertinoIcons.back),
+            ? CupertinoButton(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(28, 28),
                 onPressed: widget.onBack,
+                child: const Icon(CupertinoIcons.back, size: 22),
               )
             : null,
-        title: const SizedBox.shrink(),
+        middle: Text(
+          _currentPlaylist.name,
+          style: const TextStyle(
+            fontFamily: '.SF Pro Text',
+            fontWeight: FontWeight.w700,
+            fontSize: 17,
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
       ),
       body: FutureBuilder<List<DownloadedVideo>>(
         future: downloadService.getDownloadedVideos(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
+            return const Center(child: CupertinoActivityIndicator(radius: 14));
           }
           final downloadedVideos = snapshot.data!;
           final downloadedById = <String, DownloadedVideo>{
@@ -136,12 +157,80 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(14),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                child: Dismissible(
+                  key: ValueKey('playlist_track_${video.videoId}_$videoIndex'),
+                  direction: DismissDirection.startToEnd,
+                  dismissThresholds: const {
+                    DismissDirection.startToEnd: 0.28,
+                  },
+                  confirmDismiss: (_) async {
+                    final added = downloadedVideo != null
+                        ? videoManager.addLocalTrackToPlaybackQueue(
+                            videoId: downloadedVideo.videoId,
+                            title: downloadedVideo.title,
+                            thumbnailUrl: (downloadedVideo.localThumbnailPath != null &&
+                                    downloadedVideo.localThumbnailPath!.isNotEmpty)
+                                ? downloadedVideo.localThumbnailPath!
+                                : downloadedVideo.thumbnailUrl,
+                            artist: downloadedVideo.channelTitle,
+                            filePath: downloadedVideo.filePath,
+                            localPlainLyrics: downloadedVideo.plainLyrics,
+                            localSyncedLyrics: downloadedVideo.syncedLyrics,
+                          )
+                        : videoManager.addOnlineTrackToPlaybackQueue(
+                            videoId: video.videoId,
+                            title: video.title,
+                            thumbnailUrl: video.thumbnailUrl,
+                            artist: video.channelTitle,
+                          );
+                    if (context.mounted) {
+                      _showQueueIosToast(
+                        context,
+                        message: added ? 'Se ha añadido a la cola' : 'Esta canción ya está en cola',
+                        icon: added
+                            ? CupertinoIcons.check_mark_circled_solid
+                            : CupertinoIcons.info_circle_fill,
+                      );
+                    }
+                    return false;
+                  },
+                  background: Container(
+                    alignment: Alignment.centerLeft,
+                    padding: const EdgeInsets.symmetric(horizontal: 18),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      color: CupertinoColors.systemGreen.withValues(alpha: 0.18),
+                      border: Border.all(
+                        color: CupertinoColors.systemGreen.withValues(alpha: 0.36),
+                        width: 0.8,
+                      ),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          CupertinoIcons.add_circled_solid,
+                          color: CupertinoColors.systemGreen,
+                          size: 18,
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          'Añadir a la cola',
+                          style: TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                            color: CupertinoColors.systemGreen,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(14),
                     child: Material(
-                      color: Colors.white.withValues(alpha: 0.035),
+                      color: trackCardColor,
+                      surfaceTintColor: Colors.transparent,
                       child: InkWell(
                         borderRadius: BorderRadius.circular(14),
                         onTap: () async {
@@ -178,16 +267,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.14),
-                              width: 0.6,
-                            ),
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                Colors.white.withValues(alpha: 0.075),
-                                Colors.white.withValues(alpha: 0.02),
-                              ],
+                              color: trackCardBorder,
+                              width: 0.5,
                             ),
                           ),
                           padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
@@ -198,9 +279,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       filePath: localThumbPath,
                                       size: 64,
                                       borderRadius: 10,
-                                      zoom: 1.34,
+                                      zoom: 1,
                                       fallback: Container(
-                                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                        color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                                          context,
+                                        ),
                                         alignment: Alignment.center,
                                         child: const Icon(CupertinoIcons.music_note),
                                       ),
@@ -211,7 +294,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       borderRadius: 10,
                                       zoom: 1,
                                       fallback: Container(
-                                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                        color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                                          context,
+                                        ),
                                         alignment: Alignment.center,
                                         child: const Icon(CupertinoIcons.music_note),
                                       ),
@@ -233,7 +318,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
                                         fontSize: 12,
-                                        color: Theme.of(context).textTheme.bodySmall?.color,
+                                        color: CupertinoColors.secondaryLabel.resolveFrom(context),
                                       ),
                                     ),
                                   ],
@@ -291,7 +376,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       },
                               ),
                               IconButton(
-                                icon: const Icon(CupertinoIcons.delete, color: Colors.red),
+                                icon: const Icon(
+                                  CupertinoIcons.delete,
+                                  color: CupertinoColors.systemRed,
+                                ),
                                 onPressed: () async {
                                   final wasDownloaded = await downloadService
                                       .isVideoDownloaded(video.videoId);
@@ -347,79 +435,76 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     required VideoPlayerManager videoManager,
     required bool isAutoDownload,
   }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark
+        ? Colors.black
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final cardBorder = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(14),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.14),
-                width: 0.6,
-              ),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Colors.white.withValues(alpha: 0.075),
-                  Colors.white.withValues(alpha: 0.02),
-                ],
-              ),
+        child: Container(
+          decoration: BoxDecoration(
+            color: cardColor,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: cardBorder,
+              width: 0.5,
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
-              children: [
-                const Icon(CupertinoIcons.arrow_down_circle, size: 20),
-                const SizedBox(width: 10),
-                const Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Descarga automática',
-                        style: TextStyle(
-                          fontFamily: '.SF Pro Text',
-                          fontWeight: FontWeight.w700,
-                          fontSize: 15,
-                        ),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              const Icon(CupertinoIcons.arrow_down_circle, size: 20),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Descarga automática',
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
                       ),
-                      SizedBox(height: 2),
-                      Text(
-                        'Las nuevas canciones se descargan automáticamente',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: '.SF Pro Text',
-                          fontSize: 12,
-                          color: Colors.white70,
-                        ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Las nuevas canciones se descargan automáticamente',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontSize: 12,
+                        color: CupertinoColors.secondaryLabel,
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-                CupertinoSwitch(
-                  value: isAutoDownload,
-                  onChanged: (value) async {
-                    await downloadService.setPlaylistAutoDownload(_currentPlaylist.name, value);
-                    if (!context.mounted) return;
-                    if (value) {
-                      await _syncPlaylistAutoDownloads(
-                        downloadService: downloadService,
-                        videoManager: videoManager,
-                        showSnackBar: true,
-                      );
-                      return;
-                    }
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Auto-descarga desactivada.')),
+              ),
+              CupertinoSwitch(
+                value: isAutoDownload,
+                onChanged: (value) async {
+                  await downloadService.setPlaylistAutoDownload(_currentPlaylist.name, value);
+                  if (!context.mounted) return;
+                  if (value) {
+                    await _syncPlaylistAutoDownloads(
+                      downloadService: downloadService,
+                      videoManager: videoManager,
+                      showSnackBar: true,
                     );
-                  },
-                ),
-              ],
-            ),
+                    return;
+                  }
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Auto-descarga desactivada.')),
+                  );
+                },
+              ),
+            ],
           ),
         ),
       ),
@@ -430,7 +515,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     BuildContext context, {
     required Map<String, DownloadedVideo> downloadedById,
   }) {
-    final fallback = Theme.of(context).colorScheme.surfaceContainerHighest;
+    final fallback = CupertinoColors.tertiarySystemFill.resolveFrom(context);
+    final coverStroke = CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.28);
+    final coverFallbackIcon = CupertinoColors.secondaryLabel.resolveFrom(context);
+    final favoritesOverlay = CupertinoColors.systemBackground
+        .resolveFrom(context)
+        .withValues(alpha: 0.20);
+    final favoritesBorder = CupertinoColors.systemBackground
+        .resolveFrom(context)
+        .withValues(alpha: 0.38);
+    final favoritesIcon = CupertinoColors.label.resolveFrom(context);
     String? cover;
     String? localCoverPath;
     for (final video in _currentPlaylist.videos) {
@@ -459,7 +553,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(22),
                   border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.20),
+                    color: coverStroke,
                     width: 0.8,
                   ),
                 ),
@@ -471,14 +565,14 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                         filePath: localCoverPath,
                         size: coverSize,
                         borderRadius: 0,
-                        zoom: 1.34,
+                        zoom: 1,
                         fallback: Container(
                           color: fallback,
                           alignment: Alignment.center,
-                          child: const Icon(
+                          child: Icon(
                             CupertinoIcons.music_note_list,
                             size: 54,
-                            color: Colors.white70,
+                            color: coverFallbackIcon,
                           ),
                         ),
                       )
@@ -491,10 +585,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                         fallback: Container(
                           color: fallback,
                           alignment: Alignment.center,
-                          child: const Icon(
+                          child: Icon(
                             CupertinoIcons.music_note_list,
                             size: 54,
-                            color: Colors.white70,
+                            color: coverFallbackIcon,
                           ),
                         ),
                       )
@@ -502,10 +596,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       Container(
                         color: fallback,
                         alignment: Alignment.center,
-                        child: const Icon(
+                        child: Icon(
                           CupertinoIcons.music_note_list,
                           size: 54,
-                          color: Colors.white70,
+                          color: coverFallbackIcon,
                         ),
                       ),
                     if (_isFavoritesPlaylist)
@@ -514,16 +608,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           width: 84,
                           height: 84,
                           decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.16),
+                            color: favoritesOverlay,
                             shape: BoxShape.circle,
                             border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.35),
+                              color: favoritesBorder,
                               width: 1,
                             ),
                           ),
-                          child: const Icon(
+                          child: Icon(
                             CupertinoIcons.star_fill,
-                            color: Colors.white,
+                            color: favoritesIcon,
                             size: 38,
                           ),
                         ),
@@ -636,25 +730,30 @@ class _DownloadStatusIndicator extends StatelessWidget {
     Widget child;
 
     if (isDownloaded || status == DownloadStatus.downloaded) {
-      child = const Icon(CupertinoIcons.check_mark_circled_solid, color: Colors.green);
+      child = const Icon(
+        CupertinoIcons.check_mark_circled_solid,
+        color: CupertinoColors.systemGreen,
+      );
     } else if (status == DownloadStatus.downloading) {
       child = SizedBox(
         width: 18,
         height: 18,
-        child: CircularProgressIndicator(
-          value: progress > 0 ? progress : null,
-          strokeWidth: 2,
+        child: CupertinoActivityIndicator.partiallyRevealed(
+          progress: progress.clamp(0.0, 1.0),
+          radius: 9,
         ),
       );
     } else if (status == DownloadStatus.error) {
-      child = const Icon(CupertinoIcons.exclamationmark_circle, color: Colors.red);
+      child = const Icon(
+        CupertinoIcons.exclamationmark_circle,
+        color: CupertinoColors.systemRed,
+      );
     } else {
-      final isDark = Theme.of(context).brightness == Brightness.dark;
       child = Icon(
         CupertinoIcons.arrow_down_circle,
         color: onPressed == null
-            ? (isDark ? Colors.white54 : Colors.black54)
-            : (isDark ? Colors.white : Colors.black),
+            ? CupertinoColors.tertiaryLabel.resolveFrom(context)
+            : CupertinoColors.label.resolveFrom(context),
       );
     }
 
@@ -666,6 +765,140 @@ class _DownloadStatusIndicator extends StatelessWidget {
           ? null
           : onPressed,
       child: child,
+    );
+  }
+}
+
+void _showQueueIosToast(
+  BuildContext context, {
+  required String message,
+  required IconData icon,
+}) {
+  final overlay = Overlay.of(context, rootOverlay: true);
+
+  late OverlayEntry entry;
+  entry = OverlayEntry(
+    builder: (overlayContext) {
+      final bottomInset = MediaQuery.of(overlayContext).padding.bottom;
+      return IgnorePointer(
+        ignoring: true,
+        child: SizedBox.expand(
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: Padding(
+              padding: EdgeInsets.only(bottom: bottomInset + 130),
+              child: _QueueIosToast(message: message, icon: icon),
+            ),
+          ),
+        ),
+      );
+    },
+  );
+  overlay.insert(entry);
+  Timer(const Duration(milliseconds: 1900), () {
+    entry.remove();
+  });
+}
+
+class _QueueIosToast extends StatefulWidget {
+  final String message;
+  final IconData icon;
+
+  const _QueueIosToast({
+    required this.message,
+    required this.icon,
+  });
+
+  @override
+  State<_QueueIosToast> createState() => _QueueIosToastState();
+}
+
+class _QueueIosToastState extends State<_QueueIosToast>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _opacity;
+  late final Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+      reverseDuration: const Duration(milliseconds: 220),
+    );
+    _opacity = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    _slide = Tween<Offset>(
+      begin: const Offset(0, 0.06),
+      end: Offset.zero,
+    ).animate(_opacity);
+    unawaited(_run());
+  }
+
+  Future<void> _run() async {
+    await _controller.forward();
+    await Future<void>.delayed(const Duration(milliseconds: 1300));
+    if (!mounted) return;
+    await _controller.reverse();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final background = CupertinoDynamicColor.resolve(
+      CupertinoColors.systemGrey6.withValues(alpha: 0.96),
+      context,
+    );
+    final border = CupertinoDynamicColor.resolve(
+      CupertinoColors.separator.withValues(alpha: 0.32),
+      context,
+    );
+    return FadeTransition(
+      opacity: _opacity,
+      child: SlideTransition(
+        position: _slide,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: background,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: border, width: 0.6),
+            boxShadow: [
+              BoxShadow(
+                color: CupertinoColors.black.withValues(alpha: 0.18),
+                blurRadius: 14,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(widget.icon, size: 18, color: CupertinoColors.systemPink.resolveFrom(context)),
+                const SizedBox(width: 8),
+                Text(
+                  widget.message,
+                  style: const TextStyle(
+                    fontFamily: '.SF Pro Text',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

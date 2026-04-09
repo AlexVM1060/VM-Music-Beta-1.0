@@ -1,6 +1,4 @@
 import 'dart:io';
-import 'dart:ui' show ImageFilter;
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:myapp/models/downloaded_video.dart';
@@ -18,12 +16,12 @@ class DownloadsPage extends StatelessWidget {
     final manager = context.read<VideoPlayerManager>();
 
     return Scaffold(
-      backgroundColor: Colors.transparent,
+      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(context),
       body: FutureBuilder<List<DownloadedVideo>>(
         future: downloadService.getDownloadedVideos(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
+            return const Center(child: CupertinoActivityIndicator(radius: 14));
           }
 
           if (!snapshot.hasData || snapshot.data!.isEmpty) {
@@ -51,44 +49,34 @@ class DownloadsPage extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(vertical: 2.0),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(14),
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                      child: Material(
-                        color: Colors.white.withValues(alpha: 0.035),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(14),
-                          onTap: () {
-                            manager.playLocalFile(
-                              id: song.videoId,
-                              filePath: song.filePath,
-                              title: song.title,
-                              thumbnailUrl: hasLocalThumb
-                                  ? localThumbPath
-                                  : song.thumbnailUrl,
-                              artist: song.channelTitle,
-                              localPlainLyrics: song.plainLyrics,
-                              localSyncedLyrics: song.syncedLyrics,
-                            );
-                          },
-                          child: Container(
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(14),
-                              border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.14),
-                                width: 0.6,
-                              ),
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Colors.white.withValues(alpha: 0.075),
-                                  Colors.white.withValues(alpha: 0.02),
-                                ],
-                              ),
+                    child: Material(
+                      color: CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () {
+                          manager.playLocalFile(
+                            id: song.videoId,
+                            filePath: song.filePath,
+                            title: song.title,
+                            thumbnailUrl: hasLocalThumb
+                                ? localThumbPath
+                                : song.thumbnailUrl,
+                            artist: song.channelTitle,
+                            localPlainLyrics: song.plainLyrics,
+                            localSyncedLyrics: song.syncedLyrics,
+                          );
+                        },
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12),
+                              width: 0.5,
                             ),
-                            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
-                            child: Row(
-                              children: [
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
+                          child: Row(
+                            children: [
                                 hasLocalThumb
                                     ? SquareThumbnail.file(
                                         filePath: localThumbPath,
@@ -97,11 +85,11 @@ class DownloadsPage extends StatelessWidget {
                                         fallback: Container(
                                           width: 64,
                                           height: 64,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .surfaceContainerHighest,
+                                          color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                                            context,
+                                          ),
                                           alignment: Alignment.center,
-                                          child: const Icon(Icons.music_note_rounded),
+                                          child: const Icon(CupertinoIcons.music_note),
                                         ),
                                       )
                                     : SquareThumbnail.network(
@@ -111,11 +99,11 @@ class DownloadsPage extends StatelessWidget {
                                         fallback: Container(
                                           width: 64,
                                           height: 64,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .surfaceContainerHighest,
+                                          color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                                            context,
+                                          ),
                                           alignment: Alignment.center,
-                                          child: const Icon(Icons.music_note_rounded),
+                                          child: const Icon(CupertinoIcons.music_note),
                                         ),
                                       ),
                                 const SizedBox(width: 16),
@@ -134,7 +122,11 @@ class DownloadsPage extends StatelessWidget {
                                       const SizedBox(height: 4),
                                       Text(
                                         song.channelTitle,
-                                        style: Theme.of(context).textTheme.bodySmall,
+                                        style: TextStyle(
+                                          color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                          fontSize: 12,
+                                          fontFamily: '.SF Pro Text',
+                                        ),
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
                                       ),
@@ -142,24 +134,23 @@ class DownloadsPage extends StatelessWidget {
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                IconButton(
-                                  icon: const Icon(
-                                    CupertinoIcons.delete,
-                                    color: Colors.red,
-                                  ),
-                                  tooltip: 'Eliminar descarga',
-                                  onPressed: () async {
-                                    await downloadService.deleteVideo(song.videoId);
-                                    if (!context.mounted) return;
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(
-                                        content: Text('Canción eliminada de descargas.'),
-                                      ),
-                                    );
-                                  },
+                              IconButton(
+                                icon: const Icon(
+                                  CupertinoIcons.delete,
+                                  color: CupertinoColors.systemRed,
                                 ),
-                              ],
-                            ),
+                                tooltip: 'Eliminar descarga',
+                                onPressed: () async {
+                                  await downloadService.deleteVideo(song.videoId);
+                                  if (!context.mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Canción eliminada de descargas.'),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
                           ),
                         ),
                       ),

@@ -16,7 +16,7 @@ class SquareThumbnail extends StatelessWidget {
     required this.imageUrl,
     required this.size,
     this.borderRadius = 10,
-    this.zoom = 1.30,
+    this.zoom = 1,
     required this.fallback,
   }) : filePath = null;
 
@@ -25,7 +25,7 @@ class SquareThumbnail extends StatelessWidget {
     required this.filePath,
     required this.size,
     this.borderRadius = 10,
-    this.zoom = 1.34,
+    this.zoom = 1,
     required this.fallback,
   }) : imageUrl = null;
 
