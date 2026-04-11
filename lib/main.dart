@@ -17,6 +17,7 @@ import 'package:myapp/router.dart';
 import 'package:myapp/search_page.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
+import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/video_player_manager.dart';
@@ -33,10 +34,14 @@ void main() async {
   Hive.registerAdapter(VideoHistoryAdapter());
   Hive.registerAdapter(PlaylistAdapter());
   Hive.registerAdapter(DownloadedVideoAdapter());
+  final appSettingsService = AppSettingsService();
+  await appSettingsService.init();
 
   late final dynamic audioHandler;
   try {
-    audioHandler = await initAudioService().timeout(const Duration(seconds: 10));
+    audioHandler = await initAudioService().timeout(
+      const Duration(seconds: 10),
+    );
   } catch (_) {
     audioHandler = SilentAudioHandler();
   }
@@ -44,13 +49,19 @@ void main() async {
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => VideoPlayerManager(audioHandler)),
+        ChangeNotifierProvider.value(value: appSettingsService),
+        ChangeNotifierProvider(
+          create: (_) => VideoPlayerManager(audioHandler, appSettingsService),
+        ),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
         ChangeNotifierProvider(create: (_) => AppTabState()),
         ChangeNotifierProvider(create: (_) => SearchViewState()),
         Provider(create: (_) => HistoryService()),
         Provider(create: (_) => PlaylistService()),
-        ChangeNotifierProvider(create: (_) => DownloadService()),      ],
+        ChangeNotifierProvider(
+          create: (_) => DownloadService(appSettingsService),
+        ),
+      ],
       child: const MyApp(),
     ),
   );
@@ -67,9 +78,11 @@ Future<void> _configureAudioSessionSafe() async {
         .configure(
           const AudioSessionConfiguration(
             avAudioSessionCategory: AVAudioSessionCategory.playback,
-            avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.allowAirPlay,
+            avAudioSessionCategoryOptions:
+                AVAudioSessionCategoryOptions.allowAirPlay,
             avAudioSessionMode: AVAudioSessionMode.defaultMode,
-            avAudioSessionRouteSharingPolicy: AVAudioSessionRouteSharingPolicy.defaultPolicy,
+            avAudioSessionRouteSharingPolicy:
+                AVAudioSessionRouteSharingPolicy.defaultPolicy,
             avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
             androidAudioAttributes: AndroidAudioAttributes(
               contentType: AndroidAudioContentType.music,
@@ -92,7 +105,9 @@ class ThemeProvider with ChangeNotifier {
   ThemeMode get themeMode => _themeMode;
 
   void toggleTheme() {
-    _themeMode = _themeMode == ThemeMode.light ? ThemeMode.dark : ThemeMode.light;
+    _themeMode = _themeMode == ThemeMode.light
+        ? ThemeMode.dark
+        : ThemeMode.light;
     notifyListeners();
   }
 }
@@ -123,7 +138,9 @@ class MyApp extends StatelessWidget {
       cupertinoOverrideTheme: const CupertinoThemeData(
         brightness: Brightness.dark,
       ),
-      textTheme: GoogleFonts.robotoTextTheme(ThemeData(brightness: Brightness.dark).textTheme),
+      textTheme: GoogleFonts.robotoTextTheme(
+        ThemeData(brightness: Brightness.dark).textTheme,
+      ),
     );
 
     return Consumer<ThemeProvider>(
@@ -146,12 +163,7 @@ class AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Stack(
-      children: [
-        MainTabs(),
-        OverlayVideoPlayer(),
-      ],
-    );
+    return const Stack(children: [MainTabs(), OverlayVideoPlayer()]);
   }
 }
 
@@ -193,10 +205,7 @@ class OverlayVideoPlayer extends StatelessWidget {
               ).animate(curved);
               return FadeTransition(
                 opacity: fade,
-                child: SlideTransition(
-                  position: slide,
-                  child: child,
-                ),
+                child: SlideTransition(position: slide, child: child),
               );
             },
             child: hasTrack
@@ -267,7 +276,8 @@ class _MainTabsState extends State<MainTabs> {
         ? Colors.black
         : CupertinoColors.systemGroupedBackground.resolveFrom(context);
     final hideMainAppBar =
-        selectedIndex == 3 || (selectedIndex == 1 && searchViewState.isArtistFullscreen);
+        selectedIndex == 3 ||
+        (selectedIndex == 1 && searchViewState.isArtistFullscreen);
 
     if (_displayedPageIndex != selectedIndex) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -341,9 +351,7 @@ class _MainTabsState extends State<MainTabs> {
 class _KeepAlivePage extends StatefulWidget {
   final Widget child;
 
-  const _KeepAlivePage({
-    required this.child,
-  });
+  const _KeepAlivePage({required this.child});
 
   @override
   State<_KeepAlivePage> createState() => _KeepAlivePageState();
@@ -365,10 +373,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
   final int currentIndex;
   final ValueChanged<int> onTap;
 
-  const _CupertinoRootTabBar({
-    required this.currentIndex,
-    required this.onTap,
-  });
+  const _CupertinoRootTabBar({required this.currentIndex, required this.onTap});
 
   @override
   Widget build(BuildContext context) {

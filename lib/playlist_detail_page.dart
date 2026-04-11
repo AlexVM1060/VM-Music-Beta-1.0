@@ -16,11 +16,7 @@ class PlaylistDetailPage extends StatefulWidget {
   final Playlist playlist;
   final VoidCallback? onBack;
 
-  const PlaylistDetailPage({
-    super.key,
-    required this.playlist,
-    this.onBack,
-  });
+  const PlaylistDetailPage({super.key, required this.playlist, this.onBack});
 
   @override
   State<PlaylistDetailPage> createState() => _PlaylistDetailPageState();
@@ -64,20 +60,36 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
     final trackCardBorder = isDark
         ? Colors.white.withValues(alpha: 0.12)
-        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
-    final playlistService = Provider.of<PlaylistService>(context, listen: false);
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.12);
+    final playlistService = Provider.of<PlaylistService>(
+      context,
+      listen: false,
+    );
     final downloadService = Provider.of<DownloadService>(context);
-    final videoManager = Provider.of<VideoPlayerManager>(context, listen: false);
-    final isAutoDownload = downloadService.isPlaylistAutoDownload(_currentPlaylist.name);
+    final videoManager = Provider.of<VideoPlayerManager>(
+      context,
+      listen: false,
+    );
+    final isAutoDownload = downloadService.isPlaylistAutoDownload(
+      _currentPlaylist.name,
+    );
 
     return Scaffold(
-      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(context),
+      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
+        context,
+      ),
       appBar: CupertinoNavigationBar(
         transitionBetweenRoutes: false,
-        backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(context).withValues(alpha: 0.92),
+        backgroundColor: CupertinoColors.systemGroupedBackground
+            .resolveFrom(context)
+            .withValues(alpha: 0.92),
         border: Border(
           bottom: BorderSide(
-            color: CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.18),
+            color: CupertinoColors.separator
+                .resolveFrom(context)
+                .withValues(alpha: 0.18),
             width: 0.0,
           ),
         ),
@@ -151,25 +163,30 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 (v) => v.videoId == video.videoId,
               );
               final localThumbPath = downloadedVideo?.localThumbnailPath;
-              final hasLocalThumb = localThumbPath != null &&
+              final hasLocalThumb =
+                  localThumbPath != null &&
                   localThumbPath.isNotEmpty &&
                   File(localThumbPath).existsSync();
 
               return Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 2,
+                ),
                 child: Dismissible(
                   key: ValueKey('playlist_track_${video.videoId}_$videoIndex'),
                   direction: DismissDirection.startToEnd,
-                  dismissThresholds: const {
-                    DismissDirection.startToEnd: 0.28,
-                  },
+                  dismissThresholds: const {DismissDirection.startToEnd: 0.28},
                   confirmDismiss: (_) async {
                     final added = downloadedVideo != null
                         ? videoManager.addLocalTrackToPlaybackQueue(
                             videoId: downloadedVideo.videoId,
                             title: downloadedVideo.title,
-                            thumbnailUrl: (downloadedVideo.localThumbnailPath != null &&
-                                    downloadedVideo.localThumbnailPath!.isNotEmpty)
+                            thumbnailUrl:
+                                (downloadedVideo.localThumbnailPath != null &&
+                                    downloadedVideo
+                                        .localThumbnailPath!
+                                        .isNotEmpty)
                                 ? downloadedVideo.localThumbnailPath!
                                 : downloadedVideo.thumbnailUrl,
                             artist: downloadedVideo.channelTitle,
@@ -186,7 +203,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                     if (context.mounted) {
                       _showQueueIosToast(
                         context,
-                        message: added ? 'Se ha añadido a la cola' : 'Esta canción ya está en cola',
+                        message: added
+                            ? 'Se ha añadido a la cola'
+                            : 'Esta canción ya está en cola',
                         icon: added
                             ? CupertinoIcons.check_mark_circled_solid
                             : CupertinoIcons.info_circle_fill,
@@ -199,9 +218,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                     padding: const EdgeInsets.symmetric(horizontal: 18),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(14),
-                      color: CupertinoColors.systemGreen.withValues(alpha: 0.18),
+                      color: CupertinoColors.systemGreen.withValues(
+                        alpha: 0.18,
+                      ),
                       border: Border.all(
-                        color: CupertinoColors.systemGreen.withValues(alpha: 0.36),
+                        color: CupertinoColors.systemGreen.withValues(
+                          alpha: 0.36,
+                        ),
                         width: 0.8,
                       ),
                     ),
@@ -234,13 +257,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       child: InkWell(
                         borderRadius: BorderRadius.circular(14),
                         onTap: () async {
-                          final local = await downloadService.getDownloadedVideoById(
-                            video.videoId,
-                          );
+                          final local = await downloadService
+                              .getDownloadedVideoById(video.videoId);
                           if (!context.mounted) return;
 
                           if (local != null) {
-                            final thumb = (local.localThumbnailPath != null &&
+                            final thumb =
+                                (local.localThumbnailPath != null &&
                                     local.localThumbnailPath!.isNotEmpty)
                                 ? local.localThumbnailPath!
                                 : local.thumbnailUrl;
@@ -271,7 +294,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                               width: 0.5,
                             ),
                           ),
-                          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12.0,
+                            vertical: 5.0,
+                          ),
                           child: Row(
                             children: [
                               hasLocalThumb
@@ -281,11 +307,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       borderRadius: 10,
                                       zoom: 1,
                                       fallback: Container(
-                                        color: CupertinoColors.tertiarySystemFill.resolveFrom(
-                                          context,
-                                        ),
+                                        color: CupertinoColors
+                                            .tertiarySystemFill
+                                            .resolveFrom(context),
                                         alignment: Alignment.center,
-                                        child: const Icon(CupertinoIcons.music_note),
+                                        child: const Icon(
+                                          CupertinoIcons.music_note,
+                                        ),
                                       ),
                                     )
                                   : SquareThumbnail.network(
@@ -294,11 +322,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       borderRadius: 10,
                                       zoom: 1,
                                       fallback: Container(
-                                        color: CupertinoColors.tertiarySystemFill.resolveFrom(
-                                          context,
-                                        ),
+                                        color: CupertinoColors
+                                            .tertiarySystemFill
+                                            .resolveFrom(context),
                                         alignment: Alignment.center,
-                                        child: const Icon(CupertinoIcons.music_note),
+                                        child: const Icon(
+                                          CupertinoIcons.music_note,
+                                        ),
                                       ),
                                     ),
                               const SizedBox(width: 12),
@@ -318,7 +348,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
                                         fontSize: 12,
-                                        color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                        color: CupertinoColors.secondaryLabel
+                                            .resolveFrom(context),
                                       ),
                                     ),
                                   ],
@@ -326,46 +357,70 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                               ),
                               const SizedBox(width: 8),
                               _DownloadStatusIndicator(
-                                status: downloadService.getDownloadStatus(video.videoId),
-                                progress: downloadService.getDownloadProgress(video.videoId),
+                                status: downloadService.getDownloadStatus(
+                                  video.videoId,
+                                ),
+                                progress: downloadService.getDownloadProgress(
+                                  video.videoId,
+                                ),
                                 isDownloaded: downloadedVideo != null,
                                 onPressed: downloadedVideo != null
                                     ? null
                                     : () async {
-                                        if (downloadService.isDownloading(video.videoId)) {
+                                        if (downloadService.isDownloading(
+                                          video.videoId,
+                                        )) {
                                           if (!context.mounted) return;
-                                          ScaffoldMessenger.of(context).showSnackBar(
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
                                             const SnackBar(
-                                              content: Text('Esta canción ya se está descargando.'),
+                                              content: Text(
+                                                'Esta canción ya se está descargando.',
+                                              ),
                                             ),
                                           );
                                           return;
                                         }
 
-                                        final alreadyDownloaded = await downloadService
-                                            .isVideoDownloaded(video.videoId);
+                                        final alreadyDownloaded =
+                                            await downloadService
+                                                .isVideoDownloaded(
+                                                  video.videoId,
+                                                );
                                         if (alreadyDownloaded) {
                                           if (!context.mounted) return;
-                                          ScaffoldMessenger.of(context).showSnackBar(
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
                                             const SnackBar(
-                                              content: Text('Esta canción ya está descargada.'),
+                                              content: Text(
+                                                'Esta canción ya está descargada.',
+                                              ),
                                             ),
                                           );
                                           return;
                                         }
 
-                                        final started = await _downloadUsingLargePlayerMethod(
-                                          downloadService: downloadService,
-                                          videoManager: videoManager,
-                                          video: video,
-                                        );
+                                        final started =
+                                            await _downloadUsingLargePlayerMethod(
+                                              downloadService: downloadService,
+                                              videoManager: videoManager,
+                                              video: video,
+                                            );
                                         if (!context.mounted) return;
                                         if (!started) {
-                                          final err = downloadService.getDownloadError(video.videoId);
-                                          final fallbackMessage = downloadService.isDownloading(video.videoId)
+                                          final err = downloadService
+                                              .getDownloadError(video.videoId);
+                                          final fallbackMessage =
+                                              downloadService.isDownloading(
+                                                video.videoId,
+                                              )
                                               ? 'La descarga ya está en curso.'
                                               : 'No se pudo iniciar la descarga.';
-                                          ScaffoldMessenger.of(context).showSnackBar(
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
                                             SnackBar(
                                               content: Text(
                                                 err ?? fallbackMessage,
@@ -383,7 +438,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                 onPressed: () async {
                                   final wasDownloaded = await downloadService
                                       .isVideoDownloaded(video.videoId);
-                                  await downloadService.deleteVideo(video.videoId);
+                                  await downloadService.deleteVideo(
+                                    video.videoId,
+                                  );
                                   await playlistService.removeVideoFromPlaylist(
                                     _currentPlaylist.name,
                                     video.videoId,
@@ -392,8 +449,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                   if (!context.mounted) return;
 
                                   setState(() {
-                                    _currentPlaylist.videos
-                                        .removeWhere((v) => v.videoId == video.videoId);
+                                    _currentPlaylist.videos.removeWhere(
+                                      (v) => v.videoId == video.videoId,
+                                    );
                                   });
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
@@ -436,12 +494,17 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     required bool isAutoDownload,
   }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final subtitleColor = isDark
+        ? Colors.white
+        : CupertinoColors.secondaryLabel;
     final cardColor = isDark
         ? Colors.black
         : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
     final cardBorder = isDark
         ? Colors.white.withValues(alpha: 0.12)
-        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.12);
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
       child: ClipRRect(
@@ -450,21 +513,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           decoration: BoxDecoration(
             color: cardColor,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: cardBorder,
-              width: 0.5,
-            ),
+            border: Border.all(color: cardBorder, width: 0.5),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             children: [
               const Icon(CupertinoIcons.arrow_down_circle, size: 20),
               const SizedBox(width: 10),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    const Text(
                       'Descarga automática',
                       style: TextStyle(
                         fontFamily: '.SF Pro Text',
@@ -480,7 +540,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       style: TextStyle(
                         fontFamily: '.SF Pro Text',
                         fontSize: 12,
-                        color: CupertinoColors.secondaryLabel,
+                        color: subtitleColor,
                       ),
                     ),
                   ],
@@ -489,7 +549,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               CupertinoSwitch(
                 value: isAutoDownload,
                 onChanged: (value) async {
-                  await downloadService.setPlaylistAutoDownload(_currentPlaylist.name, value);
+                  await downloadService.setPlaylistAutoDownload(
+                    _currentPlaylist.name,
+                    value,
+                  );
                   if (!context.mounted) return;
                   if (value) {
                     await _syncPlaylistAutoDownloads(
@@ -516,8 +579,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     required Map<String, DownloadedVideo> downloadedById,
   }) {
     final fallback = CupertinoColors.tertiarySystemFill.resolveFrom(context);
-    final coverStroke = CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.28);
-    final coverFallbackIcon = CupertinoColors.secondaryLabel.resolveFrom(context);
+    final coverStroke = CupertinoColors.separator
+        .resolveFrom(context)
+        .withValues(alpha: 0.28);
+    final coverFallbackIcon = CupertinoColors.secondaryLabel.resolveFrom(
+      context,
+    );
     final favoritesOverlay = CupertinoColors.systemBackground
         .resolveFrom(context)
         .withValues(alpha: 0.20);
@@ -538,7 +605,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       }
     }
     final hasLocalCover = localCoverPath != null;
-    final coverSize = (MediaQuery.of(context).size.width * 0.54).clamp(170.0, 228.0).toDouble();
+    final coverSize = (MediaQuery.of(context).size.width * 0.54)
+        .clamp(170.0, 228.0)
+        .toDouble();
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
       child: Column(
@@ -552,10 +621,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 height: coverSize,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(22),
-                  border: Border.all(
-                    color: coverStroke,
-                    width: 0.8,
-                  ),
+                  border: Border.all(color: coverStroke, width: 0.8),
                 ),
                 child: Stack(
                   fit: StackFit.expand,
@@ -702,13 +768,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     final message = queued > 0
         ? 'Auto-descarga activa. $queued canciones en cola.'
         : alreadyInProgress > 0
-            ? 'Auto-descarga activa. $alreadyInProgress ya se están descargando.'
-            : alreadyDownloaded > 0
-                ? 'Auto-descarga activa. Ya estaban descargadas.'
-                : 'Auto-descarga activa.';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+        ? 'Auto-descarga activa. $alreadyInProgress ya se están descargando.'
+        : alreadyDownloaded > 0
+        ? 'Auto-descarga activa. Ya estaban descargadas.'
+        : 'Auto-descarga activa.';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -760,7 +826,8 @@ class _DownloadStatusIndicator extends StatelessWidget {
     return CupertinoButton(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       minimumSize: const Size(30, 30),
-      onPressed: (status == DownloadStatus.downloading ||
+      onPressed:
+          (status == DownloadStatus.downloading ||
               status == DownloadStatus.downloaded)
           ? null
           : onPressed,
@@ -804,10 +871,7 @@ class _QueueIosToast extends StatefulWidget {
   final String message;
   final IconData icon;
 
-  const _QueueIosToast({
-    required this.message,
-    required this.icon,
-  });
+  const _QueueIosToast({required this.message, required this.icon});
 
   @override
   State<_QueueIosToast> createState() => _QueueIosToastState();
@@ -884,7 +948,11 @@ class _QueueIosToastState extends State<_QueueIosToast>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(widget.icon, size: 18, color: CupertinoColors.systemPink.resolveFrom(context)),
+                Icon(
+                  widget.icon,
+                  size: 18,
+                  color: CupertinoColors.systemPink.resolveFrom(context),
+                ),
                 const SizedBox(width: 8),
                 Text(
                   widget.message,

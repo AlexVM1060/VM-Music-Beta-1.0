@@ -7,10 +7,12 @@ import 'dart:ui' show FontFeature, ImageFilter;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:myapp/app_tab_state.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/models/playlist.dart' as app_models;
 import 'package:myapp/search_view_state.dart';
+import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/artwork_subject_cutout_service.dart';
@@ -130,16 +132,51 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
   }
 }
 
-class _MiniPlayer extends StatelessWidget {
+class _MiniPlayer extends StatefulWidget {
   final VideoPlayerManager manager;
 
   const _MiniPlayer({super.key, required this.manager});
 
   @override
+  State<_MiniPlayer> createState() => _MiniPlayerState();
+}
+
+class _MiniPlayerState extends State<_MiniPlayer> {
+  double _dragLift = 0.0;
+  bool _isOpening = false;
+  static const double _maxDragLift = 52.0;
+
+  double get _dragProgress => (_dragLift / _maxDragLift).clamp(0.0, 1.0);
+
+  void _setDragLift(double value) {
+    if (!mounted) return;
+    setState(() {
+      _dragLift = value.clamp(0.0, _maxDragLift);
+    });
+  }
+
+  Future<void> _openWithGestureAnimation() async {
+    if (_isOpening) return;
+    _isOpening = true;
+    _setDragLift(_maxDragLift);
+    HapticFeedback.lightImpact();
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    if (!mounted) return;
+    widget.manager.maximize();
+    _isOpening = false;
+    _setDragLift(0.0);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).padding.bottom;
     const miniPlayerHeight = 56.0;
-    const miniPlayerBottomNavReserve = 72.0;
+    const miniPlayerBottomNavReserve = 54.0;
+    final progress = _dragProgress;
+    final dynamicRadius = 22 - (4 * progress);
+    final dynamicShadowOpacity = 0.08 + (0.12 * progress);
+    final dynamicShadowBlur = 22 + (18 * progress);
+    final dynamicShadowYOffset = 8 - (4 * progress);
 
     return Align(
       alignment: Alignment.bottomCenter,
@@ -150,90 +187,140 @@ class _MiniPlayer extends StatelessWidget {
           12,
           miniPlayerBottomNavReserve + bottomInset,
         ),
-        child: ClipRRect(
-          clipBehavior: Clip.antiAlias,
-          borderRadius: BorderRadius.circular(22),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 34, sigmaY: 34),
-            child: CupertinoButton(
-              padding: EdgeInsets.zero,
-              onPressed: manager.maximize,
-              child: Container(
-                height: miniPlayerHeight,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      CupertinoColors.systemBackground
-                          .resolveFrom(context)
-                          .withValues(alpha: 0.40),
-                      CupertinoColors.systemGrey6
-                          .resolveFrom(context)
-                          .withValues(alpha: 0.28),
-                    ],
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: CupertinoColors.black.withValues(alpha: 0.08),
-                      blurRadius: 22,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                child: Row(
-                  children: [
-                    _ArtworkImage(url: manager.trackThumbnailUrl, size: 44),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            manager.trackTitle ?? 'Reproduciendo',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                ),
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onVerticalDragUpdate: (details) {
+            if (_isOpening) return;
+            if (details.delta.dy < 0) {
+              _setDragLift(_dragLift + ((-details.delta.dy) * 1.15));
+            } else if (_dragLift > 0) {
+              _setDragLift(_dragLift - (details.delta.dy * 1.25));
+            }
+          },
+          onVerticalDragEnd: (details) {
+            if (_isOpening) return;
+            final velocity = details.primaryVelocity ?? 0;
+            final shouldOpen = velocity < -340 || _dragProgress > 0.36;
+            if (shouldOpen) {
+              unawaited(_openWithGestureAnimation());
+              return;
+            }
+            _setDragLift(0.0);
+          },
+          onVerticalDragCancel: () {
+            if (_isOpening) return;
+            _setDragLift(0.0);
+          },
+          child: AnimatedSlide(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutBack,
+            offset: Offset(0, -(0.32 * progress)),
+            child: AnimatedScale(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutBack,
+              scale: 1 + (0.03 * progress),
+              child: ClipRRect(
+                clipBehavior: Clip.antiAlias,
+                borderRadius: BorderRadius.circular(dynamicRadius),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 34, sigmaY: 34),
+                  child: CupertinoButton(
+                    padding: EdgeInsets.zero,
+                    onPressed: widget.manager.maximize,
+                    child: Container(
+                      height: miniPlayerHeight,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            CupertinoColors.systemBackground
+                                .resolveFrom(context)
+                                .withValues(alpha: 0.40),
+                            CupertinoColors.systemGrey6
+                                .resolveFrom(context)
+                                .withValues(alpha: 0.28),
+                          ],
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: CupertinoColors.black.withValues(
+                              alpha: dynamicShadowOpacity,
+                            ),
+                            blurRadius: dynamicShadowBlur,
+                            offset: Offset(0, dynamicShadowYOffset),
                           ),
-                          Text(
-                            manager.trackArtist ?? 'Artista desconocido',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                                  fontSize: 12,
-                                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                        ],
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      child: Row(
+                        children: [
+                          _ArtworkImage(
+                            url: widget.manager.trackThumbnailUrl,
+                            size: 44,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  widget.manager.trackTitle ?? 'Reproduciendo',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: CupertinoTheme.of(context)
+                                      .textTheme
+                                      .textStyle
+                                      .copyWith(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w600,
+                                      ),
                                 ),
+                                Text(
+                                  widget.manager.trackArtist ??
+                                      'Artista desconocido',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: CupertinoTheme.of(context)
+                                      .textTheme
+                                      .textStyle
+                                      .copyWith(
+                                        fontSize: 12,
+                                        color: CupertinoColors.secondaryLabel
+                                            .resolveFrom(context),
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          CupertinoButton(
+                            padding: EdgeInsets.zero,
+                            onPressed: widget.manager.togglePlayPause,
+                            child: Icon(
+                              widget.manager.isPlaying
+                                  ? CupertinoIcons.pause_circle_fill
+                                  : CupertinoIcons.play_circle_fill,
+                              size: 28,
+                              color: CupertinoColors.label.resolveFrom(context),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          CupertinoButton(
+                            padding: EdgeInsets.zero,
+                            onPressed: widget.manager.close,
+                            child: Icon(
+                              CupertinoIcons.xmark_circle_fill,
+                              size: 22,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(
+                                context,
+                              ),
+                            ),
                           ),
                         ],
                       ),
                     ),
-                    CupertinoButton(
-                      padding: EdgeInsets.zero,
-                      onPressed: manager.togglePlayPause,
-                      child: Icon(
-                        manager.isPlaying
-                            ? CupertinoIcons.pause_circle_fill
-                            : CupertinoIcons.play_circle_fill,
-                        size: 28,
-                        color: CupertinoColors.label.resolveFrom(context),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    CupertinoButton(
-                      padding: EdgeInsets.zero,
-                      onPressed: manager.close,
-                      child: Icon(
-                        CupertinoIcons.xmark_circle_fill,
-                        size: 22,
-                        color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -292,190 +379,242 @@ class _FullPlayer extends StatelessWidget {
             ),
             child: SafeArea(
               child: Column(
-            children: [
-              Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  margin: const EdgeInsets.only(top: 2, bottom: 6),
-                  decoration: BoxDecoration(
-                    color: CupertinoColors.systemGrey3.resolveFrom(context).withValues(alpha: 0.7),
-                    borderRadius: BorderRadius.circular(999),
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      margin: const EdgeInsets.only(top: 2, bottom: 6),
+                      decoration: BoxDecoration(
+                        color: CupertinoColors.systemGrey3
+                            .resolveFrom(context)
+                            .withValues(alpha: 0.7),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Row(
-                  children: [
-                    _TopGlassIconButton(
-                      icon: CupertinoIcons.chevron_down,
-                      onPressed: manager.minimize,
-                    ),
-                    const Spacer(),
-                    _TopGlassIconButton(
-                      icon: CupertinoIcons.list_bullet,
-                      onPressed: () => _showQueueSheet(context),
-                    ),
-                    if (canDownload)
-                      _DownloadButton(
-                        videoId: videoId,
-                        title: manager.trackTitle ?? 'Sin título',
-                        thumbnailUrl: manager.trackThumbnailUrl ?? '',
-                        channelTitle: manager.trackArtist ?? '',
-                        sourceUrl: manager.currentStreamUrl,
-                        isVideoSource: manager.isUsingVideoFallback,
-                        downloadService: downloadService,
-                      ),
-                    _TopGlassIconButton(
-                      icon: CupertinoIcons.xmark,
-                      onPressed: manager.close,
-                    ),
-                  ],
-                ),
-              ),
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    return SingleChildScrollView(
-                      clipBehavior: Clip.none,
-                      padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          minHeight: constraints.maxHeight - 40,
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: Row(
+                      children: [
+                        _TopGlassIconButton(
+                          icon: CupertinoIcons.chevron_down,
+                          onPressed: manager.minimize,
                         ),
-                        child: Column(
-                          children: [
-                      AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 420),
-                        switchInCurve: Curves.easeOutCubic,
-                        switchOutCurve: Curves.easeInCubic,
-                        layoutBuilder: (currentChild, previousChildren) {
-                          return Stack(
-                            clipBehavior: Clip.none,
-                            alignment: Alignment.topCenter,
-                            children: <Widget>[
-                              ...previousChildren,
-                              if (currentChild != null) currentChild,
-                            ],
-                          );
-                        },
-                        transitionBuilder: (child, animation) {
-                          final slide = Tween<Offset>(
-                            begin: const Offset(0, 0.06),
-                            end: Offset.zero,
-                          ).animate(
-                            CurvedAnimation(
-                              parent: animation,
-                              curve: Curves.easeOutCubic,
-                            ),
-                          );
-                          return FadeTransition(
-                            opacity: animation,
-                            child: SlideTransition(position: slide, child: child),
-                          );
-                        },
-                        child: manager.isLyricsLayout
-                            ? _CompactNowPlayingHeader(
-                                key: const ValueKey('compact_now_playing_header'),
-                                manager: manager,
-                                onArtistTap: () => _openArtistProfile(context),
-                                canAddToPlaylist: canAddToPlaylist,
-                                onAddToPlaylist: () => _showAddToPlaylistSheet(
-                                  context: context,
-                                  playlistService: playlistService,
-                                  downloadService: downloadService,
-                                  manager: manager,
-                                ),
-                                onAddToFavorites: () => _addCurrentTrackToFavorites(
-                                  context: context,
-                                  playlistService: playlistService,
-                                  downloadService: downloadService,
-                                  manager: manager,
-                                ),
-                              )
-                            : _DefaultNowPlayingHero(
-                                key: const ValueKey('default_now_playing_hero'),
-                                manager: manager,
-                                onArtistTap: () => _openArtistProfile(context),
-                                canAddToPlaylist: canAddToPlaylist,
-                                onAddToPlaylist: () => _showAddToPlaylistSheet(
-                                  context: context,
-                                  playlistService: playlistService,
-                                  downloadService: downloadService,
-                                  manager: manager,
-                                ),
-                                onAddToFavorites: () => _addCurrentTrackToFavorites(
-                                  context: context,
-                                  playlistService: playlistService,
-                                  downloadService: downloadService,
-                                  manager: manager,
-                                ),
-                              ),
-                      ),
-                      if (manager.isLyricsLayout) ...[
-                        const SizedBox(height: 14),
-                        _LyricsPanel(manager: manager),
-                      ],
-                      const SizedBox(height: 24),
-                      if (manager.isLoading)
-                        const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 20),
-                          child: _IosLoadingControls(),
-                        )
-                      else ...[
-                        _ProgressSection(manager: manager),
-                        const SizedBox(height: 16),
-                        _GlassControlsGroup(
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                            children: [
-                              _NativeControlButton(
-                                icon: CupertinoIcons.backward_end_fill,
-                                onPressed: manager.playPreviousInQueue,
-                              ),
-                              _NativePrimaryPlayButton(
-                                isPlaying: manager.isPlaying,
-                                onPressed: manager.togglePlayPause,
-                              ),
-                              _NativeControlButton(
-                                icon: CupertinoIcons.forward_end_fill,
-                                onPressed: manager.playNextInQueue,
-                              ),
-                            ],
+                        const Spacer(),
+                        _TopGlassIconButton(
+                          icon: CupertinoIcons.list_bullet,
+                          onPressed: () => _showQueueSheet(context),
+                        ),
+                        if (canDownload)
+                          _DownloadButton(
+                            videoId: videoId,
+                            title: manager.trackTitle ?? 'Sin título',
+                            thumbnailUrl: manager.trackThumbnailUrl ?? '',
+                            channelTitle: manager.trackArtist ?? '',
+                            sourceUrl: manager.currentStreamUrl,
+                            isVideoSource: manager.isUsingVideoFallback,
+                            downloadService: downloadService,
                           ),
-                        ),
-                        const SizedBox(height: 10),
-                        Row(
-                          children: [
-                            _InlineLyricsButton(
-                              isActive: manager.isLyricsLayout,
-                              onPressed: manager.toggleLyricsLayout,
-                            ),
-                            const SizedBox(width: 8),
-                            if (manager.isBassBoostSupported)
-                              _InlineBassBoostButton(
-                                isActive: manager.bassBoostEnabled,
-                                onPressed: manager.toggleBassBoost,
-                              ),
-                            const Spacer(),
-                            _InlineAutoplayButton(
-                              isActive: manager.autoplayEnabled,
-                              onPressed: manager.toggleAutoplay,
-                            ),
-                          ],
+                        _TopGlassIconButton(
+                          icon: CupertinoIcons.xmark,
+                          onPressed: manager.close,
                         ),
                       ],
-                      const SizedBox(height: 26),
-                      _QueueSection(manager: manager),
-                      ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
+                    ),
+                  ),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        return SingleChildScrollView(
+                          clipBehavior: Clip.none,
+                          padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              minHeight: constraints.maxHeight - 40,
+                            ),
+                            child: Column(
+                              children: [
+                                TweenAnimationBuilder<double>(
+                                  key: ValueKey(
+                                    'full-hero-entry-${manager.currentVideoId}-${manager.isLyricsLayout}',
+                                  ),
+                                  tween: Tween<double>(begin: 0, end: 1),
+                                  duration: const Duration(milliseconds: 440),
+                                  curve: Curves.easeOutCubic,
+                                  builder: (context, value, child) {
+                                    final lift = (1 - value) * 40;
+                                    final scale = 0.90 + (0.10 * value);
+                                    return Opacity(
+                                      opacity: value,
+                                      child: Transform.translate(
+                                        offset: Offset(0, lift),
+                                        child: Transform.scale(
+                                          alignment: Alignment.topCenter,
+                                          scale: scale,
+                                          child: child,
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  child: AnimatedSwitcher(
+                                    duration: const Duration(milliseconds: 420),
+                                    switchInCurve: Curves.easeOutCubic,
+                                    switchOutCurve: Curves.easeInCubic,
+                                    layoutBuilder:
+                                        (currentChild, previousChildren) {
+                                          return Stack(
+                                            clipBehavior: Clip.none,
+                                            alignment: Alignment.topCenter,
+                                            children: <Widget>[
+                                              ...previousChildren,
+                                              if (currentChild != null)
+                                                currentChild,
+                                            ],
+                                          );
+                                        },
+                                    transitionBuilder: (child, animation) {
+                                      final slide =
+                                          Tween<Offset>(
+                                            begin: const Offset(0, 0.06),
+                                            end: Offset.zero,
+                                          ).animate(
+                                            CurvedAnimation(
+                                              parent: animation,
+                                              curve: Curves.easeOutCubic,
+                                            ),
+                                          );
+                                      return FadeTransition(
+                                        opacity: animation,
+                                        child: SlideTransition(
+                                          position: slide,
+                                          child: child,
+                                        ),
+                                      );
+                                    },
+                                    child: manager.isLyricsLayout
+                                        ? _CompactNowPlayingHeader(
+                                            key: const ValueKey(
+                                              'compact_now_playing_header',
+                                            ),
+                                            manager: manager,
+                                            onArtistTap: () =>
+                                                _openArtistProfile(context),
+                                            canAddToPlaylist: canAddToPlaylist,
+                                            onAddToPlaylist: () =>
+                                                _showAddToPlaylistSheet(
+                                                  context: context,
+                                                  playlistService:
+                                                      playlistService,
+                                                  downloadService:
+                                                      downloadService,
+                                                  manager: manager,
+                                                ),
+                                            onAddToFavorites: () =>
+                                                _addCurrentTrackToFavorites(
+                                                  context: context,
+                                                  playlistService:
+                                                      playlistService,
+                                                  downloadService:
+                                                      downloadService,
+                                                  manager: manager,
+                                                ),
+                                          )
+                                        : _DefaultNowPlayingHero(
+                                            key: const ValueKey(
+                                              'default_now_playing_hero',
+                                            ),
+                                            manager: manager,
+                                            onArtistTap: () =>
+                                                _openArtistProfile(context),
+                                            canAddToPlaylist: canAddToPlaylist,
+                                            onAddToPlaylist: () =>
+                                                _showAddToPlaylistSheet(
+                                                  context: context,
+                                                  playlistService:
+                                                      playlistService,
+                                                  downloadService:
+                                                      downloadService,
+                                                  manager: manager,
+                                                ),
+                                            onAddToFavorites: () =>
+                                                _addCurrentTrackToFavorites(
+                                                  context: context,
+                                                  playlistService:
+                                                      playlistService,
+                                                  downloadService:
+                                                      downloadService,
+                                                  manager: manager,
+                                                ),
+                                          ),
+                                  ),
+                                ),
+                                if (manager.isLyricsLayout) ...[
+                                  const SizedBox(height: 14),
+                                  _LyricsPanel(manager: manager),
+                                ],
+                                const SizedBox(height: 24),
+                                if (manager.isLoading)
+                                  const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 20),
+                                    child: _IosLoadingControls(),
+                                  )
+                                else ...[
+                                  _ProgressSection(manager: manager),
+                                  const SizedBox(height: 16),
+                                  _GlassControlsGroup(
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.spaceEvenly,
+                                      children: [
+                                        _NativeControlButton(
+                                          icon:
+                                              CupertinoIcons.backward_end_fill,
+                                          onPressed:
+                                              manager.playPreviousInQueue,
+                                        ),
+                                        _NativePrimaryPlayButton(
+                                          isPlaying: manager.isPlaying,
+                                          onPressed: manager.togglePlayPause,
+                                        ),
+                                        _NativeControlButton(
+                                          icon: CupertinoIcons.forward_end_fill,
+                                          onPressed: manager.playNextInQueue,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Row(
+                                    children: [
+                                      _InlineLyricsButton(
+                                        isActive: manager.isLyricsLayout,
+                                        onPressed: manager.toggleLyricsLayout,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      if (manager.isBassBoostSupported)
+                                        _InlineBassBoostButton(
+                                          isActive: manager.bassBoostEnabled,
+                                          onPressed: manager.toggleBassBoost,
+                                        ),
+                                      const Spacer(),
+                                      _InlineAutoplayButton(
+                                        isActive: manager.autoplayEnabled,
+                                        onPressed: manager.toggleAutoplay,
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                                const SizedBox(height: 26),
+                                _QueueSection(manager: manager),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -578,7 +717,9 @@ class _FullPlayer extends StatelessWidget {
                                 ? playlist.videos.first.thumbnailUrl
                                 : null;
                             final isFavorites =
-                                PlaylistService.isFavoritesPlaylistName(playlist.name);
+                                PlaylistService.isFavoritesPlaylistName(
+                                  playlist.name,
+                                );
                             return Padding(
                               padding: const EdgeInsets.symmetric(vertical: 3),
                               child: _PlaylistPickerRow(
@@ -653,7 +794,8 @@ class _FullPlayer extends StatelessWidget {
     final playlists = await playlistService.getPlaylists();
     final favorites = playlists.firstWhere(
       (playlist) => PlaylistService.isFavoritesPlaylistName(playlist.name),
-      orElse: () => app_models.Playlist(name: PlaylistService.favoritesPlaylistName),
+      orElse: () =>
+          app_models.Playlist(name: PlaylistService.favoritesPlaylistName),
     );
 
     final videoId = manager.currentVideoId;
@@ -730,8 +872,8 @@ class _FullPlayer extends StatelessWidget {
                     Text(
                       'Cola de reproducción',
                       style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -791,7 +933,9 @@ class _FullPlayer extends StatelessWidget {
       if (channels.isEmpty) {
         if (!context.mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se encontró un perfil para este artista.')),
+          const SnackBar(
+            content: Text('No se encontró un perfil para este artista.'),
+          ),
         );
         return;
       }
@@ -825,10 +969,16 @@ class _FullPlayer extends StatelessWidget {
       context.read<AppTabState?>()?.setIndex(0);
       manager.minimize();
     } catch (e, s) {
-      developer.log('Error al abrir perfil del artista', error: e, stackTrace: s);
+      developer.log(
+        'Error al abrir perfil del artista',
+        error: e,
+        stackTrace: s,
+      );
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir el perfil del artista.')),
+        const SnackBar(
+          content: Text('No se pudo abrir el perfil del artista.'),
+        ),
       );
     } finally {
       yt.close();
@@ -840,10 +990,7 @@ class _InlineLyricsButton extends StatefulWidget {
   final bool isActive;
   final VoidCallback onPressed;
 
-  const _InlineLyricsButton({
-    required this.isActive,
-    required this.onPressed,
-  });
+  const _InlineLyricsButton({required this.isActive, required this.onPressed});
 
   @override
   State<_InlineLyricsButton> createState() => _InlineLyricsButtonState();
@@ -894,7 +1041,9 @@ class _InlineLyricsButtonState extends State<_InlineLyricsButton>
             decoration: BoxDecoration(
               borderRadius: borderRadius,
               gradient: SweepGradient(
-                transform: GradientRotation(_rainbowController!.value * 6.28318530718),
+                transform: GradientRotation(
+                  _rainbowController!.value * 6.28318530718,
+                ),
                 colors: const [
                   Color(0xFFFF004D),
                   Color(0xFFFF7A00),
@@ -908,7 +1057,9 @@ class _InlineLyricsButtonState extends State<_InlineLyricsButton>
               ),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFFFF4D00).withValues(alpha: widget.isActive ? 0.3 : 0.16),
+                  color: const Color(
+                    0xFFFF4D00,
+                  ).withValues(alpha: widget.isActive ? 0.3 : 0.16),
                   blurRadius: widget.isActive ? 16 : 10,
                   spreadRadius: widget.isActive ? 0.6 : 0.0,
                   offset: const Offset(0, 2),
@@ -924,8 +1075,12 @@ class _InlineLyricsButtonState extends State<_InlineLyricsButton>
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   decoration: BoxDecoration(
                     color: (widget.isActive
-                            ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
-                            : CupertinoColors.systemGrey6.resolveFrom(context).withValues(alpha: 0.52)),
+                        ? Theme.of(
+                            context,
+                          ).colorScheme.primary.withValues(alpha: 0.2)
+                        : CupertinoColors.systemGrey6
+                              .resolveFrom(context)
+                              .withValues(alpha: 0.52)),
                     borderRadius: borderRadius,
                   ),
                   child: Row(
@@ -941,10 +1096,13 @@ class _InlineLyricsButtonState extends State<_InlineLyricsButton>
                       const SizedBox(width: 6),
                       Text(
                         'Lyrics',
-                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                        style: CupertinoTheme.of(context).textTheme.textStyle
+                            .copyWith(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
-                              color: widget.isActive ? Theme.of(context).colorScheme.primary : null,
+                              color: widget.isActive
+                                  ? Theme.of(context).colorScheme.primary
+                                  : null,
                             ),
                       ),
                     ],
@@ -1042,7 +1200,9 @@ class _InlineBassBoostButtonState extends State<_InlineBassBoostButton>
             decoration: BoxDecoration(
               borderRadius: borderRadius,
               gradient: SweepGradient(
-                transform: GradientRotation(_ringController!.value * 6.28318530718),
+                transform: GradientRotation(
+                  _ringController!.value * 6.28318530718,
+                ),
                 colors: const [
                   Color(0xFFE65245),
                   Color(0xFFFF8A3D),
@@ -1053,7 +1213,9 @@ class _InlineBassBoostButtonState extends State<_InlineBassBoostButton>
               ),
               boxShadow: [
                 BoxShadow(
-                  color: warmOrange.withValues(alpha: widget.isActive ? 0.30 : 0.14),
+                  color: warmOrange.withValues(
+                    alpha: widget.isActive ? 0.30 : 0.14,
+                  ),
                   blurRadius: widget.isActive ? 18 : 10,
                   spreadRadius: widget.isActive ? 0.8 : 0.0,
                   offset: const Offset(0, 2),
@@ -1071,8 +1233,8 @@ class _InlineBassBoostButtonState extends State<_InlineBassBoostButton>
                     color: widget.isActive
                         ? warmRed.withValues(alpha: 0.24)
                         : CupertinoColors.systemGrey6
-                            .resolveFrom(context)
-                            .withValues(alpha: 0.52),
+                              .resolveFrom(context)
+                              .withValues(alpha: 0.52),
                     borderRadius: borderRadius,
                   ),
                   child: Row(
@@ -1088,7 +1250,8 @@ class _InlineBassBoostButtonState extends State<_InlineBassBoostButton>
                       const SizedBox(width: 6),
                       Text(
                         'Bass Boost',
-                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                        style: CupertinoTheme.of(context).textTheme.textStyle
+                            .copyWith(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
                               color: widget.isActive ? warmOrange : null,
@@ -1162,7 +1325,9 @@ class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>
             decoration: BoxDecoration(
               borderRadius: borderRadius,
               gradient: SweepGradient(
-                transform: GradientRotation(_ringController!.value * 6.28318530718),
+                transform: GradientRotation(
+                  _ringController!.value * 6.28318530718,
+                ),
                 colors: const [
                   Color(0xFF1FBF64),
                   Color(0xFF4ADE80),
@@ -1174,7 +1339,9 @@ class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>
               ),
               boxShadow: [
                 BoxShadow(
-                  color: activeColor.withValues(alpha: widget.isActive ? 0.26 : 0.14),
+                  color: activeColor.withValues(
+                    alpha: widget.isActive ? 0.26 : 0.14,
+                  ),
                   blurRadius: widget.isActive ? 16 : 10,
                   spreadRadius: widget.isActive ? 0.6 : 0.0,
                   offset: const Offset(0, 2),
@@ -1192,8 +1359,8 @@ class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>
                     color: widget.isActive
                         ? activeColor.withValues(alpha: 0.2)
                         : CupertinoColors.systemGrey6
-                            .resolveFrom(context)
-                            .withValues(alpha: 0.52),
+                              .resolveFrom(context)
+                              .withValues(alpha: 0.52),
                     borderRadius: borderRadius,
                   ),
                   child: Row(
@@ -1209,7 +1376,8 @@ class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>
                       const SizedBox(width: 6),
                       Text(
                         'Autoplay',
-                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                        style: CupertinoTheme.of(context).textTheme.textStyle
+                            .copyWith(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
                               color: widget.isActive ? activeColor : null,
@@ -1255,7 +1423,10 @@ class _DefaultNowPlayingHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final motionEnergy = _estimateTrackMotionEnergy(manager.trackTitle, manager.trackArtist);
+    final motionEnergy = _estimateTrackMotionEnergy(
+      manager.trackTitle,
+      manager.trackArtist,
+    );
     return Column(
       key: key,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1269,7 +1440,10 @@ class _DefaultNowPlayingHero extends StatelessWidget {
               return FadeTransition(
                 opacity: animation,
                 child: ScaleTransition(
-                  scale: Tween<double>(begin: 0.985, end: 1.0).animate(animation),
+                  scale: Tween<double>(
+                    begin: 0.985,
+                    end: 1.0,
+                  ).animate(animation),
                   child: child,
                 ),
               );
@@ -1289,10 +1463,8 @@ class _DefaultNowPlayingHero extends StatelessWidget {
           width: double.infinity,
           child: _AutoScrollText(
             text: manager.trackTitle ?? 'Cargando canción...',
-            style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle.copyWith(
-                  fontSize: 34,
-                  fontWeight: FontWeight.w700,
-                ),
+            style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
+                .copyWith(fontSize: 34, fontWeight: FontWeight.w700),
           ),
         ),
         const SizedBox(height: 8),
@@ -1304,9 +1476,12 @@ class _DefaultNowPlayingHero extends StatelessWidget {
                 onTap: onArtistTap,
                 child: _AutoScrollText(
                   text: manager.trackArtist ?? 'Artista desconocido',
-                  style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                  style: CupertinoTheme.of(context).textTheme.textStyle
+                      .copyWith(
                         fontSize: 20,
-                        color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                        color: CupertinoColors.secondaryLabel.resolveFrom(
+                          context,
+                        ),
                       ),
                 ),
               ),
@@ -1384,10 +1559,7 @@ class _AutoScrollText extends StatefulWidget {
   final String text;
   final TextStyle style;
 
-  const _AutoScrollText({
-    required this.text,
-    required this.style,
-  });
+  const _AutoScrollText({required this.text, required this.style});
 
   @override
   State<_AutoScrollText> createState() => _AutoScrollTextState();
@@ -1432,9 +1604,9 @@ class _AutoScrollTextState extends State<_AutoScrollText>
           textDirection: Directionality.of(context),
         )..layout(minWidth: 0, maxWidth: double.infinity);
 
-	        final textWidth = painter.width;
-	        final textHeight = painter.height;
-	        _overflow = (textWidth - maxWidth).clamp(0.0, double.infinity);
+        final textWidth = painter.width;
+        final textHeight = painter.height;
+        _overflow = (textWidth - maxWidth).clamp(0.0, double.infinity);
         if (_overflow <= 1) {
           _cycleEpoch++;
           _cycleRunning = false;
@@ -1471,49 +1643,51 @@ class _AutoScrollTextState extends State<_AutoScrollText>
           child: AnimatedBuilder(
             animation: Listenable.merge([_scrollController!, _fadeController!]),
             builder: (context, _) {
-              final eased = Curves.easeInOutCubic.transform(_scrollController!.value);
-	              return Transform.translate(
-	                offset: Offset(-_travel * eased, 0),
-	                child: SizedBox(
-	                  height: textHeight,
-	                  child: Opacity(
-	                    opacity: _fadeController!.value,
-	                    child: OverflowBox(
-	                      minHeight: textHeight,
-	                      maxHeight: textHeight,
-	                      maxWidth: double.infinity,
-	                      alignment: Alignment.centerLeft,
-	                      child: Row(
-	                        mainAxisSize: MainAxisSize.min,
-	                        children: [
-	                          SizedBox(
-	                            width: textWidth,
-	                            child: Text(
-	                              widget.text,
-	                              maxLines: 1,
-	                              softWrap: false,
-	                              style: widget.style,
-	                              textAlign: TextAlign.left,
-	                            ),
-	                          ),
-	                          const SizedBox(width: gap),
-	                          SizedBox(
-	                            width: textWidth,
-	                            child: Text(
-	                              widget.text,
-	                              maxLines: 1,
-	                              softWrap: false,
-	                              style: widget.style,
-	                              textAlign: TextAlign.left,
-	                            ),
-	                          ),
-	                        ],
-	                      ),
-	                    ),
-	                  ),
-	                ),
-	              );
-	            },
+              final eased = Curves.easeInOutCubic.transform(
+                _scrollController!.value,
+              );
+              return Transform.translate(
+                offset: Offset(-_travel * eased, 0),
+                child: SizedBox(
+                  height: textHeight,
+                  child: Opacity(
+                    opacity: _fadeController!.value,
+                    child: OverflowBox(
+                      minHeight: textHeight,
+                      maxHeight: textHeight,
+                      maxWidth: double.infinity,
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: textWidth,
+                            child: Text(
+                              widget.text,
+                              maxLines: 1,
+                              softWrap: false,
+                              style: widget.style,
+                              textAlign: TextAlign.left,
+                            ),
+                          ),
+                          const SizedBox(width: gap),
+                          SizedBox(
+                            width: textWidth,
+                            child: Text(
+                              widget.text,
+                              maxLines: 1,
+                              softWrap: false,
+                              style: widget.style,
+                              textAlign: TextAlign.left,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         );
       },
@@ -1616,7 +1790,10 @@ class _CompactNowPlayingHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final motionEnergy = _estimateTrackMotionEnergy(manager.trackTitle, manager.trackArtist);
+    final motionEnergy = _estimateTrackMotionEnergy(
+      manager.trackTitle,
+      manager.trackArtist,
+    );
     return ClipRRect(
       key: key,
       borderRadius: BorderRadius.circular(18),
@@ -1625,7 +1802,9 @@ class _CompactNowPlayingHeader extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: CupertinoColors.systemGrey6.resolveFrom(context).withValues(alpha: 0.38),
+            color: CupertinoColors.systemGrey6
+                .resolveFrom(context)
+                .withValues(alpha: 0.38),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
               color: CupertinoColors.white.withValues(alpha: 0.2),
@@ -1639,13 +1818,12 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                 switchInCurve: Curves.easeOutCubic,
                 switchOutCurve: Curves.easeInCubic,
                 transitionBuilder: (child, animation) {
-                  return FadeTransition(
-                    opacity: animation,
-                    child: child,
-                  );
+                  return FadeTransition(opacity: animation, child: child);
                 },
                 child: _ArtworkImage(
-                  key: ValueKey('compact-artwork-${manager.trackThumbnailUrl ?? ''}'),
+                  key: ValueKey(
+                    'compact-artwork-${manager.trackThumbnailUrl ?? ''}',
+                  ),
                   url: manager.trackThumbnailUrl,
                   size: 62,
                   motionEnergy: motionEnergy,
@@ -1660,10 +1838,8 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                       manager.trackTitle ?? 'Cargando canción...',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                            fontSize: 19,
-                            fontWeight: FontWeight.w700,
-                          ),
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(fontSize: 19, fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 3),
                     Row(
@@ -1676,9 +1852,13 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                               manager.trackArtist ?? 'Artista desconocido',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
                                     fontSize: 14,
-                                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                    color: CupertinoColors.secondaryLabel
+                                        .resolveFrom(context),
                                   ),
                             ),
                           ),
@@ -1733,7 +1913,9 @@ class _InlineArtistActionButton extends StatelessWidget {
         width: size,
         height: size,
         decoration: BoxDecoration(
-          color: CupertinoColors.systemGrey6.resolveFrom(context).withValues(alpha: 0.58),
+          color: CupertinoColors.systemGrey6
+              .resolveFrom(context)
+              .withValues(alpha: 0.58),
           shape: BoxShape.circle,
           border: Border.all(
             color: CupertinoColors.white.withValues(alpha: 0.2),
@@ -1805,7 +1987,8 @@ class _PlaylistPickerRow extends StatelessWidget {
                         children: [
                           coverUrl == null || coverUrl!.isEmpty
                               ? Container(
-                                  color: CupertinoColors.systemGrey4.resolveFrom(context),
+                                  color: CupertinoColors.systemGrey4
+                                      .resolveFrom(context),
                                   alignment: Alignment.center,
                                   child: Icon(
                                     isFavorites
@@ -1821,7 +2004,8 @@ class _PlaylistPickerRow extends StatelessWidget {
                                   borderRadius: 0,
                                   zoom: 0,
                                   fallback: Container(
-                                    color: CupertinoColors.systemGrey4.resolveFrom(context),
+                                    color: CupertinoColors.systemGrey4
+                                        .resolveFrom(context),
                                     alignment: Alignment.center,
                                     child: Icon(
                                       isFavorites
@@ -1875,7 +2059,9 @@ class _PlaylistPickerRow extends StatelessWidget {
                           style: TextStyle(
                             fontFamily: '.SF Pro Text',
                             fontSize: 12,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
                           ),
                         ),
                       ],
@@ -1900,10 +2086,7 @@ class _IosTopToast extends StatefulWidget {
   final String message;
   final IconData icon;
 
-  const _IosTopToast({
-    required this.message,
-    required this.icon,
-  });
+  const _IosTopToast({required this.message, required this.icon});
 
   @override
   State<_IosTopToast> createState() => _IosTopToastState();
@@ -1994,10 +2177,7 @@ class _TopGlassIconButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onPressed;
 
-  const _TopGlassIconButton({
-    required this.icon,
-    required this.onPressed,
-  });
+  const _TopGlassIconButton({required this.icon, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
@@ -2039,7 +2219,9 @@ class _GlassControlsGroup extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: CupertinoColors.systemBackground.resolveFrom(context).withValues(alpha: 0.46),
+            color: CupertinoColors.systemBackground
+                .resolveFrom(context)
+                .withValues(alpha: 0.46),
             borderRadius: BorderRadius.circular(36),
             border: Border.all(
               color: CupertinoColors.white.withValues(alpha: 0.24),
@@ -2065,7 +2247,9 @@ class _IosLoadingControls extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           decoration: BoxDecoration(
-            color: CupertinoColors.systemGrey6.resolveFrom(context).withValues(alpha: 0.48),
+            color: CupertinoColors.systemGrey6
+                .resolveFrom(context)
+                .withValues(alpha: 0.48),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: CupertinoColors.white.withValues(alpha: 0.22),
@@ -2080,10 +2264,10 @@ class _IosLoadingControls extends StatelessWidget {
               Text(
                 'Cargando...',
                 style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                    ),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                ),
               ),
             ],
           ),
@@ -2109,9 +2293,9 @@ class _QueueSection extends StatelessWidget {
           Text(
             'Cola de reproducción',
             style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                ),
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
           ),
           const SizedBox(height: 10),
           const _IosLoadingControls(),
@@ -2129,20 +2313,22 @@ class _QueueSection extends StatelessWidget {
         Text(
           'Cola de reproducción',
           style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-              ),
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+          ),
         ),
         const SizedBox(height: 4),
         Text(
           manager.queueTitle,
           style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                fontSize: 13,
-                color: CupertinoColors.secondaryLabel.resolveFrom(context),
-              ),
+            fontSize: 13,
+            color: CupertinoColors.secondaryLabel.resolveFrom(context),
+          ),
         ),
         const SizedBox(height: 10),
-        ...queue.take(12).map((item) => _QueueRow(item: item, manager: manager)),
+        ...queue
+            .take(12)
+            .map((item) => _QueueRow(item: item, manager: manager)),
       ],
     );
   }
@@ -2152,10 +2338,7 @@ class _QueueRow extends StatelessWidget {
   final PlaybackQueueItem item;
   final VideoPlayerManager manager;
 
-  const _QueueRow({
-    required this.item,
-    required this.manager,
-  });
+  const _QueueRow({required this.item, required this.manager});
 
   @override
   Widget build(BuildContext context) {
@@ -2164,7 +2347,9 @@ class _QueueRow extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(14),
         child: Material(
-          color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.58),
+          color: Theme.of(
+            context,
+          ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.58),
           child: InkWell(
             onTap: () => manager.playQueueItem(item),
             child: Padding(
@@ -2180,7 +2365,9 @@ class _QueueRow extends StatelessWidget {
                           fallback: Container(
                             width: 56,
                             height: 56,
-                            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
                             alignment: Alignment.center,
                             child: const Icon(Icons.music_note_rounded),
                           ),
@@ -2193,7 +2380,9 @@ class _QueueRow extends StatelessWidget {
                           fallback: Container(
                             width: 56,
                             height: 56,
-                            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
                             alignment: Alignment.center,
                             child: const Icon(Icons.music_note_rounded),
                           ),
@@ -2207,7 +2396,8 @@ class _QueueRow extends StatelessWidget {
                           item.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
                               ),
@@ -2217,9 +2407,11 @@ class _QueueRow extends StatelessWidget {
                           item.artist,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
                                 fontSize: 12,
-                                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
                               ),
                         ),
                       ],
@@ -2227,7 +2419,9 @@ class _QueueRow extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Icon(
-                    item.isLocal ? CupertinoIcons.tray_fill : CupertinoIcons.sparkles,
+                    item.isLocal
+                        ? CupertinoIcons.tray_fill
+                        : CupertinoIcons.sparkles,
                     size: 18,
                     color: CupertinoColors.secondaryLabel.resolveFrom(context),
                   ),
@@ -2245,10 +2439,7 @@ class _NativeControlButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onPressed;
 
-  const _NativeControlButton({
-    required this.icon,
-    required this.onPressed,
-  });
+  const _NativeControlButton({required this.icon, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
@@ -2259,7 +2450,9 @@ class _NativeControlButton extends StatelessWidget {
         width: 46,
         height: 46,
         decoration: BoxDecoration(
-          color: CupertinoColors.systemGrey5.resolveFrom(context).withValues(alpha: 0.62),
+          color: CupertinoColors.systemGrey5
+              .resolveFrom(context)
+              .withValues(alpha: 0.62),
           shape: BoxShape.circle,
           border: Border.all(
             color: CupertinoColors.white.withValues(alpha: 0.22),
@@ -2353,9 +2546,14 @@ class _ProgressSection extends StatelessWidget {
             child: BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
-                  color: CupertinoColors.systemGrey6.resolveFrom(context).withValues(alpha: 0.45),
+                  color: CupertinoColors.systemGrey6
+                      .resolveFrom(context)
+                      .withValues(alpha: 0.45),
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(
                     color: CupertinoColors.white.withValues(alpha: 0.2),
@@ -2365,8 +2563,10 @@ class _ProgressSection extends StatelessWidget {
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     final maxWidth = constraints.maxWidth;
-                    final thumbLeft =
-                        (maxWidth * playedRatio - 6).clamp(0.0, maxWidth - 12);
+                    final thumbLeft = (maxWidth * playedRatio - 6).clamp(
+                      0.0,
+                      maxWidth - 12,
+                    );
 
                     void seekByDx(double localDx) {
                       if (safeTotal <= 1) return;
@@ -2378,7 +2578,8 @@ class _ProgressSection extends StatelessWidget {
 
                     return GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onTapDown: (details) => seekByDx(details.localPosition.dx),
+                      onTapDown: (details) =>
+                          seekByDx(details.localPosition.dx),
                       onHorizontalDragUpdate: (details) =>
                           seekByDx(details.localPosition.dx),
                       child: SizedBox(
@@ -2412,7 +2613,9 @@ class _ProgressSection extends StatelessWidget {
                               child: Container(
                                 height: 5,
                                 decoration: BoxDecoration(
-                                  color: CupertinoColors.white.withValues(alpha: 0.96),
+                                  color: CupertinoColors.white.withValues(
+                                    alpha: 0.96,
+                                  ),
                                   borderRadius: BorderRadius.circular(999),
                                 ),
                               ),
@@ -2427,8 +2630,9 @@ class _ProgressSection extends StatelessWidget {
                                   shape: BoxShape.circle,
                                   boxShadow: [
                                     BoxShadow(
-                                      color: CupertinoColors.black
-                                          .withValues(alpha: 0.22),
+                                      color: CupertinoColors.black.withValues(
+                                        alpha: 0.22,
+                                      ),
                                       blurRadius: 8,
                                       offset: const Offset(0, 2),
                                     ),
@@ -2453,18 +2657,18 @@ class _ProgressSection extends StatelessWidget {
             Text(
               _formatDuration(manager.position),
               style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                    fontSize: 13,
-                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
+                fontSize: 13,
+                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
             ),
             Text(
               _formatDuration(Duration(milliseconds: safeTotal)),
               style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                    fontSize: 13,
-                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                    fontFeatures: const [FontFeature.tabularFigures()],
-                  ),
+                fontSize: 13,
+                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
             ),
           ],
         ),
@@ -2511,11 +2715,11 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       _lastSyncedIndex = -1;
     }
     final textStyle = CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-          fontSize: 17,
-          height: 1.45,
-          color: CupertinoColors.label.resolveFrom(context),
-          fontWeight: FontWeight.w500,
-        );
+      fontSize: 17,
+      height: 1.45,
+      color: CupertinoColors.label.resolveFrom(context),
+      fontWeight: FontWeight.w500,
+    );
 
     Widget content;
     if (manager.isLyricsLoading) {
@@ -2575,10 +2779,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         },
       );
     } else {
-      content = Text(
-        manager.lyricsText ?? '',
-        style: textStyle,
-      );
+      content = Text(manager.lyricsText ?? '', style: textStyle);
     }
 
     return ClipRRect(
@@ -2590,7 +2791,9 @@ class _LyricsPanelState extends State<_LyricsPanel> {
           constraints: const BoxConstraints(minHeight: 210, maxHeight: 390),
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
           decoration: BoxDecoration(
-            color: CupertinoColors.systemGrey6.resolveFrom(context).withValues(alpha: 0.40),
+            color: CupertinoColors.systemGrey6
+                .resolveFrom(context)
+                .withValues(alpha: 0.40),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
               color: CupertinoColors.white.withValues(alpha: 0.2),
@@ -2602,7 +2805,9 @@ class _LyricsPanelState extends State<_LyricsPanel> {
             child: manager.hasSyncedLyrics
                 ? content
                 : SingleChildScrollView(
-                    key: ValueKey('${manager.isLyricsLoading}-${manager.lyricsError}-${manager.lyricsText}'),
+                    key: ValueKey(
+                      '${manager.isLyricsLoading}-${manager.lyricsError}-${manager.lyricsText}',
+                    ),
                     physics: const BouncingScrollPhysics(),
                     child: content,
                   ),
@@ -2619,7 +2824,8 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       if (!mounted || !_syncedScrollController.hasClients) return;
       const itemExtent = 46.0;
       final viewport = _syncedScrollController.position.viewportDimension;
-      final target = (currentIndex * itemExtent) - (viewport / 2) + (itemExtent / 2);
+      final target =
+          (currentIndex * itemExtent) - (viewport / 2) + (itemExtent / 2);
       final max = _syncedScrollController.position.maxScrollExtent;
       _syncedScrollController.animateTo(
         target.clamp(0.0, max),
@@ -2650,7 +2856,8 @@ class _ArtworkImage extends StatefulWidget {
   State<_ArtworkImage> createState() => _ArtworkImageState();
 }
 
-class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMixin {
+class _ArtworkImageState extends State<_ArtworkImage>
+    with TickerProviderStateMixin {
   late final AnimationController _motionController;
   late final AnimationController _pulseController;
   static const double _subjectSizeMultiplier = 2;
@@ -2709,8 +2916,16 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
 
   @override
   Widget build(BuildContext context) {
+    final settings = context.watch<AppSettingsService?>();
     final hasImage = widget.url != null && widget.url!.isNotEmpty;
-    final enableMotion = widget.animated && hasImage;
+    final animatedCutoutEnabled = settings?.animatedCutoutCovers ?? true;
+    final enableMotion = widget.animated && hasImage && animatedCutoutEnabled;
+    if (animatedCutoutEnabled &&
+        widget.animated &&
+        hasImage &&
+        _subjectCutoutBytes == null) {
+      unawaited(_resolveSubjectCutout());
+    }
 
     return SizedBox.square(
       dimension: widget.size,
@@ -2723,18 +2938,29 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
           final motionGain = playFactor * energy;
           final glowColor = _enhanceGlowColor(_dominantColor);
 
-          final dx = enableMotion ? math.sin(turn) * widget.size * 0.0105 * motionGain : 0.0;
-          final dy = enableMotion ? math.cos(turn * 2) * widget.size * 0.0090 * motionGain : 0.0;
-          final zoom = enableMotion ? 1.10 + (math.sin(turn) * 0.020 * motionGain) : 1.10;
-          final tilt = enableMotion ? math.sin(turn * 2) * 0.012 * motionGain : 0.0;
-          final warpX = enableMotion ? math.sin(turn * 3) * 0.018 * motionGain : 0.0;
-          final warpY = enableMotion ? math.cos(turn * 2) * 0.015 * motionGain : 0.0;
-          final glow =
-              enableMotion
-                  ? (0.36 + (_pulseController.value * 0.34)) *
-                      (widget.isPlaying ? 1.0 : 0.56) *
-                      (0.86 + (energy - 0.78) * 0.42)
-                  : 0.0;
+          final dx = enableMotion
+              ? math.sin(turn) * widget.size * 0.0105 * motionGain
+              : 0.0;
+          final dy = enableMotion
+              ? math.cos(turn * 2) * widget.size * 0.0090 * motionGain
+              : 0.0;
+          final zoom = enableMotion
+              ? 1.10 + (math.sin(turn) * 0.020 * motionGain)
+              : 1.10;
+          final tilt = enableMotion
+              ? math.sin(turn * 2) * 0.012 * motionGain
+              : 0.0;
+          final warpX = enableMotion
+              ? math.sin(turn * 3) * 0.018 * motionGain
+              : 0.0;
+          final warpY = enableMotion
+              ? math.cos(turn * 2) * 0.015 * motionGain
+              : 0.0;
+          final glow = enableMotion
+              ? (0.36 + (_pulseController.value * 0.34)) *
+                    (widget.isPlaying ? 1.0 : 0.56) *
+                    (0.86 + (energy - 0.78) * 0.42)
+              : 0.0;
           final focusAlignment = Alignment(
             enableMotion ? math.sin(turn) * 0.20 * motionGain : 0,
             enableMotion ? math.cos(turn) * 0.16 * motionGain : 0,
@@ -2912,18 +3138,34 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
                               opacity: 0.94 * (widget.isPlaying ? 1.0 : 0.76),
                               child: Transform(
                                 alignment: subjectAlignment,
-                        transform: Matrix4.identity()
-                          ..setEntry(3, 2, 0.0018)
-                          ..rotateX(math.sin(turn * subjectRotXFreq) * subjectRotXAmp * motionGain)
-                          ..rotateY(math.cos(turn * subjectRotYFreq) * subjectRotYAmp * motionGain),
-                        child: Transform.translate(
-                          offset: Offset(
-                            math.sin(turn * subjectMoveXFreq) * subjectMoveXAmp * motionGain,
-                            math.cos(turn * subjectMoveYFreq) * subjectMoveYAmp * motionGain,
-                          ),
-                          child: Transform.scale(
-                            scale: (subjectScaleBase * _subjectSizeMultiplier) +
-                                (math.sin(turn * subjectScaleFreq) * subjectScaleAmp * motionGain),
+                                transform: Matrix4.identity()
+                                  ..setEntry(3, 2, 0.0018)
+                                  ..rotateX(
+                                    math.sin(turn * subjectRotXFreq) *
+                                        subjectRotXAmp *
+                                        motionGain,
+                                  )
+                                  ..rotateY(
+                                    math.cos(turn * subjectRotYFreq) *
+                                        subjectRotYAmp *
+                                        motionGain,
+                                  ),
+                                child: Transform.translate(
+                                  offset: Offset(
+                                    math.sin(turn * subjectMoveXFreq) *
+                                        subjectMoveXAmp *
+                                        motionGain,
+                                    math.cos(turn * subjectMoveYFreq) *
+                                        subjectMoveYAmp *
+                                        motionGain,
+                                  ),
+                                  child: Transform.scale(
+                                    scale:
+                                        (subjectScaleBase *
+                                            _subjectSizeMultiplier) +
+                                        (math.sin(turn * subjectScaleFreq) *
+                                            subjectScaleAmp *
+                                            motionGain),
                                     child: ClipRect(
                                       child: Align(
                                         alignment: Alignment.center,
@@ -2940,9 +3182,7 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
                                 ),
                               ),
                             )
-                          : const SizedBox(
-                              key: ValueKey('subject-layer-off'),
-                            ),
+                          : const SizedBox(key: ValueKey('subject-layer-off')),
                     ),
                   ),
                 ),
@@ -2959,7 +3199,9 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
     _lastPaletteUrl = raw;
 
     try {
-      final ImageProvider provider = raw.startsWith('/') ? FileImage(File(raw)) : NetworkImage(raw);
+      final ImageProvider provider = raw.startsWith('/')
+          ? FileImage(File(raw))
+          : NetworkImage(raw);
       final palette = await PaletteGenerator.fromImageProvider(
         provider,
         size: const Size(96, 96),
@@ -2967,7 +3209,8 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
       );
       if (!mounted || _lastPaletteUrl != raw) return;
 
-      final color = palette.vibrantColor?.color ??
+      final color =
+          palette.vibrantColor?.color ??
           palette.lightVibrantColor?.color ??
           palette.dominantColor?.color ??
           palette.mutedColor?.color;
@@ -2982,6 +3225,18 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
   }
 
   Future<void> _resolveSubjectCutout() async {
+    final settings = context.read<AppSettingsService?>();
+    if (settings != null && !settings.animatedCutoutCovers) {
+      if (mounted && _subjectCutoutBytes != null) {
+        setState(() {
+          _subjectCutoutBytes = null;
+          _lastSubjectUrl = null;
+        });
+      } else {
+        _lastSubjectUrl = null;
+      }
+      return;
+    }
     final raw = widget.url?.trim();
     if (kDebugMode) {
       debugPrint('[cutout] resolve start url=$raw');
@@ -3004,9 +3259,14 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
     try {
       final bytes = await _loadImageBytes(raw);
       if (kDebugMode) {
-        debugPrint('[cutout] source bytes loaded url=$raw bytes=${bytes?.length ?? 0}');
+        debugPrint(
+          '[cutout] source bytes loaded url=$raw bytes=${bytes?.length ?? 0}',
+        );
       }
-      if (!mounted || _lastSubjectUrl != raw || bytes == null || bytes.isEmpty) {
+      if (!mounted ||
+          _lastSubjectUrl != raw ||
+          bytes == null ||
+          bytes.isEmpty) {
         if (kDebugMode) {
           debugPrint(
             '[cutout] resolve abort mounted=$mounted sameUrl=${_lastSubjectUrl == raw} hasBytes=${bytes?.isNotEmpty == true}',
@@ -3025,7 +3285,9 @@ class _ArtworkImageState extends State<_ArtworkImage> with TickerProviderStateMi
         _subjectCutoutBytes = cutout;
       });
       if (kDebugMode) {
-        debugPrint('[cutout] resolve done url=$raw outBytes=${cutout?.length ?? 0}');
+        debugPrint(
+          '[cutout] resolve done url=$raw outBytes=${cutout?.length ?? 0}',
+        );
       }
     } catch (_) {
       if (!mounted || _lastSubjectUrl != raw) return;
@@ -3170,51 +3432,51 @@ class _DownloadButton extends StatelessWidget {
       },
       child: switch (status) {
         DownloadStatus.downloading => _buildCupertinoStatusButton(
-            key: const ValueKey('download_loading'),
-            context: context,
-            child: SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                value: downloadService.getDownloadProgress(videoId),
-                color: Theme.of(context).colorScheme.primary,
-              ),
+          key: const ValueKey('download_loading'),
+          context: context,
+          child: SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              value: downloadService.getDownloadProgress(videoId),
+              color: Theme.of(context).colorScheme.primary,
             ),
-            onPressed: null,
           ),
+          onPressed: null,
+        ),
         DownloadStatus.downloaded => _buildCupertinoStatusButton(
-            key: const ValueKey('download_done'),
-            context: context,
-            child: Icon(
-              CupertinoIcons.check_mark_circled_solid,
-              color: CupertinoColors.systemGreen.resolveFrom(context),
-              size: 20,
-            ),
-            onPressed: null,
+          key: const ValueKey('download_done'),
+          context: context,
+          child: Icon(
+            CupertinoIcons.check_mark_circled_solid,
+            color: CupertinoColors.systemGreen.resolveFrom(context),
+            size: 20,
           ),
+          onPressed: null,
+        ),
         DownloadStatus.error => _buildCupertinoStatusButton(
-            key: const ValueKey('download_error'),
-            context: context,
-            child: Icon(
-              CupertinoIcons.exclamationmark_circle_fill,
-              color: CupertinoColors.systemRed.resolveFrom(context),
-              size: 20,
-            ),
-            onPressed: () => _showDownloadErrorDialog(context),
+          key: const ValueKey('download_error'),
+          context: context,
+          child: Icon(
+            CupertinoIcons.exclamationmark_circle_fill,
+            color: CupertinoColors.systemRed.resolveFrom(context),
+            size: 20,
           ),
+          onPressed: () => _showDownloadErrorDialog(context),
+        ),
         DownloadStatus.notDownloaded => _buildCupertinoStatusButton(
-            key: const ValueKey('download_idle'),
-            context: context,
-            child: Icon(
-              CupertinoIcons.arrow_down_circle,
-              color: hasSource
-                  ? CupertinoColors.label.resolveFrom(context)
-                  : CupertinoColors.tertiaryLabel.resolveFrom(context),
-              size: 20,
-            ),
-            onPressed: hasSource ? _triggerDownload : null,
+          key: const ValueKey('download_idle'),
+          context: context,
+          child: Icon(
+            CupertinoIcons.arrow_down_circle,
+            color: hasSource
+                ? CupertinoColors.label.resolveFrom(context)
+                : CupertinoColors.tertiaryLabel.resolveFrom(context),
+            size: 20,
           ),
+          onPressed: hasSource ? _triggerDownload : null,
+        ),
       },
     );
   }
@@ -3262,7 +3524,8 @@ class _DownloadButton extends StatelessWidget {
 
   void _showDownloadErrorDialog(BuildContext context) {
     final detail =
-        downloadService.getDownloadError(videoId) ?? 'No se registró detalle del error.';
+        downloadService.getDownloadError(videoId) ??
+        'No se registró detalle del error.';
     showCupertinoDialog<void>(
       context: context,
       builder: (dialogContext) {

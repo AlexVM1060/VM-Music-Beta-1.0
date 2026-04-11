@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
+import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
@@ -43,6 +45,8 @@ class DownloadService with ChangeNotifier {
   final YoutubeExplode _yt = YoutubeExplode();
   final Dio _dio = Dio();
   final LyricsService _lyricsService = LyricsService();
+  final AppSettingsService _settingsService;
+  final Connectivity _connectivity = Connectivity();
   static const Map<String, String> _youtubeHeaders = {
     'User-Agent':
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
@@ -58,10 +62,12 @@ class DownloadService with ChangeNotifier {
   final Map<String, StreamManifest> _manifestCache = {};
   final Map<String, Future<StreamManifest>> _manifestRequests = {};
 
-  Future<Box<DownloadedVideo>> get _downloadsBox async => await Hive.openBox<DownloadedVideo>(_downloadsBoxName);
-  Future<Box<String>> get _autoDownloadBox async => await Hive.openBox<String>(_autoDownloadBoxName);
+  Future<Box<DownloadedVideo>> get _downloadsBox async =>
+      await Hive.openBox<DownloadedVideo>(_downloadsBoxName);
+  Future<Box<String>> get _autoDownloadBox async =>
+      await Hive.openBox<String>(_autoDownloadBoxName);
 
-  DownloadService() {
+  DownloadService(this._settingsService) {
     _loadAutoDownloadPlaylists();
     loadDownloadedVideos();
   }
@@ -80,7 +86,10 @@ class DownloadService with ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setPlaylistAutoDownload(String playlistName, bool enabled) async {
+  Future<void> setPlaylistAutoDownload(
+    String playlistName,
+    bool enabled,
+  ) async {
     final box = await _autoDownloadBox;
     final normalized = PlaylistService.isFavoritesPlaylistName(playlistName)
         ? PlaylistService.favoritesPlaylistName
@@ -122,17 +131,16 @@ class DownloadService with ChangeNotifier {
     required VideoPlayerManager videoManager,
   }) async {
     if (!isPlaylistAutoDownload(playlistName)) return false;
-    return downloadVideoUsingClone(
-      video: video,
-      videoManager: videoManager,
-    );
+    return downloadVideoUsingClone(video: video, videoManager: videoManager);
   }
 
   Future<bool> downloadVideoUsingClone({
     required VideoHistory video,
     required VideoPlayerManager videoManager,
   }) async {
-    final source = await videoManager.resolveDownloadSourceIsolated(video.videoId);
+    final source = await videoManager.resolveDownloadSourceIsolated(
+      video.videoId,
+    );
     if (source != null && source.sourceUrl.isNotEmpty) {
       return downloadFromPlaybackSource(
         videoId: video.videoId,
@@ -155,13 +163,17 @@ class DownloadService with ChangeNotifier {
   bool isPlaylistAutoDownload(String playlistName) {
     if (_autoDownloadPlaylists.contains(playlistName)) return true;
     if (PlaylistService.isFavoritesPlaylistName(playlistName)) {
-      return _autoDownloadPlaylists.contains(PlaylistService.favoritesPlaylistName) ||
+      return _autoDownloadPlaylists.contains(
+            PlaylistService.favoritesPlaylistName,
+          ) ||
           _autoDownloadPlaylists.contains('Videos favoritos');
     }
     return false;
   }
 
-  Future<PlaylistDownloadSummary> downloadPlaylistVideos(List<VideoHistory> videos) async {
+  Future<PlaylistDownloadSummary> downloadPlaylistVideos(
+    List<VideoHistory> videos,
+  ) async {
     var queuedCount = 0;
     var alreadyDownloadedCount = 0;
     var alreadyInProgressCount = 0;
@@ -218,10 +230,7 @@ class DownloadService with ChangeNotifier {
       }
 
       unawaited(
-        downloadVideoUsingClone(
-          video: video,
-          videoManager: videoManager,
-        ),
+        downloadVideoUsingClone(video: video, videoManager: videoManager),
       );
       queuedCount++;
     }
@@ -238,9 +247,18 @@ class DownloadService with ChangeNotifier {
     return box.values.toList();
   }
 
-  Future<bool> downloadVideo(String videoId, String title, String thumbnailUrl, String channelTitle) async {
+  Future<bool> downloadVideo(
+    String videoId,
+    String title,
+    String thumbnailUrl,
+    String channelTitle,
+  ) async {
     final existing = await getDownloadedVideoById(videoId);
-    if (_downloadStatus[videoId] == DownloadStatus.downloading || existing != null) {
+    if (_downloadStatus[videoId] == DownloadStatus.downloading ||
+        existing != null) {
+      return false;
+    }
+    if (!await _ensureDownloadAllowedByNetwork(videoId)) {
       return false;
     }
 
@@ -284,7 +302,8 @@ class DownloadService with ChangeNotifier {
           await sink.close();
 
           final downloadedFile = File(filePath);
-          if (!await downloadedFile.exists() || await downloadedFile.length() == 0) {
+          if (!await downloadedFile.exists() ||
+              await downloadedFile.length() == 0) {
             throw Exception('Archivo descargado vacío');
           }
 
@@ -315,7 +334,8 @@ class DownloadService with ChangeNotifier {
               },
             );
             final downloadedFile = File(filePath);
-            if (!await downloadedFile.exists() || await downloadedFile.length() == 0) {
+            if (!await downloadedFile.exists() ||
+                await downloadedFile.length() == 0) {
               throw Exception('Archivo descargado vacío');
             }
             successfulPath = filePath;
@@ -333,10 +353,7 @@ class DownloadService with ChangeNotifier {
         throw Exception('No se pudo descargar con ningún stream: $lastError');
       }
 
-      final lyrics = await _fetchLyricsSafe(
-        title: title,
-        artist: channelTitle,
-      );
+      final lyrics = await _fetchLyricsSafe(title: title, artist: channelTitle);
       final localThumbnailPath = await _downloadThumbnailSafe(
         videoId: videoId,
         thumbnailUrl: thumbnailUrl,
@@ -375,7 +392,11 @@ class DownloadService with ChangeNotifier {
     String channelTitle,
   ) async {
     final existing = await getDownloadedVideoById(videoId);
-    if (_downloadStatus[videoId] == DownloadStatus.downloading || existing != null) {
+    if (_downloadStatus[videoId] == DownloadStatus.downloading ||
+        existing != null) {
+      return false;
+    }
+    if (!await _ensureDownloadAllowedByNetwork(videoId)) {
       return false;
     }
 
@@ -407,7 +428,11 @@ class DownloadService with ChangeNotifier {
     bool isVideoSource = false,
   }) async {
     final existing = await getDownloadedVideoById(videoId);
-    if (_downloadStatus[videoId] == DownloadStatus.downloading || existing != null) {
+    if (_downloadStatus[videoId] == DownloadStatus.downloading ||
+        existing != null) {
+      return false;
+    }
+    if (!await _ensureDownloadAllowedByNetwork(videoId)) {
       return false;
     }
 
@@ -461,10 +486,7 @@ class DownloadService with ChangeNotifier {
         throw Exception('Archivo descargado vacío');
       }
 
-      final lyrics = await _fetchLyricsSafe(
-        title: title,
-        artist: channelTitle,
-      );
+      final lyrics = await _fetchLyricsSafe(title: title, artist: channelTitle);
       final localThumbnailPath = await _downloadThumbnailSafe(
         videoId: videoId,
         thumbnailUrl: thumbnailUrl,
@@ -576,29 +598,69 @@ class DownloadService with ChangeNotifier {
     return downloaded != null;
   }
 
-  List<AudioOnlyStreamInfo> _prioritizeAudioStreams(List<AudioOnlyStreamInfo> streams) {
-    final sortedByBitrate = [...streams]
-      ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
-
-    if (!Platform.isIOS) {
-      return sortedByBitrate;
+  Future<bool> _ensureDownloadAllowedByNetwork(String videoId) async {
+    if (!_settingsService.downloadOnlyOnWifi) return true;
+    try {
+      final results = await _connectivity.checkConnectivity();
+      final hasWifi =
+          results.contains(ConnectivityResult.wifi) ||
+          results.contains(ConnectivityResult.ethernet);
+      if (hasWifi) return true;
+    } catch (_) {
+      // Si no se puede determinar la red, permitimos continuar para no bloquear al usuario.
+      return true;
     }
 
-    final preferred = <AudioOnlyStreamInfo>[];
-    final fallback = <AudioOnlyStreamInfo>[];
-    for (final stream in sortedByBitrate) {
-      final container = stream.container.name.toLowerCase();
-      if (container == 'mp4' || container == 'm4a') {
-        preferred.add(stream);
-      } else {
-        fallback.add(stream);
-      }
-    }
-
-    return [...preferred, ...fallback];
+    _downloadStatus[videoId] = DownloadStatus.error;
+    _downloadProgress.remove(videoId);
+    _downloadErrors[videoId] =
+        'Descarga bloqueada: activa datos móviles en configuración o conéctate a Wi‑Fi.';
+    notifyListeners();
+    return false;
   }
 
-  Future<List<_PlaybackDownloadSource>> _resolvePlaybackDownloadSources(String videoId) async {
+  List<AudioOnlyStreamInfo> _prioritizeAudioStreams(
+    List<AudioOnlyStreamInfo> streams,
+  ) {
+    final targetBitrate = _targetBitrateForCurrentQuality();
+    final sortedByBitrate = [...streams]
+      ..sort((a, b) {
+        final aContainer = a.container.name.toLowerCase();
+        final bContainer = b.container.name.toLowerCase();
+        final aPreferredContainer = (aContainer == 'mp4' || aContainer == 'm4a')
+            ? 1
+            : 0;
+        final bPreferredContainer = (bContainer == 'mp4' || bContainer == 'm4a')
+            ? 1
+            : 0;
+        if (aPreferredContainer != bPreferredContainer) {
+          return bPreferredContainer.compareTo(aPreferredContainer);
+        }
+
+        if (targetBitrate != null) {
+          final aDistance = (a.bitrate.bitsPerSecond - targetBitrate).abs();
+          final bDistance = (b.bitrate.bitsPerSecond - targetBitrate).abs();
+          if (aDistance != bDistance) return aDistance.compareTo(bDistance);
+        }
+
+        return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+      });
+    return sortedByBitrate;
+  }
+
+  int? _targetBitrateForCurrentQuality() {
+    return switch (_settingsService.audioQuality) {
+      AudioQualityPreference.automatic => Platform.isIOS ? 160000 : 128000,
+      AudioQualityPreference.low => 96000,
+      AudioQualityPreference.normal => 160000,
+      AudioQualityPreference.high => 320000,
+      AudioQualityPreference.veryHigh => null,
+    };
+  }
+
+  Future<List<_PlaybackDownloadSource>> _resolvePlaybackDownloadSources(
+    String videoId,
+  ) async {
     final manifest = await _getManifestWithRetry(videoId);
     final sources = <_PlaybackDownloadSource>[];
     final seen = <String>{};
@@ -608,12 +670,7 @@ class DownloadService with ChangeNotifier {
       for (final stream in _prioritizeAudioStreams(audioStreams)) {
         final url = stream.url.toString();
         if (!seen.add(url)) continue;
-        sources.add(
-          _PlaybackDownloadSource(
-            url: url,
-            isVideoSource: false,
-          ),
-        );
+        sources.add(_PlaybackDownloadSource(url: url, isVideoSource: false));
       }
     }
 
@@ -622,12 +679,7 @@ class DownloadService with ChangeNotifier {
       for (final stream in _prioritizeMuxedStreams(muxedStreams)) {
         final url = stream.url.toString();
         if (!seen.add(url)) continue;
-        sources.add(
-          _PlaybackDownloadSource(
-            url: url,
-            isVideoSource: true,
-          ),
-        );
+        sources.add(_PlaybackDownloadSource(url: url, isVideoSource: true));
       }
     }
 
@@ -639,7 +691,9 @@ class DownloadService with ChangeNotifier {
 
   List<MuxedStreamInfo> _prioritizeMuxedStreams(List<MuxedStreamInfo> streams) {
     final sortedByQuality = [...streams]
-      ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+      ..sort(
+        (a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond),
+      );
 
     if (!Platform.isIOS) {
       return sortedByQuality;
@@ -660,12 +714,18 @@ class DownloadService with ChangeNotifier {
   }
 
   String _inferFileExtension(String sourceUrl, {String fallback = 'm4a'}) {
-    final localExtension = p.extension(sourceUrl).replaceFirst('.', '').toLowerCase();
+    final localExtension = p
+        .extension(sourceUrl)
+        .replaceFirst('.', '')
+        .toLowerCase();
     if (_isSafeExtension(localExtension)) return localExtension;
 
     try {
       final uri = Uri.parse(sourceUrl);
-      final remoteExtension = p.extension(uri.path).replaceFirst('.', '').toLowerCase();
+      final remoteExtension = p
+          .extension(uri.path)
+          .replaceFirst('.', '')
+          .toLowerCase();
       if (_isSafeExtension(remoteExtension)) return remoteExtension;
     } catch (_) {
       // Ignorado, se usa fallback
@@ -712,8 +772,8 @@ class DownloadService with ChangeNotifier {
   }) async {
     final manifest = await _getManifestWithRetry(videoId);
     final streamInfo = isVideoSource
-        ? manifest.muxed.sortByBitrate().last
-        : manifest.audioOnly.sortByBitrate().last;
+        ? _prioritizeMuxedStreams(manifest.muxed.toList()).first
+        : _prioritizeAudioStreams(manifest.audioOnly.toList()).first;
 
     final file = File(targetPath);
     if (await file.exists()) {
@@ -799,10 +859,7 @@ class DownloadService with ChangeNotifier {
     required String artist,
   }) async {
     try {
-      return await _lyricsService.fetchLyrics(
-        title: title,
-        artist: artist,
-      );
+      return await _lyricsService.fetchLyrics(title: title, artist: artist);
     } catch (_) {
       return null;
     }

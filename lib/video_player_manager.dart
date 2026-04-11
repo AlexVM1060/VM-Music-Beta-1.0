@@ -13,6 +13,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:myapp/audio_handler.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
+import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/now_playing_artwork_service.dart';
@@ -78,15 +79,18 @@ class _RecommendationSignals {
 
 // Mantiene el nombre para no romper imports, pero ahora gestiona audio estilo app musical.
 class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
-  static const MethodChannel _iosBassBoostChannel =
-      MethodChannel('com.vm.music.beta/ios_bass_boost');
+  static const MethodChannel _iosBassBoostChannel = MethodChannel(
+    'com.vm.music.beta/ios_bass_boost',
+  );
   static const _QueueHistoryProfile _emptyHistoryProfile = _QueueHistoryProfile(
     topArtists: [],
     topTitleTokens: [],
   );
   final HistoryService _historyService = HistoryService();
   final AudioHandler _audioHandler;
-  late final AudioPlayer _player;
+  final AppSettingsService _settingsService;
+  late AudioPlayer _player;
+  late AudioPlayer _crossfadePlayer;
   AndroidLoudnessEnhancer? _androidBassEnhancer;
   AndroidEqualizer? _androidBassEqualizer;
   bool _bassBoostConfigured = false;
@@ -146,12 +150,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, String> _lyricsCache = {};
   final Map<String, List<SyncedLyricLine>> _syncedLyricsCache = {};
   final Map<String, String> _searchThumbnailOverrides = {};
-  final NowPlayingArtworkService _nowPlayingArtworkService = NowPlayingArtworkService();
+  final NowPlayingArtworkService _nowPlayingArtworkService =
+      NowPlayingArtworkService();
   final Map<String, Uri> _systemArtworkByVideoId = {};
   final Map<String, String> _systemArtworkSourceByVideoId = {};
   final MyAudioHandler? _appAudioHandler;
   DateTime _lastSystemPlaybackSync = DateTime.fromMillisecondsSinceEpoch(0);
   int _nowPlayingArtworkEpoch = 0;
+  int _volumeFadeEpoch = 0;
+  bool _crossfadeTriggeredForCurrent = false;
+  bool _isCrossfadeTransitioning = false;
+  bool _isPreloadingNextTrack = false;
+  String? _preloadedForCurrentVideoId;
+  String? _preloadedNextQueueKey;
+  String? _preloadedNextStreamUrl;
+  String? _crossfadePreparedQueueKey;
+  bool _crossfadePreparedPrimed = false;
+  String? _crossfadeFailedForCurrentVideoId;
+  String? _crossfadeFailedQueueKey;
   DateTime? _lastYoutubeRequestAt;
   DateTime? _youtubeSlowModeUntil;
   int _lyricsEpoch = 0;
@@ -159,6 +175,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
   static const double _defaultPlaybackVolume = 3;
+  static const Duration _crossfadeDuration = Duration(seconds: 4);
+  static const Duration _djMinMixDuration = Duration(seconds: 6);
+  static const Duration _djMaxMixDuration = Duration(seconds: 12);
+  static const Duration _crossfadeTriggerLeadTime = Duration(seconds: 5);
+  static const Duration _crossfadePreloadLeadTime = Duration(seconds: 26);
   static const String _youtubeiPlayerEndpoint =
       'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
   static const Map<String, String> _youtubeHeaders = {
@@ -169,27 +190,37 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     'Referer': 'https://www.youtube.com/',
   };
 
-  VideoPlayerManager(this._audioHandler)
-      : _appAudioHandler = _audioHandler is MyAudioHandler ? _audioHandler : null {
+  VideoPlayerManager(this._audioHandler, this._settingsService)
+    : _appAudioHandler = _audioHandler is MyAudioHandler
+          ? _audioHandler
+          : null {
     if (!kIsWeb && Platform.isAndroid) {
       _androidBassEnhancer = AndroidLoudnessEnhancer();
       _androidBassEqualizer = AndroidEqualizer();
       _player = AudioPlayer(
         audioPipeline: AudioPipeline(
-          androidAudioEffects: [
-            _androidBassEnhancer!,
-            _androidBassEqualizer!,
-          ],
+          androidAudioEffects: [_androidBassEnhancer!, _androidBassEqualizer!],
         ),
       );
+      _crossfadePlayer = AudioPlayer();
     } else {
       _player = AudioPlayer();
+      _crossfadePlayer = AudioPlayer();
     }
-    unawaited(_applyDefaultPlaybackVolume());
+    _settingsService.addListener(_onSettingsChanged);
+    unawaited(_applyUserAudioPreferences());
     _bindSystemMediaControls();
     WidgetsBinding.instance.addObserver(this);
+    _attachActivePlayerSubscriptions();
+  }
+
+  void _attachActivePlayerSubscriptions() {
+    _detachActivePlayerSubscriptions();
+
     _positionSub = _player.positionStream.listen((position) {
       _position = position;
+      unawaited(_maybePreloadUpcomingQueueTrack());
+      unawaited(_maybeTriggerCrossfadeAdvance());
       _syncSystemPlaybackState();
       notifyListeners();
     });
@@ -211,7 +242,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     _playerStateSub = _player.playerStateStream.listen((state) {
       _isPlaying = state.playing;
-      _isBuffering = state.processingState == ProcessingState.buffering ||
+      _isBuffering =
+          state.processingState == ProcessingState.buffering ||
           state.processingState == ProcessingState.loading;
       if (state.processingState == ProcessingState.completed) {
         _isPlaying = false;
@@ -220,6 +252,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _syncSystemPlaybackState(force: true);
       notifyListeners();
     });
+  }
+
+  void _detachActivePlayerSubscriptions() {
+    _positionSub?.cancel();
+    _positionSub = null;
+    _bufferedSub?.cancel();
+    _bufferedSub = null;
+    _durationSub?.cancel();
+    _durationSub = null;
+    _playerStateSub?.cancel();
+    _playerStateSub = null;
   }
 
   String? get currentVideoId => _currentVideoId;
@@ -233,12 +276,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Duration get bufferedPosition => _bufferedPosition;
   bool get isPlaying => _isPlaying;
   bool get isBuffering => _isBuffering;
-  bool get isLoading => _isLoading;
+  bool get isLoading => _isLoading && !_isCrossfadeTransitioning;
   bool get isLocal => _isLocal;
   bool get isUsingVideoFallback => _usingHiddenVideo;
   bool get autoplayEnabled => _autoplayEnabled;
   bool get bassBoostEnabled => _bassBoostEnabled;
-  bool get isBassBoostSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+  bool get isBassBoostSupported =>
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
   bool get isLyricsLayout => _isLyricsLayout;
   bool get isLyricsLoading => _isLyricsLoading;
   String? get lyricsText => _lyricsText;
@@ -258,18 +302,20 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
     return idx;
   }
+
   String? get currentStreamUrl => _currentStreamUrl;
   String? get errorMessage => _errorMessage;
   List<PlaybackQueueItem> get playbackQueue => [
-        ..._manualPlaybackQueue,
-        ..._playbackQueue,
-      ];
+    ..._manualPlaybackQueue,
+    ..._playbackQueue,
+  ];
   bool get isQueueLoading => _isQueueLoading;
   String get queueTitle {
     if (_manualPlaybackQueue.isEmpty) return _queueTitle;
     if (_playbackQueue.isEmpty) return 'En cola';
     return 'En cola · luego $_queueTitle';
   }
+
   bool get isInBackground => false;
 
   void init() {}
@@ -386,18 +432,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       artist: artist.isEmpty ? 'Artista desconocido' : artist,
       artUri: initialArtUri,
       duration: _trackDuration > Duration.zero ? _trackDuration : null,
-      extras: {
-        'isLocal': _isLocal,
-      },
+      extras: {'isLocal': _isLocal},
     );
 
     if (thumb == null || thumb.trim().isEmpty) return;
     final requestEpoch = ++_nowPlayingArtworkEpoch;
     unawaited(() async {
-      final processedUri = await _nowPlayingArtworkService.resolveNowPlayingArtUri(
-        videoId: videoId,
-        thumbnailSource: thumb,
-      );
+      final processedUri = await _nowPlayingArtworkService
+          .resolveNowPlayingArtUri(videoId: videoId, thumbnailSource: thumb);
       if (processedUri == null) return;
       if (requestEpoch != _nowPlayingArtworkEpoch) return;
       if (_currentVideoId != videoId) return;
@@ -411,9 +453,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         artist: artist.isEmpty ? 'Artista desconocido' : artist,
         artUri: processedUri,
         duration: _trackDuration > Duration.zero ? _trackDuration : null,
-        extras: {
-          'isLocal': _isLocal,
-        },
+        extras: {'isLocal': _isLocal},
       );
     }());
   }
@@ -422,7 +462,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final handler = _appAudioHandler;
     if (handler == null) return;
     final now = DateTime.now();
-    if (!force && now.difference(_lastSystemPlaybackSync) < const Duration(milliseconds: 700)) {
+    if (!force &&
+        now.difference(_lastSystemPlaybackSync) <
+            const Duration(milliseconds: 700)) {
       return;
     }
     _lastSystemPlaybackSync = now;
@@ -449,7 +491,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    if ((state == AppLifecycleState.paused || state == AppLifecycleState.inactive) &&
+    if ((state == AppLifecycleState.paused ||
+            state == AppLifecycleState.inactive) &&
         _usingHiddenVideo) {
       unawaited(_switchHiddenVideoToAudioEngine());
     }
@@ -474,12 +517,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String? preferredTitle,
     String? preferredArtist,
     Duration? preferredDuration,
+    String? preloadedStreamUrl,
     bool isRecoveryAttempt = false,
   }) async {
     _rememberCurrentForHistory();
     await _disableBassBoostOnTrackChange();
     await _resetEngines();
-    await _applyDefaultPlaybackVolume();
+    await _applyPlaybackVolumeSetting();
     _isLoading = true;
     _errorMessage = null;
     _currentVideoId = videoId;
@@ -489,22 +533,31 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _position = Duration.zero;
     _bufferedPosition = Duration.zero;
     _completionHandledForCurrent = false;
+    _crossfadeTriggeredForCurrent = false;
+    _isCrossfadeTransitioning = false;
+    _crossfadeFailedForCurrentVideoId = null;
+    _crossfadeFailedQueueKey = null;
+    _clearPreloadedNextTrack();
     _trackTitle = (preferredTitle != null && preferredTitle.trim().isNotEmpty)
         ? preferredTitle.trim()
         : null;
-    _trackArtist = (preferredArtist != null && preferredArtist.trim().isNotEmpty)
+    _trackArtist =
+        (preferredArtist != null && preferredArtist.trim().isNotEmpty)
         ? preferredArtist.trim()
         : null;
     _trackDuration = preferredDuration ?? Duration.zero;
     final effectivePreferredThumbnail =
-        (preferredThumbnailUrl != null && preferredThumbnailUrl.trim().isNotEmpty)
+        (preferredThumbnailUrl != null &&
+            preferredThumbnailUrl.trim().isNotEmpty)
         ? preferredThumbnailUrl.trim()
         : _searchThumbnailOverrides[videoId];
-    if (effectivePreferredThumbnail != null && effectivePreferredThumbnail.isNotEmpty) {
+    if (effectivePreferredThumbnail != null &&
+        effectivePreferredThumbnail.isNotEmpty) {
       _searchThumbnailOverrides[videoId] = effectivePreferredThumbnail;
     }
     _trackThumbnailUrl = null;
-    if (effectivePreferredThumbnail != null && effectivePreferredThumbnail.isNotEmpty) {
+    if (effectivePreferredThumbnail != null &&
+        effectivePreferredThumbnail.isNotEmpty) {
       _trackThumbnailUrl = effectivePreferredThumbnail;
     }
     _resetLyricsState();
@@ -519,37 +572,59 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           _trackArtist == null ||
           _trackThumbnailUrl == null ||
           _trackDuration == Duration.zero;
-      final manifestFuture = _getManifestWithRetry(videoId);
+      Future<StreamManifest>? manifestFuture;
       final Future<Video>? videoFuture = shouldFetchVideoMetadata
           ? _getVideoWithRetry(videoId)
           : null;
-      final manifest = await manifestFuture;
-
-      final audioStreams = manifest.audioOnly.toList();
-      if (audioStreams.isEmpty) {
-        throw Exception('No se encontraron streams de audio');
-      }
-
-      final orderedStreams = _prioritizeAudioStreams(audioStreams);
 
       Object? lastAudioError;
       var started = false;
-      for (final stream in orderedStreams) {
+      if (preloadedStreamUrl != null && preloadedStreamUrl.trim().isNotEmpty) {
         try {
+          final preloadedUri = Uri.parse(preloadedStreamUrl.trim());
+          final headers =
+              _headersForStreamUri(preloadedUri) ?? const <String, String>{};
           await _player.setAudioSource(
-            AudioSource.uri(stream.url, headers: _youtubeHeaders),
+            AudioSource.uri(preloadedUri, headers: headers),
           );
           await _player.play();
+          unawaited(_applyTrackStartFadeInIfEnabled());
           started = true;
           _usingHiddenVideo = false;
-          _currentStreamUrl = stream.url.toString();
-          break;
+          _currentStreamUrl = preloadedUri.toString();
         } catch (e) {
           lastAudioError = e;
         }
       }
 
       if (!started) {
+        manifestFuture ??= _getManifestWithRetry(videoId);
+        final manifest = await manifestFuture;
+        final audioStreams = manifest.audioOnly.toList();
+        if (audioStreams.isEmpty) {
+          throw Exception('No se encontraron streams de audio');
+        }
+        final orderedStreams = _prioritizeAudioStreams(audioStreams);
+        for (final stream in orderedStreams) {
+          try {
+            await _player.setAudioSource(
+              AudioSource.uri(stream.url, headers: _youtubeHeaders),
+            );
+            await _player.play();
+            unawaited(_applyTrackStartFadeInIfEnabled());
+            started = true;
+            _usingHiddenVideo = false;
+            _currentStreamUrl = stream.url.toString();
+            break;
+          } catch (e) {
+            lastAudioError = e;
+          }
+        }
+      }
+
+      if (!started) {
+        manifestFuture ??= _getManifestWithRetry(videoId);
+        final manifest = await manifestFuture;
         final muxedStreams = _prioritizeMuxedStreams(manifest.muxed.toList());
         Object? lastMuxedError;
         for (final stream in muxedStreams) {
@@ -585,6 +660,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _clearQueueForAutoplayDisabled();
       }
       unawaited(_applyBassBoostEffect());
+      if (_autoplayEnabled && !isLocalVideo) {
+        unawaited(_warmUpAutoplayQueue(videoId));
+      }
 
       _sessionPlayedVideoIds.add(videoId);
 
@@ -593,10 +671,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         Video? video;
         try {
           if (videoFuture != null) {
-            video = await videoFuture.timeout(const Duration(seconds: 6));
+            video = await videoFuture.timeout(const Duration(seconds: 8));
           }
         } catch (e, s) {
-          log('No se pudo resolver metadata de video a tiempo', error: e, stackTrace: s);
+          log(
+            'No se pudo resolver metadata de video a tiempo',
+            error: e,
+            stackTrace: s,
+          );
         }
 
         if (_currentVideoId != videoId) return;
@@ -604,9 +686,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         if (video != null) {
           _trackTitle = video.title;
           _trackThumbnailUrl =
-              (effectivePreferredThumbnail != null && effectivePreferredThumbnail.isNotEmpty)
-                  ? effectivePreferredThumbnail
-                  : bestThumbnailForVideo(video);
+              (effectivePreferredThumbnail != null &&
+                  effectivePreferredThumbnail.isNotEmpty)
+              ? effectivePreferredThumbnail
+              : bestThumbnailForVideo(video);
           _trackArtist = video.author;
           _trackDuration = video.duration ?? Duration.zero;
           _syncSystemNowPlaying();
@@ -614,13 +697,34 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           notifyListeners();
         }
 
-        final hasLocalLyrics = (_lyricsText?.isNotEmpty ?? false) || _syncedLyrics.isNotEmpty;
+        final hasLocalLyrics =
+            (_lyricsText?.isNotEmpty ?? false) || _syncedLyrics.isNotEmpty;
         if (_isLyricsLayout && !hasLocalLyrics) {
           await _loadLyricsForCurrentTrack();
         }
 
+        if (_autoplayEnabled && video == null && _currentVideoId == videoId) {
+          try {
+            video = await _getVideoWithRetry(
+              videoId,
+            ).timeout(const Duration(seconds: 20));
+          } catch (e, s) {
+            log(
+              'No se pudo resolver metadata para cargar cola',
+              error: e,
+              stackTrace: s,
+            );
+          }
+        }
+
         if (_autoplayEnabled && video != null && _currentVideoId == videoId) {
           await _loadOnlineQueue(video, currentVideoId: videoId);
+        } else if (_autoplayEnabled &&
+            video == null &&
+            _currentVideoId == videoId) {
+          await _loadOnlineQueueFallbackFromCurrentContext(
+            currentVideoId: videoId,
+          );
         }
 
         if (_currentVideoId == videoId) {
@@ -629,7 +733,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }());
     } catch (e, s) {
       log('Error reproduciendo audio', error: e, stackTrace: s);
-      if (e is RequestLimitExceededException && !isRecoveryAttempt && !isLocalVideo) {
+      if (e is RequestLimitExceededException &&
+          !isRecoveryAttempt &&
+          !isLocalVideo) {
         _activateYoutubeSlowMode(const Duration(minutes: 2));
         _manifestCache.remove(videoId);
         _videoCache.remove(videoId);
@@ -645,6 +751,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             preferredTitle: preferredTitle,
             preferredArtist: preferredArtist,
             preferredDuration: preferredDuration,
+            preloadedStreamUrl: preloadedStreamUrl,
             isRecoveryAttempt: true,
           );
           return;
@@ -688,7 +795,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final title = _trackTitle;
     final thumbnail = _trackThumbnailUrl;
     final artist = _trackArtist;
-    if (title == null || title.isEmpty || thumbnail == null || thumbnail.isEmpty || artist == null) {
+    if (title == null ||
+        title.isEmpty ||
+        thumbnail == null ||
+        thumbnail.isEmpty ||
+        artist == null) {
       return;
     }
     try {
@@ -746,7 +857,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<DownloadSourceInfo?> resolveDownloadSourceSilently(String videoId) async {
+  Future<DownloadSourceInfo?> resolveDownloadSourceSilently(
+    String videoId,
+  ) async {
     try {
       final manifest = await _getManifestWithRetry(videoId);
       final audioStreams = manifest.audioOnly.toList();
@@ -775,7 +888,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<DownloadSourceInfo?> resolveDownloadSourceIsolated(String videoId) async {
+  Future<DownloadSourceInfo?> resolveDownloadSourceIsolated(
+    String videoId,
+  ) async {
     try {
       final manifest = await _getManifestWithRetry(videoId);
       final audioStreams = _prioritizeAudioStreams(manifest.audioOnly.toList());
@@ -809,7 +924,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<DownloadSourceInfo?> _resolveDownloadSourceViaYoutubei(String videoId) async {
+  Future<DownloadSourceInfo?> _resolveDownloadSourceViaYoutubei(
+    String videoId,
+  ) async {
     final client = HttpClient();
     try {
       final candidates = <Map<String, Object>>[
@@ -827,7 +944,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         {
           'name': 'IOS',
           'version': '19.09.3',
-          'ua': 'com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_3 like Mac OS X)',
+          'ua':
+              'com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_3 like Mac OS X)',
         },
       ];
 
@@ -866,24 +984,61 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
         final adaptive = streamingData['adaptiveFormats'];
         if (adaptive is List) {
-          final audioFormats = adaptive.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).where((f) {
-            final mime = (f['mimeType']?.toString() ?? '').toLowerCase();
-            return mime.contains('audio/') && (f['url']?.toString().isNotEmpty ?? false);
-          }).toList()
-            ..sort((a, b) => (b['bitrate'] as num? ?? 0).compareTo(a['bitrate'] as num? ?? 0));
+          final audioFormats =
+              adaptive
+                  .whereType<Map>()
+                  .map((e) => Map<String, dynamic>.from(e))
+                  .where((f) {
+                    final mime = (f['mimeType']?.toString() ?? '')
+                        .toLowerCase();
+                    return mime.contains('audio/') &&
+                        (f['url']?.toString().isNotEmpty ?? false);
+                  })
+                  .toList()
+                ..sort(
+                  (a, b) => (b['bitrate'] as num? ?? 0).compareTo(
+                    a['bitrate'] as num? ?? 0,
+                  ),
+                );
           if (audioFormats.isNotEmpty) {
-            pickedAudio = audioFormats.first['url']?.toString();
+            final targetBitrate = _targetBitrateForCurrentQuality();
+            if (targetBitrate == null) {
+              pickedAudio = audioFormats.first['url']?.toString();
+            } else {
+              audioFormats.sort((a, b) {
+                final aRate = (a['bitrate'] as num? ?? 0).toInt();
+                final bRate = (b['bitrate'] as num? ?? 0).toInt();
+                final aDistance = (aRate - targetBitrate).abs();
+                final bDistance = (bRate - targetBitrate).abs();
+                if (aDistance != bDistance) {
+                  return aDistance.compareTo(bDistance);
+                }
+                return bRate.compareTo(aRate);
+              });
+              pickedAudio = audioFormats.first['url']?.toString();
+            }
           }
         }
 
         final formats = streamingData['formats'];
         if (formats is List) {
-          final muxedFormats = formats.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).where((f) {
-            final hasUrl = f['url']?.toString().isNotEmpty ?? false;
-            final mime = (f['mimeType']?.toString() ?? '').toLowerCase();
-            return hasUrl && (mime.contains('video/') || mime.contains('mp4'));
-          }).toList()
-            ..sort((a, b) => (b['bitrate'] as num? ?? 0).compareTo(a['bitrate'] as num? ?? 0));
+          final muxedFormats =
+              formats
+                  .whereType<Map>()
+                  .map((e) => Map<String, dynamic>.from(e))
+                  .where((f) {
+                    final hasUrl = f['url']?.toString().isNotEmpty ?? false;
+                    final mime = (f['mimeType']?.toString() ?? '')
+                        .toLowerCase();
+                    return hasUrl &&
+                        (mime.contains('video/') || mime.contains('mp4'));
+                  })
+                  .toList()
+                ..sort(
+                  (a, b) => (b['bitrate'] as num? ?? 0).compareTo(
+                    a['bitrate'] as num? ?? 0,
+                  ),
+                );
           if (muxedFormats.isNotEmpty) {
             pickedMuxed = muxedFormats.first['url']?.toString();
           }
@@ -891,13 +1046,22 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
         final hlsManifest = streamingData['hlsManifestUrl']?.toString();
         if (pickedAudio != null && pickedAudio.trim().isNotEmpty) {
-          return DownloadSourceInfo(sourceUrl: pickedAudio.trim(), isVideoSource: false);
+          return DownloadSourceInfo(
+            sourceUrl: pickedAudio.trim(),
+            isVideoSource: false,
+          );
         }
         if (pickedMuxed != null && pickedMuxed.trim().isNotEmpty) {
-          return DownloadSourceInfo(sourceUrl: pickedMuxed.trim(), isVideoSource: true);
+          return DownloadSourceInfo(
+            sourceUrl: pickedMuxed.trim(),
+            isVideoSource: true,
+          );
         }
         if (hlsManifest != null && hlsManifest.trim().isNotEmpty) {
-          return DownloadSourceInfo(sourceUrl: hlsManifest.trim(), isVideoSource: true);
+          return DownloadSourceInfo(
+            sourceUrl: hlsManifest.trim(),
+            isVideoSource: true,
+          );
         }
       }
 
@@ -909,7 +1073,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<bool> _attemptPlaybackFromDownloadSource(DownloadSourceInfo source) async {
+  Future<bool> _attemptPlaybackFromDownloadSource(
+    DownloadSourceInfo source,
+  ) async {
     final uri = Uri.parse(source.sourceUrl);
     final headers = _headersForStreamUri(uri) ?? const <String, String>{};
 
@@ -918,6 +1084,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         await _player.setAudioSource(AudioSource.uri(uri, headers: headers));
         unawaited(_applyBassBoostEffect());
         await _player.play();
+        unawaited(_applyTrackStartFadeInIfEnabled());
         _usingHiddenVideo = false;
         _currentStreamUrl = source.sourceUrl;
         _isPlaying = true;
@@ -953,10 +1120,34 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   Map<String, String>? _headersForStreamUri(Uri uri) {
     final host = uri.host.toLowerCase();
-    if (host.contains('googlevideo.com') || host.contains('youtube.com') || host.contains('ytimg.com')) {
+    if (host.contains('googlevideo.com')) {
+      // En iOS, algunas URLs firmadas de googlevideo fallan cuando se fuerzan
+      // headers tipo Origin/Referer en un segundo player (crossfade).
+      if (!kIsWeb && Platform.isIOS) return null;
+      return _youtubeHeaders;
+    }
+    if (host.contains('youtube.com') || host.contains('ytimg.com')) {
       return _youtubeHeaders;
     }
     return null;
+  }
+
+  List<Map<String, String>?> _crossfadeHeaderCandidatesForUri(Uri uri) {
+    final preferred = _headersForStreamUri(uri);
+    final host = uri.host.toLowerCase();
+    final isGoogleVideo = host.contains('googlevideo.com');
+    if (!kIsWeb && Platform.isIOS && isGoogleVideo) {
+      // Probamos sin headers y luego con headers para maximizar compatibilidad
+      // de AVFoundation en reproducción simultánea.
+      if (preferred == null) {
+        return <Map<String, String>?>[null];
+      }
+      return <Map<String, String>?>[null, preferred];
+    }
+    if (preferred == null) {
+      return <Map<String, String>?>[null];
+    }
+    return <Map<String, String>?>[preferred];
   }
 
   Future<bool> _probeAudioStreamSilently(Uri url) async {
@@ -1010,7 +1201,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           maxAttempts: 2,
         );
       } catch (e, s) {
-        log('Related videos falló, seguimos con búsqueda', error: e, stackTrace: s);
+        log(
+          'Related videos falló, seguimos con búsqueda',
+          error: e,
+          stackTrace: s,
+        );
       }
 
       if (related != null && related.isNotEmpty) {
@@ -1032,7 +1227,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         candidates.addAll(related.take(50));
       }
 
-      final historyProfile = await _buildQueueHistoryProfile(primaryArtist: video.author);
+      final historyProfile = await _buildQueueHistoryProfile(
+        primaryArtist: video.author,
+      );
       final similarArtists = _buildSimilarArtistCandidates(
         primaryArtist: video.author,
         currentTitle: video.title,
@@ -1059,7 +1256,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       for (final artist in similarArtists.take(6)) {
         if (_normalizeArtistName(artist) == normalizedPrimaryArtist) continue;
         batchedSearches.add(_searchTopicChannelUploads(artist, limit: 20));
-        batchedSearches.add(_safeSearchVideos('$artist topic', limit: 12, onlyTopic: true));
+        batchedSearches.add(
+          _safeSearchVideos('$artist topic', limit: 12, onlyTopic: true),
+        );
       }
       batchedSearches.add(_pickRandomHistoryArtistVideos(historyProfile));
       final batchResults = await Future.wait(batchedSearches);
@@ -1139,7 +1338,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     similarArtists.remove(normalizedPrimary);
     final historyArtists = historyProfile.topArtists
         .map(_normalizeArtistName)
-        .where((value) => value.isNotEmpty && value != normalizedPrimary && !similarArtists.contains(value))
+        .where(
+          (value) =>
+              value.isNotEmpty &&
+              value != normalizedPrimary &&
+              !similarArtists.contains(value),
+        )
         .take(2)
         .toSet();
     final allowedArtists = <String>{
@@ -1151,6 +1355,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         .where((item) => item.id.value != currentVideoId)
         .where((item) => !_sessionPlayedVideoIds.contains(item.id.value))
         .where(_isPureYoutubeMusicAudio)
+        .where(
+          (item) =>
+              _settingsService.allowExplicitContent || !_isExplicitTrack(item),
+        )
         .where((item) {
           if (allowedArtists.isEmpty) return true;
           final author = _normalizeArtistName(item.author);
@@ -1236,7 +1444,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       final normalizedTitle = _normalizeTitleForQueueDedup(item.title);
-      if (normalizedTitle.isNotEmpty && !seenNormalizedTitles.add(normalizedTitle)) {
+      if (normalizedTitle.isNotEmpty &&
+          !seenNormalizedTitles.add(normalizedTitle)) {
         continue;
       }
 
@@ -1281,7 +1490,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _matchesArtistGroup(String normalizedAuthor, Set<String> group) {
     for (final artist in group) {
       if (artist.isEmpty) continue;
-      if (normalizedAuthor.contains(artist) || artist.contains(normalizedAuthor)) {
+      if (normalizedAuthor.contains(artist) ||
+          artist.contains(normalizedAuthor)) {
         return true;
       }
     }
@@ -1303,7 +1513,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     final collaborators = _extractCollaboratorArtists(currentTitle);
-    final currentTrackCollaborators = _extractCollaboratorArtists(_trackTitle ?? '');
+    final currentTrackCollaborators = _extractCollaboratorArtists(
+      _trackTitle ?? '',
+    );
     for (final artist in collaborators) {
       addScore(artist, 240);
     }
@@ -1346,14 +1558,22 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (match == null) return const [];
 
     final tail = (match.group(1) ?? '')
-        .replaceAll(RegExp(r'\b(official|audio|video|lyrics|lyric)\b', caseSensitive: false), ' ')
+        .replaceAll(
+          RegExp(
+            r'\b(official|audio|video|lyrics|lyric)\b',
+            caseSensitive: false,
+          ),
+          ' ',
+        )
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
     if (tail.isEmpty) return const [];
 
     final seen = <String>{};
     final artists = <String>[];
-    for (final raw in tail.split(RegExp(r'[,/;|•]| and ', caseSensitive: false))) {
+    for (final raw in tail.split(
+      RegExp(r'[,/;|•]| and ', caseSensitive: false),
+    )) {
       final normalized = _normalizeArtistName(raw);
       if (normalized.isEmpty || !seen.add(normalized)) continue;
       artists.add(normalized);
@@ -1370,7 +1590,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final counter = <String, int>{};
     for (final video in relatedVideos.take(70)) {
       final authorRaw = video.author.toLowerCase().trim();
-      if (!_isTopicAuthor(authorRaw) || _isBlockedRecommendationAuthor(authorRaw)) continue;
+      if (!_isTopicAuthor(authorRaw) ||
+          _isBlockedRecommendationAuthor(authorRaw)) {
+        continue;
+      }
       if (!_isPureYoutubeMusicAudio(video)) continue;
       final normalized = _normalizeArtistName(video.author);
       if (normalized.isEmpty || normalized == normalizedPrimaryArtist) continue;
@@ -1456,6 +1679,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return score;
   }
 
+  bool _isExplicitTrack(Video item) {
+    final text = '${item.title} ${item.author} ${item.description}'
+        .toLowerCase();
+    return _explicitKeywords.any(text.contains);
+  }
+
   bool _looksLikeMusicVideo(Video item) {
     final text = '${item.title} ${item.author}'.toLowerCase();
     return _musicKeywords.any(text.contains);
@@ -1539,19 +1768,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }) async {
     final channel = await _resolveBestTopicChannel(artist);
     if (channel == null) return const [];
-    if (_isBlockedRecommendationAuthor(channel.name.toLowerCase())) return const [];
+    if (_isBlockedRecommendationAuthor(channel.name.toLowerCase())) {
+      return const [];
+    }
     try {
       final uploads = await _runYoutubeWithRetry(
-        () => _ytExplode.channels.getUploads(channel.id.value).take(80).toList(),
+        () =>
+            _ytExplode.channels.getUploads(channel.id.value).take(80).toList(),
         maxAttempts: 1,
       );
       final prioritized = _prioritizeTopicStyleVideos(uploads);
-      return prioritized
-          .where(_isPureYoutubeMusicAudio)
-          .take(limit)
-          .toList();
+      return prioritized.where(_isPureYoutubeMusicAudio).take(limit).toList();
     } catch (e, s) {
-      log('No se pudieron cargar uploads de canal topic: ${channel.name}', error: e, stackTrace: s);
+      log(
+        'No se pudieron cargar uploads de canal topic: ${channel.name}',
+        error: e,
+        stackTrace: s,
+      );
       return const [];
     }
   }
@@ -1561,15 +1794,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (normalizedArtist.isEmpty) return null;
     try {
       final raw = await _runYoutubeWithRetry(
-        () => _ytExplode.search.searchContent(artist, filter: TypeFilters.channel),
+        () => _ytExplode.search.searchContent(
+          artist,
+          filter: TypeFilters.channel,
+        ),
         maxAttempts: 1,
       );
       final channels = raw.whereType<SearchChannel>().take(12).toList();
       if (channels.isEmpty) return null;
 
-      final topicOnly = channels.where((channel) => _isTopicAuthor(channel.name.toLowerCase())).toList();
+      final topicOnly = channels
+          .where((channel) => _isTopicAuthor(channel.name.toLowerCase()))
+          .toList();
       final filteredTopicOnly = topicOnly
-          .where((channel) => !_isBlockedRecommendationAuthor(channel.name.toLowerCase()))
+          .where(
+            (channel) =>
+                !_isBlockedRecommendationAuthor(channel.name.toLowerCase()),
+          )
           .toList();
       if (filteredTopicOnly.isEmpty) return null;
 
@@ -1590,7 +1831,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
       return best;
     } catch (e, s) {
-      log('No se pudo resolver canal topic para $artist', error: e, stackTrace: s);
+      log(
+        'No se pudo resolver canal topic para $artist',
+        error: e,
+        stackTrace: s,
+      );
       return null;
     }
   }
@@ -1613,16 +1858,25 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    topic.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
-    music.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
-    others.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
+    topic.sort(
+      (a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount),
+    );
+    music.sort(
+      (a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount),
+    );
+    others.sort(
+      (a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount),
+    );
     return [...topic, ...music, ...others];
   }
 
   Future<void> _waitForYoutubeRequestSlot() async {
     final now = DateTime.now();
-    final slowModeActive = _youtubeSlowModeUntil != null && now.isBefore(_youtubeSlowModeUntil!);
-    final effectiveGap = slowModeActive ? _youtubeSlowRequestGap : _youtubeMinRequestGap;
+    final slowModeActive =
+        _youtubeSlowModeUntil != null && now.isBefore(_youtubeSlowModeUntil!);
+    final effectiveGap = slowModeActive
+        ? _youtubeSlowRequestGap
+        : _youtubeMinRequestGap;
     final last = _lastYoutubeRequestAt;
     if (last == null) {
       _lastYoutubeRequestAt = now;
@@ -1644,10 +1898,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return until != null && DateTime.now().isBefore(until);
   }
 
-  void _activateYoutubeSlowMode([Duration duration = _youtubeRateLimitCooldown]) {
+  void _activateYoutubeSlowMode([
+    Duration duration = _youtubeRateLimitCooldown,
+  ]) {
     final now = DateTime.now();
     final until = now.add(duration);
-    if (_youtubeSlowModeUntil == null || until.isAfter(_youtubeSlowModeUntil!)) {
+    if (_youtubeSlowModeUntil == null ||
+        until.isAfter(_youtubeSlowModeUntil!)) {
       _youtubeSlowModeUntil = until;
     }
   }
@@ -1677,8 +1934,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         if (!onlyAutoGenerated) return list.take(limit).toList();
         return list.where(_hasAutoGeneratedSignal).take(limit).toList();
       }
-      Iterable<Video> filtered = list.where((item) => _isTopicAuthor(item.author.toLowerCase()));
-      filtered = filtered.where((item) => !_isBlockedRecommendationAuthor(item.author.toLowerCase()));
+      Iterable<Video> filtered = list.where(
+        (item) => _isTopicAuthor(item.author.toLowerCase()),
+      );
+      filtered = filtered.where(
+        (item) => !_isBlockedRecommendationAuthor(item.author.toLowerCase()),
+      );
       if (onlyAutoGenerated) {
         filtered = filtered.where(_hasAutoGeneratedSignal);
       }
@@ -1740,7 +2001,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       ..sort((a, b) => b.value.compareTo(a.value));
 
     final trendTokens = <String>{
-      ...currentTokens.where((token) => _queueTrendingBoostTokens.contains(token)),
+      ...currentTokens.where(
+        (token) => _queueTrendingBoostTokens.contains(token),
+      ),
       ...relatedTokens
           .where((entry) => _queueTrendingBoostTokens.contains(entry.key))
           .map((entry) => entry.key),
@@ -1748,8 +2011,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     return _RecommendationSignals(
       currentTitleTokens: currentTokens,
-      relatedTitleTokens: relatedTokens.map((e) => e.key).take(10).toList(growable: false),
-      coListenArtists: coListenArtists.map((e) => e.key).take(10).toList(growable: false),
+      relatedTitleTokens: relatedTokens
+          .map((e) => e.key)
+          .take(10)
+          .toList(growable: false),
+      coListenArtists: coListenArtists
+          .map((e) => e.key)
+          .take(10)
+          .toList(growable: false),
       trendTokens: trendTokens.take(8).toList(growable: false),
     );
   }
@@ -1800,25 +2069,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     await Future.wait(
       List.generate(
         phase1Count,
-        (index) => collectBatch(
-          query: queries[index],
-          queryIndex: index,
-        ),
+        (index) => collectBatch(query: queries[index], queryIndex: index),
       ),
     );
 
     if (scoresById.length < 20 && queries.length > phase1Count) {
       await Future.wait(
-        List.generate(
-          queries.length - phase1Count,
-          (offset) {
-            final index = phase1Count + offset;
-            return collectBatch(
-              query: queries[index],
-              queryIndex: index,
-            );
-          },
-        ),
+        List.generate(queries.length - phase1Count, (offset) {
+          final index = phase1Count + offset;
+          return collectBatch(query: queries[index], queryIndex: index);
+        }),
       );
     }
 
@@ -2039,6 +2299,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     'lyric',
   ];
 
+  static const List<String> _explicitKeywords = [
+    'explicit',
+    'e version',
+    'parental advisory',
+    'uncensored',
+    'dirty version',
+    'contenido explicito',
+    'explicita',
+  ];
+
   static const List<String> _queueTrendingSeedQueries = [
     'mexico top songs topic',
     'canciones en tendencia mexico topic',
@@ -2137,7 +2407,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             ? (4 + (attempt * 4))
             : (attempt * 3);
         final jitterMs = 120 + math.Random().nextInt(380);
-        await Future<void>.delayed(Duration(seconds: waitSeconds, milliseconds: jitterMs));
+        await Future<void>.delayed(
+          Duration(seconds: waitSeconds, milliseconds: jitterMs),
+        );
       }
     }
     throw lastError ?? Exception('Error desconocido al contactar YouTube');
@@ -2155,7 +2427,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _rememberCurrentForHistory();
     await _disableBassBoostOnTrackChange();
     await _resetEngines();
-    await _applyDefaultPlaybackVolume();
+    await _applyPlaybackVolumeSetting();
     _isLoading = true;
     _errorMessage = null;
     _currentVideoId = id;
@@ -2169,6 +2441,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _position = Duration.zero;
     _bufferedPosition = Duration.zero;
     _completionHandledForCurrent = false;
+    _crossfadeTriggeredForCurrent = false;
+    _isCrossfadeTransitioning = false;
+    _crossfadeFailedForCurrentVideoId = null;
+    _crossfadeFailedQueueKey = null;
+    _clearPreloadedNextTrack();
     _resetLyricsState();
 
     String? resolvedPlainLyrics = localPlainLyrics;
@@ -2210,7 +2487,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       await _player.setAudioSource(AudioSource.file(filePath));
       unawaited(_applyBassBoostEffect());
       // No esperamos a que termine la reproducción para no bloquear la UI.
-      unawaited(_playInBackgroundSafely(isLocalPlayback: true));
+      unawaited(_playInBackgroundSafely(isLocalPlayback: true, fadeIn: true));
       _sessionPlayedVideoIds.add(id);
       _usingHiddenVideo = false;
       if (_autoplayEnabled) {
@@ -2224,10 +2501,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _syncSystemPlaybackState(force: true);
     } catch (e, s) {
       log('Error reproduciendo archivo local', error: e, stackTrace: s);
-      _errorMessage = _buildPlaybackErrorMessage(
-        e,
-        isLocalPlayback: true,
-      );
+      _errorMessage = _buildPlaybackErrorMessage(e, isLocalPlayback: true);
       _isPlaying = false;
       _isBuffering = false;
       _syncSystemPlaybackState(force: true);
@@ -2238,23 +2512,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> playQueueItem(PlaybackQueueItem item) async {
+  Future<void> playQueueItem(
+    PlaybackQueueItem item, {
+    String? preloadedStreamUrl,
+  }) async {
     _removeFromQueues(item);
     notifyListeners();
     try {
       await _prepareSystemArtwork(
         videoId: item.videoId,
         thumbnailSource: item.thumbnailUrl,
-      ).timeout(
-        const Duration(milliseconds: 500),
-        onTimeout: () => null,
-      );
+      ).timeout(const Duration(milliseconds: 500), onTimeout: () => null);
     } catch (e, s) {
-      log(
-        'No se pudo preparar artwork para cola',
-        error: e,
-        stackTrace: s,
-      );
+      log('No se pudo preparar artwork para cola', error: e, stackTrace: s);
     }
     if (item.isLocal) {
       final path = item.localFilePath;
@@ -2275,6 +2545,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       preferredThumbnailUrl: item.thumbnailUrl,
       preferredTitle: item.title,
       preferredArtist: item.artist,
+      preloadedStreamUrl: preloadedStreamUrl,
     );
   }
 
@@ -2323,16 +2594,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       (entry) => entry.videoId == item.videoId && entry.isLocal == item.isLocal,
     );
     if (alreadyInManual) return false;
-    _manualPlaybackQueue = [
-      ..._manualPlaybackQueue,
-      item,
-    ];
+    _manualPlaybackQueue = [..._manualPlaybackQueue, item];
     unawaited(
       _prepareSystemArtwork(
         videoId: item.videoId,
         thumbnailSource: item.thumbnailUrl,
       ),
     );
+    unawaited(_maybePreloadUpcomingQueueTrack());
     notifyListeners();
     return true;
   }
@@ -2440,48 +2709,156 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _applyDefaultPlaybackVolume() async {
+  void _onSettingsChanged() {
+    unawaited(_applyUserAudioPreferences());
+  }
+
+  Future<void> _applyUserAudioPreferences() async {
+    _volumeFadeEpoch++;
+    await _applyPlaybackVolumeSetting();
+    notifyListeners();
+  }
+
+  Future<void> _applyPlaybackVolumeSetting() async {
     try {
-      await _player.setVolume(_defaultPlaybackVolume);
+      final targetVolume = _settingsService.normalizeVolume
+          ? 1.0
+          : _defaultPlaybackVolume;
+      await _player.setVolume(targetVolume);
+      await _crossfadePlayer.setVolume(0.0);
     } catch (_) {
       // Best effort: algunos backends pueden limitar o ignorar >1.0.
     }
   }
 
+  bool get _isMixingEnabled =>
+      _settingsService.crossfade || _settingsService.djMode;
+
+  Duration _resolveMixDuration({
+    required Duration outgoingDuration,
+    required Duration outgoingPosition,
+    required Duration incomingDuration,
+  }) {
+    if (!_settingsService.djMode) return _crossfadeDuration;
+
+    final outgoingBasedMs = outgoingDuration > Duration.zero
+        ? (outgoingDuration.inMilliseconds * 0.065).round()
+        : _djMinMixDuration.inMilliseconds;
+    final incomingBasedMs = incomingDuration > Duration.zero
+        ? (incomingDuration.inMilliseconds * 0.045).round()
+        : _djMinMixDuration.inMilliseconds;
+    final blendedMs = ((outgoingBasedMs + incomingBasedMs) / 2).round();
+    final clampedMs = blendedMs.clamp(
+      _djMinMixDuration.inMilliseconds,
+      _djMaxMixDuration.inMilliseconds,
+    );
+
+    final remainingMs = (outgoingDuration - outgoingPosition).inMilliseconds;
+    final safeMaxMs = math.max(
+      2000,
+      remainingMs - const Duration(milliseconds: 700).inMilliseconds,
+    );
+    final safeMs = math.min(clampedMs, safeMaxMs);
+    return Duration(milliseconds: safeMs);
+  }
+
+  Duration _effectiveCrossfadeTriggerLeadTime() {
+    if (!_settingsService.djMode) return _crossfadeTriggerLeadTime;
+    if (_trackDuration <= Duration.zero) return const Duration(seconds: 9);
+    final dynamicSeconds = (_trackDuration.inSeconds * 0.055).round().clamp(
+      8,
+      13,
+    );
+    return Duration(seconds: dynamicSeconds);
+  }
+
+  Duration _effectiveCrossfadePreloadLeadTime() {
+    if (!_settingsService.djMode) return _crossfadePreloadLeadTime;
+    return const Duration(seconds: 42);
+  }
+
+  Future<void> _applyTrackStartFadeInIfEnabled() async {
+    if (!_isMixingEnabled) return;
+    final fadeId = ++_volumeFadeEpoch;
+    final targetVolume = _settingsService.normalizeVolume
+        ? 1.0
+        : _defaultPlaybackVolume;
+    try {
+      await _player.setVolume(0.0);
+      const stepCount = 8;
+      for (var step = 1; step <= stepCount; step++) {
+        if (fadeId != _volumeFadeEpoch) return;
+        if (!_player.playing) return;
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        if (fadeId != _volumeFadeEpoch) return;
+        final nextVolume = targetVolume * (step / stepCount);
+        await _player.setVolume(nextVolume);
+      }
+    } catch (_) {
+      await _applyPlaybackVolumeSetting();
+    }
+  }
+
+  int? _targetBitrateForCurrentQuality() {
+    return switch (_settingsService.audioQuality) {
+      AudioQualityPreference.automatic => Platform.isIOS ? 160000 : 128000,
+      AudioQualityPreference.low => 96000,
+      AudioQualityPreference.normal => 160000,
+      AudioQualityPreference.high => 320000,
+      AudioQualityPreference.veryHigh => null,
+    };
+  }
+
   void toggleLyricsLayout() {
     _isLyricsLayout = !_isLyricsLayout;
-    final hasCurrentLyrics = (_lyricsText?.trim().isNotEmpty ?? false) || _syncedLyrics.isNotEmpty;
+    final hasCurrentLyrics =
+        (_lyricsText?.trim().isNotEmpty ?? false) || _syncedLyrics.isNotEmpty;
     if (_isLyricsLayout && !hasCurrentLyrics) {
       unawaited(_loadLyricsForCurrentTrack());
     }
     notifyListeners();
   }
 
-  List<AudioOnlyStreamInfo> _prioritizeAudioStreams(List<AudioOnlyStreamInfo> streams) {
-    final targetBitrate = Platform.isIOS ? 160000 : 128000;
+  List<AudioOnlyStreamInfo> _prioritizeAudioStreams(
+    List<AudioOnlyStreamInfo> streams,
+  ) {
+    final targetBitrate = _targetBitrateForCurrentQuality();
+
     final sorted = [...streams]
       ..sort((a, b) {
         final aContainer = a.container.name.toLowerCase();
         final bContainer = b.container.name.toLowerCase();
-        final aPreferredContainer = (aContainer == 'mp4' || aContainer == 'm4a') ? 1 : 0;
-        final bPreferredContainer = (bContainer == 'mp4' || bContainer == 'm4a') ? 1 : 0;
+        final aPreferredContainer = (aContainer == 'mp4' || aContainer == 'm4a')
+            ? 1
+            : 0;
+        final bPreferredContainer = (bContainer == 'mp4' || bContainer == 'm4a')
+            ? 1
+            : 0;
 
         if (aPreferredContainer != bPreferredContainer) {
           return bPreferredContainer.compareTo(aPreferredContainer);
         }
 
-        final aDistance = (a.bitrate.bitsPerSecond - targetBitrate).abs();
-        final bDistance = (b.bitrate.bitsPerSecond - targetBitrate).abs();
-        if (aDistance != bDistance) return aDistance.compareTo(bDistance);
+        if (targetBitrate != null) {
+          final aDistance = (a.bitrate.bitsPerSecond - targetBitrate).abs();
+          final bDistance = (b.bitrate.bitsPerSecond - targetBitrate).abs();
+          if (aDistance != bDistance) return aDistance.compareTo(bDistance);
+        }
 
         return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
       });
     return sorted;
   }
 
-  Future<void> _playInBackgroundSafely({bool isLocalPlayback = false}) async {
+  Future<void> _playInBackgroundSafely({
+    bool isLocalPlayback = false,
+    bool fadeIn = false,
+  }) async {
     try {
       await _player.play();
+      if (fadeIn) {
+        unawaited(_applyTrackStartFadeInIfEnabled());
+      }
     } catch (e, s) {
       log('play() en background falló', error: e, stackTrace: s);
       _errorMessage = _buildPlaybackErrorMessage(
@@ -2636,6 +3013,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _settingsService.removeListener(_onSettingsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _positionSub?.cancel();
     _bufferedSub?.cancel();
@@ -2644,6 +3022,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _hiddenVideoController?.removeListener(_syncFromHiddenVideo);
     _hiddenVideoController?.dispose();
     _player.dispose();
+    _crossfadePlayer.dispose();
     _ytExplode.close();
     _clearSystemNowPlaying();
     _audioHandler.stop();
@@ -2652,7 +3031,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   List<MuxedStreamInfo> _prioritizeMuxedStreams(List<MuxedStreamInfo> streams) {
     final sortedByQuality = [...streams]
-      ..sort((a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond));
+      ..sort(
+        (a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond),
+      );
 
     if (!Platform.isIOS) {
       return sortedByQuality;
@@ -2674,6 +3055,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _resetEngines() async {
     _isResettingEngines = true;
     await _player.stop();
+    try {
+      await _crossfadePlayer.stop();
+    } catch (_) {}
+    _clearPreloadedNextTrack();
     final controller = _hiddenVideoController;
     _hiddenVideoController = null;
     _usingHiddenVideo = false;
@@ -2735,12 +3120,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         unawaited(_applyBassBoostEffect());
         await _player.seek(position);
         await _player.play();
+        unawaited(_applyTrackStartFadeInIfEnabled());
         _isPlaying = true;
         _isBuffering = false;
         _syncSystemPlaybackState(force: true);
       } catch (e, s) {
         // Si falla el motor de audio, recuperamos fallback de video.
-        log('Falló migración a audio, restaurando fallback', error: e, stackTrace: s);
+        log(
+          'Falló migración a audio, restaurando fallback',
+          error: e,
+          stackTrace: s,
+        );
         _hiddenVideoController = hidden;
         _usingHiddenVideo = true;
         hidden.addListener(_syncFromHiddenVideo);
@@ -2781,12 +3171,91 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       final related = await _getRelatedQueueWithRetry(currentVideo);
-      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) return;
+      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
+        return;
+      }
       _playbackQueue = related;
       unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
+      unawaited(_maybePreloadUpcomingQueueTrack());
     } catch (e, s) {
       log('Error cargando recomendados', error: e, stackTrace: s);
-      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) return;
+      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
+        return;
+      }
+      _playbackQueue = const [];
+    } finally {
+      if (queueRequestId == _queueEpoch && _currentVideoId == currentVideoId) {
+        _isQueueLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _loadOnlineQueueFallbackFromCurrentContext({
+    required String currentVideoId,
+  }) async {
+    if (!_autoplayEnabled) return;
+    final artist = (_trackArtist ?? '').trim();
+    if (artist.isEmpty) return;
+
+    final queueRequestId = ++_queueEpoch;
+    _queueTitle = 'Recomendados';
+    _isQueueLoading = true;
+    notifyListeners();
+
+    try {
+      final queryByArtist = _safeSearchVideos(
+        '$artist topic',
+        limit: 28,
+        onlyTopic: true,
+      );
+      final title = (_trackTitle ?? '').trim();
+      final queryByArtistAndTitle = title.isEmpty
+          ? Future.value(const <Video>[])
+          : _safeSearchVideos(
+              '$artist $title topic',
+              limit: 18,
+              onlyTopic: true,
+            );
+      final batches = await Future.wait([queryByArtist, queryByArtistAndTitle]);
+      final seen = <String>{};
+      final queue = <PlaybackQueueItem>[];
+      for (final batch in batches) {
+        for (final video in batch) {
+          final id = video.id.value;
+          if (id == currentVideoId) continue;
+          if (!_isPureYoutubeMusicAudio(video)) continue;
+          if (!_settingsService.allowExplicitContent &&
+              _isExplicitTrack(video)) {
+            continue;
+          }
+          if (_sessionPlayedVideoIds.contains(id)) continue;
+          if (!seen.add(id)) continue;
+          queue.add(
+            PlaybackQueueItem(
+              videoId: id,
+              title: video.title,
+              thumbnailUrl: _bestThumbnailUrl(video),
+              artist: video.author,
+              isLocal: false,
+            ),
+          );
+          if (queue.length >= 30) break;
+        }
+        if (queue.length >= 30) break;
+      }
+
+      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
+        return;
+      }
+      _playbackQueue = queue;
+      unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
+      unawaited(_maybePreloadUpcomingQueueTrack());
+    } catch (e, s) {
+      log('Error cargando cola fallback por artista', error: e, stackTrace: s);
+      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
+        return;
+      }
       _playbackQueue = const [];
     } finally {
       if (queueRequestId == _queueEpoch && _currentVideoId == currentVideoId) {
@@ -2817,7 +3286,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           PlaybackQueueItem(
             videoId: item.videoId,
             title: item.title,
-            thumbnailUrl: (item.localThumbnailPath != null &&
+            thumbnailUrl:
+                (item.localThumbnailPath != null &&
                     item.localThumbnailPath!.isNotEmpty)
                 ? item.localThumbnailPath!
                 : item.thumbnailUrl,
@@ -2829,12 +3299,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           ),
         );
       }
-      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) return;
+      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
+        return;
+      }
       _playbackQueue = queue;
       unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
+      unawaited(_maybePreloadUpcomingQueueTrack());
     } catch (e, s) {
       log('Error cargando cola local', error: e, stackTrace: s);
-      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) return;
+      if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
+        return;
+      }
       _playbackQueue = const [];
     } finally {
       if (queueRequestId == _queueEpoch && _currentVideoId == currentVideoId) {
@@ -2846,31 +3321,513 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   void _onTrackCompleted() {
     if (_completionHandledForCurrent) return;
+    final completedVideoId = _currentVideoId;
+    if (completedVideoId == null) return;
     _completionHandledForCurrent = true;
     if (_autoplayEnabled) {
-      unawaited(_playNextFromQueue());
+      unawaited(
+        _advanceQueueAfterCompletion(
+          expectedCompletedVideoId: completedVideoId,
+        ),
+      );
     }
   }
 
-  Future<void> _playNextFromQueue() async {
+  Future<void> _advanceQueueAfterCompletion({
+    required String expectedCompletedVideoId,
+  }) async {
+    var attempts = 0;
+    while (_isAdvancingQueue && attempts < 30) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      attempts++;
+    }
+    if (_currentVideoId != expectedCompletedVideoId) {
+      // El track ya cambió (p.ej. por crossfade/skip), ignoramos este callback
+      // para evitar saltar una canción adicional de la cola.
+      return;
+    }
+    if (_isCrossfadeTransitioning || _crossfadeTriggeredForCurrent) {
+      return;
+    }
+    await _playNextFromQueue();
+  }
+
+  Future<void> _playNextFromQueue({bool triggeredByCrossfade = false}) async {
     if (_isAdvancingQueue) return;
     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) return;
     _isAdvancingQueue = true;
     try {
       final PlaybackQueueItem next;
+      final bool tookFromManualQueue;
       if (_manualPlaybackQueue.isNotEmpty) {
         next = _manualPlaybackQueue.first;
-        _manualPlaybackQueue = _manualPlaybackQueue.sublist(1);
+        tookFromManualQueue = true;
       } else {
         next = _playbackQueue.first;
+        tookFromManualQueue = false;
+      }
+      final crossfaded = triggeredByCrossfade
+          ? await _tryCrossfadeTransitionToPreparedItem(next)
+          : false;
+      if (crossfaded) {
+        if (tookFromManualQueue) {
+          _manualPlaybackQueue = _manualPlaybackQueue.sublist(1);
+        } else {
+          _playbackQueue = _playbackQueue.sublist(1);
+        }
+        notifyListeners();
+        return;
+      }
+      if (tookFromManualQueue) {
+        _manualPlaybackQueue = _manualPlaybackQueue.sublist(1);
+      } else {
         _playbackQueue = _playbackQueue.sublist(1);
       }
+      final preloadedUrl = _consumePreloadedStreamForQueueItem(next);
+      _crossfadeTriggeredForCurrent = false;
       notifyListeners();
-      await playQueueItem(next);
+      await playQueueItem(next, preloadedStreamUrl: preloadedUrl);
     } catch (e, s) {
       log('Error reproduciendo siguiente de la cola', error: e, stackTrace: s);
+      if (triggeredByCrossfade) {
+        _crossfadeTriggeredForCurrent = false;
+        _completionHandledForCurrent = false;
+      }
     } finally {
       _isAdvancingQueue = false;
+    }
+  }
+
+  PlaybackQueueItem? _peekNextQueueItem() {
+    if (_manualPlaybackQueue.isNotEmpty) return _manualPlaybackQueue.first;
+    if (_playbackQueue.isNotEmpty) return _playbackQueue.first;
+    return null;
+  }
+
+  String _queueItemKey(PlaybackQueueItem item) {
+    final localFlag = item.isLocal ? 'local' : 'online';
+    return '$localFlag:${item.videoId}';
+  }
+
+  void _clearPreloadedNextTrack() {
+    _preloadedForCurrentVideoId = null;
+    _preloadedNextQueueKey = null;
+    _preloadedNextStreamUrl = null;
+    _crossfadePreparedQueueKey = null;
+    _crossfadePreparedPrimed = false;
+    unawaited(() async {
+      try {
+        await _crossfadePlayer.stop();
+      } catch (_) {}
+    }());
+  }
+
+  String? _consumePreloadedStreamForQueueItem(PlaybackQueueItem item) {
+    final currentId = _currentVideoId;
+    if (currentId == null) return null;
+    final queueKey = _queueItemKey(item);
+    if (_preloadedForCurrentVideoId != currentId) return null;
+    if (_preloadedNextQueueKey != queueKey) return null;
+    final stream = _preloadedNextStreamUrl;
+    _clearPreloadedNextTrack();
+    return stream;
+  }
+
+  Future<void> _maybePreloadUpcomingQueueTrack() async {
+    if (!_isMixingEnabled || !_autoplayEnabled) return;
+    final currentId = _currentVideoId;
+    if (currentId == null ||
+        _isLoading ||
+        _isAdvancingQueue ||
+        _isCrossfadeTransitioning ||
+        _isLocal) {
+      return;
+    }
+    final next = _peekNextQueueItem();
+    if (next == null || next.isLocal) {
+      _clearPreloadedNextTrack();
+      return;
+    }
+
+    final queueKey = _queueItemKey(next);
+    final alreadyFailedForCurrentAndQueue =
+        _crossfadeFailedForCurrentVideoId == currentId &&
+        _crossfadeFailedQueueKey == queueKey;
+    if (alreadyFailedForCurrentAndQueue) return;
+    final alreadyPreloaded =
+        _preloadedForCurrentVideoId == currentId &&
+        _preloadedNextQueueKey == queueKey &&
+        (_preloadedNextStreamUrl?.isNotEmpty ?? false);
+    if (alreadyPreloaded || _isPreloadingNextTrack) return;
+
+    if (_trackDuration > Duration.zero) {
+      final remaining = _trackDuration - _position;
+      // Si faltan muchos segundos todavía, no hace falta insistir en cada tick.
+      if (remaining > _effectiveCrossfadePreloadLeadTime()) {
+        return;
+      }
+    }
+
+    _isPreloadingNextTrack = true;
+    try {
+      final prepared = await _prepareCrossfadePlayerForQueueItem(
+        next,
+        currentVideoId: currentId,
+      );
+      if (!prepared) return;
+      unawaited(
+        _prepareSystemArtwork(
+          videoId: next.videoId,
+          thumbnailSource: next.thumbnailUrl,
+        ),
+      );
+    } catch (_) {
+      // Best effort: si falla preload, seguimos con carga normal.
+    } finally {
+      _isPreloadingNextTrack = false;
+    }
+  }
+
+  Future<void> _maybeTriggerCrossfadeAdvance() async {
+    if (!_isMixingEnabled || !_autoplayEnabled) return;
+    if (_crossfadeTriggeredForCurrent ||
+        _isAdvancingQueue ||
+        _isLoading ||
+        _isCrossfadeTransitioning) {
+      return;
+    }
+    if (_usingHiddenVideo) return;
+    if (!_isPlaying || _trackDuration <= Duration.zero || _isLocal) return;
+    if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) return;
+
+    final remaining = _trackDuration - _position;
+    final triggerLeadTime = _effectiveCrossfadeTriggerLeadTime();
+    if (remaining > triggerLeadTime) return;
+    if (!_crossfadePreparedPrimed) {
+      // Intento final de prebuffer antes de disparar el crossfade.
+      unawaited(_maybePreloadUpcomingQueueTrack());
+      if (remaining > const Duration(seconds: 2)) return;
+    }
+
+    _crossfadeTriggeredForCurrent = true;
+    _completionHandledForCurrent = true;
+    await _playNextFromQueue(triggeredByCrossfade: true);
+  }
+
+  Future<void> _warmUpAutoplayQueue(String currentVideoId) async {
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    if (!_autoplayEnabled || _isLocal || _currentVideoId != currentVideoId) {
+      return;
+    }
+    if (_manualPlaybackQueue.isNotEmpty ||
+        _playbackQueue.isNotEmpty ||
+        _isQueueLoading) {
+      return;
+    }
+    await _loadOnlineQueueFallbackFromCurrentContext(
+      currentVideoId: currentVideoId,
+    );
+  }
+
+  Future<bool> _tryCrossfadeTransitionToPreparedItem(
+    PlaybackQueueItem next,
+  ) async {
+    if (!_isMixingEnabled) return false;
+    if (_usingHiddenVideo || next.isLocal) return false;
+    final currentVideoId = _currentVideoId;
+    if (currentVideoId == null) return false;
+    final queueKey = _queueItemKey(next);
+    final alreadyPrepared =
+        _crossfadePreparedQueueKey == queueKey &&
+        _preloadedForCurrentVideoId == currentVideoId &&
+        _preloadedNextQueueKey == queueKey &&
+        (_preloadedNextStreamUrl?.isNotEmpty ?? false);
+    final previousTitle = _trackTitle;
+    final previousArtist = _trackArtist;
+    final previousThumbnail = _trackThumbnailUrl;
+    final previousDuration = _trackDuration;
+    final previousStreamUrl = _currentStreamUrl;
+    final previousIsPlaying = _isPlaying;
+    final previousIsBuffering = _isBuffering;
+    final outgoingDurationSnapshot = _trackDuration;
+    final outgoingPositionSnapshot = _position;
+
+    final currentPlayer = _player;
+    final nextPlayer = _crossfadePlayer;
+    try {
+      if (!alreadyPrepared) {
+        final prepared = await _prepareCrossfadePlayerForQueueItem(
+          next,
+          currentVideoId: currentVideoId,
+        );
+        if (!prepared) return false;
+      }
+      if (!_crossfadePreparedPrimed) {
+        final primed = await _primeCrossfadePlayerBuffer();
+        if (!primed) return false;
+      }
+
+      _isCrossfadeTransitioning = true;
+      await nextPlayer.setVolume(0.0);
+      unawaited(nextPlayer.play());
+      final ready = await _waitForPlayerReady(nextPlayer);
+      if (!ready) return false;
+
+      // Refrescamos info visual al track entrante durante la mezcla,
+      // pero sin cambiar todavía el id actual hasta completar el swap.
+      _trackTitle = next.title;
+      _trackArtist = next.artist;
+      _trackThumbnailUrl = next.thumbnailUrl;
+      _trackDuration = Duration.zero;
+      _currentStreamUrl = _preloadedNextStreamUrl;
+      _isLoading = false;
+      _syncSystemNowPlaying();
+      _syncSystemPlaybackState(force: true);
+      notifyListeners();
+
+      final targetVolume = _settingsService.normalizeVolume
+          ? 1.0
+          : _defaultPlaybackVolume;
+      final mixDuration = _resolveMixDuration(
+        outgoingDuration: outgoingDurationSnapshot,
+        outgoingPosition: outgoingPositionSnapshot,
+        incomingDuration: nextPlayer.duration ?? Duration.zero,
+      );
+      final totalMs = mixDuration.inMilliseconds;
+      final steps = math.max(16, (totalMs / 220).round());
+      final stepDelay = Duration(
+        milliseconds: math.max(1, (totalMs / steps).round()),
+      );
+      for (var step = 1; step <= steps; step++) {
+        final ratio = step / steps;
+        final inGain = _settingsService.djMode
+            ? math.sin(ratio * math.pi / 2)
+            : ratio;
+        final outGain = _settingsService.djMode
+            ? math.cos(ratio * math.pi / 2)
+            : (1.0 - ratio);
+        final inVol = targetVolume * inGain;
+        final outVol = targetVolume * outGain;
+        await nextPlayer.setVolume(inVol);
+        await currentPlayer.setVolume(outVol);
+        await Future<void>.delayed(stepDelay);
+      }
+
+      await currentPlayer.stop();
+      await currentPlayer.seek(Duration.zero);
+      await currentPlayer.setVolume(0.0);
+
+      _rememberCurrentForHistory();
+      _player = nextPlayer;
+      _crossfadePlayer = currentPlayer;
+      _attachActivePlayerSubscriptions();
+
+      _currentVideoId = next.videoId;
+      _isLocal = false;
+      _isMinimized = false;
+      _isFullScreen = false;
+      _position = Duration.zero;
+      _bufferedPosition = Duration.zero;
+      _completionHandledForCurrent = false;
+      _crossfadeTriggeredForCurrent = false;
+      _isPlaying = true;
+      _isBuffering = false;
+      _usingHiddenVideo = false;
+      _resetLyricsState();
+      _sessionPlayedVideoIds.add(next.videoId);
+      _crossfadeFailedForCurrentVideoId = null;
+      _crossfadeFailedQueueKey = null;
+      _clearPreloadedNextTrack();
+
+      _isCrossfadeTransitioning = false;
+      _syncSystemNowPlaying();
+      _syncSystemPlaybackState(force: true);
+      notifyListeners();
+
+      unawaited(() async {
+        try {
+          final video = await _getVideoWithRetry(next.videoId);
+          if (_currentVideoId != next.videoId) return;
+          _trackTitle = video.title;
+          _trackArtist = video.author;
+          _trackThumbnailUrl = bestThumbnailForVideo(video);
+          _trackDuration = video.duration ?? Duration.zero;
+          _syncSystemNowPlaying();
+          _syncSystemPlaybackState(force: true);
+          notifyListeners();
+          if (_autoplayEnabled) {
+            await _loadOnlineQueue(video, currentVideoId: next.videoId);
+          }
+        } catch (_) {
+          // Best effort metadata/queue refresh.
+        }
+      }());
+
+      unawaited(_addCurrentTrackToHistory(next.videoId));
+      unawaited(_maybePreloadUpcomingQueueTrack());
+      return true;
+    } catch (_) {
+      _trackTitle = previousTitle;
+      _trackArtist = previousArtist;
+      _trackThumbnailUrl = previousThumbnail;
+      _trackDuration = previousDuration;
+      _currentStreamUrl = previousStreamUrl;
+      _isPlaying = previousIsPlaying;
+      _isBuffering = previousIsBuffering;
+      try {
+        await nextPlayer.stop();
+      } catch (_) {}
+      _syncSystemNowPlaying();
+      _syncSystemPlaybackState(force: true);
+      notifyListeners();
+      return false;
+    } finally {
+      if (_isCrossfadeTransitioning) {
+        _isCrossfadeTransitioning = false;
+        _syncSystemPlaybackState(force: true);
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<bool> _prepareCrossfadePlayerForQueueItem(
+    PlaybackQueueItem next, {
+    required String currentVideoId,
+  }) async {
+    if (next.isLocal) return false;
+    final queueKey = _queueItemKey(next);
+    final alreadyFailedForCurrentAndQueue =
+        _crossfadeFailedForCurrentVideoId == currentVideoId &&
+        _crossfadeFailedQueueKey == queueKey;
+    if (alreadyFailedForCurrentAndQueue) return false;
+    final alreadyPrepared =
+        _preloadedForCurrentVideoId == currentVideoId &&
+        _preloadedNextQueueKey == queueKey &&
+        (_preloadedNextStreamUrl?.isNotEmpty ?? false) &&
+        _crossfadePreparedQueueKey == queueKey;
+    if (alreadyPrepared) return true;
+
+    final manifest = await _getManifestWithRetry(next.videoId);
+    final audioStreams = manifest.audioOnly.toList();
+    if (audioStreams.isEmpty && manifest.muxed.isEmpty) return false;
+    final ordered = _prioritizeAudioStreams(audioStreams);
+    final orderedMuxed = _prioritizeMuxedStreams(manifest.muxed.toList());
+
+    final candidateUris = <Uri>[];
+    final seenCandidateUrls = <String>{};
+    for (final stream in ordered) {
+      final key = stream.url.toString();
+      if (seenCandidateUrls.add(key)) {
+        candidateUris.add(stream.url);
+      }
+    }
+    for (final stream in orderedMuxed) {
+      final key = stream.url.toString();
+      if (seenCandidateUrls.add(key)) {
+        candidateUris.add(stream.url);
+      }
+    }
+    if (candidateUris.isEmpty) return false;
+
+    Object? lastError;
+    for (final uri in candidateUris) {
+      final headerCandidates = _crossfadeHeaderCandidatesForUri(uri);
+      for (final headers in headerCandidates) {
+        try {
+          await _crossfadePlayer.stop();
+          await _crossfadePlayer.setVolume(0.0);
+          if (headers == null || headers.isEmpty) {
+            await _crossfadePlayer.setAudioSource(AudioSource.uri(uri));
+          } else {
+            await _crossfadePlayer.setAudioSource(
+              AudioSource.uri(uri, headers: headers),
+            );
+          }
+          final primed = await _primeCrossfadePlayerBuffer();
+          if (!primed) {
+            lastError = Exception('Crossfade source not primed');
+            continue;
+          }
+          _preloadedForCurrentVideoId = currentVideoId;
+          _preloadedNextQueueKey = queueKey;
+          _preloadedNextStreamUrl = uri.toString();
+          _crossfadePreparedQueueKey = queueKey;
+          _crossfadePreparedPrimed = true;
+          _crossfadeFailedForCurrentVideoId = null;
+          _crossfadeFailedQueueKey = null;
+          return true;
+        } catch (e) {
+          lastError = e;
+        }
+      }
+    }
+    _preloadedForCurrentVideoId = null;
+    _preloadedNextQueueKey = null;
+    _preloadedNextStreamUrl = null;
+    _crossfadePreparedQueueKey = null;
+    _crossfadePreparedPrimed = false;
+    _crossfadeFailedForCurrentVideoId = currentVideoId;
+    _crossfadeFailedQueueKey = queueKey;
+    if (lastError != null) {
+      log(
+        'No se pudo preparar player de crossfade para ${next.videoId}',
+        error: lastError,
+      );
+    }
+    return false;
+  }
+
+  Future<bool> _primeCrossfadePlayerBuffer() async {
+    try {
+      await _crossfadePlayer.load();
+      await _crossfadePlayer.setVolume(0.0);
+      await _crossfadePlayer.seek(Duration.zero);
+      await _crossfadePlayer.pause();
+      return await _waitForPlayerBuffered(_crossfadePlayer);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _waitForPlayerBuffered(AudioPlayer player) async {
+    final state = player.playerState;
+    if (state.processingState != ProcessingState.idle &&
+        state.processingState != ProcessingState.loading) {
+      return true;
+    }
+    try {
+      await player.playerStateStream
+          .firstWhere(
+            (s) =>
+                s.processingState != ProcessingState.idle &&
+                s.processingState != ProcessingState.loading,
+          )
+          .timeout(const Duration(seconds: 6));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _waitForPlayerReady(AudioPlayer player) async {
+    final state = player.playerState;
+    if (state.playing &&
+        state.processingState != ProcessingState.idle &&
+        state.processingState != ProcessingState.loading) {
+      return true;
+    }
+    try {
+      await player.playerStateStream
+          .firstWhere(
+            (s) =>
+                s.playing &&
+                s.processingState != ProcessingState.idle &&
+                s.processingState != ProcessingState.loading,
+          )
+          .timeout(const Duration(seconds: 6));
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 
@@ -2917,15 +3874,28 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _playbackQueue = const [];
     _isQueueLoading = false;
     _queueTitle = 'Siguiente';
+    _clearPreloadedNextTrack();
   }
 
   void _removeFromQueues(PlaybackQueueItem item) {
     _manualPlaybackQueue = _manualPlaybackQueue
-        .where((entry) => !(entry.videoId == item.videoId && entry.isLocal == item.isLocal))
+        .where(
+          (entry) =>
+              !(entry.videoId == item.videoId && entry.isLocal == item.isLocal),
+        )
         .toList(growable: false);
     _playbackQueue = _playbackQueue
-        .where((entry) => !(entry.videoId == item.videoId && entry.isLocal == item.isLocal))
+        .where(
+          (entry) =>
+              !(entry.videoId == item.videoId && entry.isLocal == item.isLocal),
+        )
         .toList(growable: false);
+    final currentId = _currentVideoId;
+    if (currentId != null &&
+        _preloadedForCurrentVideoId == currentId &&
+        _preloadedNextQueueKey == _queueItemKey(item)) {
+      _clearPreloadedNextTrack();
+    }
   }
 
   Future<void> _reloadQueueForCurrentTrack() async {
@@ -3022,10 +3992,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  bool _applyLocalLyrics({
-    String? plainLyrics,
-    String? syncedLyrics,
-  }) {
+  bool _applyLocalLyrics({String? plainLyrics, String? syncedLyrics}) {
     final localPlain = plainLyrics?.trim();
     final localSynced = syncedLyrics?.trim();
     if ((localPlain == null || localPlain.isEmpty) &&
