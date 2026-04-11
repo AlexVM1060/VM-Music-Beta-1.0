@@ -14,6 +14,7 @@ import 'package:myapp/models/playlist.dart' as app_models;
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
+import 'package:myapp/services/live_lyrics_recognizer_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/artwork_subject_cutout_service.dart';
 import 'package:myapp/video_player_manager.dart';
@@ -2698,11 +2699,15 @@ class _LyricsPanel extends StatefulWidget {
 
 class _LyricsPanelState extends State<_LyricsPanel> {
   final ScrollController _syncedScrollController = ScrollController();
+  final LiveLyricsRecognizerService _liveRecognizer =
+      LiveLyricsRecognizerService();
   int _lastSyncedIndex = -1;
   String? _lastVideoId;
+  bool _isSyncingRecognizer = false;
 
   @override
   void dispose() {
+    unawaited(_liveRecognizer.stop());
     _syncedScrollController.dispose();
     super.dispose();
   }
@@ -2710,6 +2715,14 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   @override
   Widget build(BuildContext context) {
     final manager = widget.manager;
+    final settings = context.watch<AppSettingsService?>();
+    final liveLyricsEnabled = settings?.liveLyrics ?? true;
+    unawaited(
+      _syncLiveRecognition(
+        manager: manager,
+        liveLyricsEnabled: liveLyricsEnabled,
+      ),
+    );
     if (_lastVideoId != manager.currentVideoId) {
       _lastVideoId = manager.currentVideoId;
       _lastSyncedIndex = -1;
@@ -2739,45 +2752,91 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         ),
       );
     } else if (manager.hasSyncedLyrics) {
-      final currentIndex = manager.currentSyncedLyricIndex;
-      _scrollToCurrentLyric(currentIndex);
-      content = ListView.builder(
-        key: ValueKey('synced_${manager.currentVideoId}'),
-        controller: _syncedScrollController,
-        physics: const BouncingScrollPhysics(),
-        itemCount: manager.syncedLyrics.length,
-        itemBuilder: (context, index) {
-          final line = manager.syncedLyrics[index];
-          final isActive = index == currentIndex;
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 320),
-            curve: Curves.easeInOutCubic,
-            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-            child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeInOut,
-              opacity: isActive ? 1 : 0.86,
-              child: AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 320),
-                curve: Curves.easeInOutCubic,
-                style: textStyle.copyWith(
-                  fontSize: isActive ? 22 : 17,
-                  fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                  color: isActive
-                      ? Theme.of(context).colorScheme.primary
-                      : CupertinoColors.secondaryLabel.resolveFrom(context),
-                ),
-                child: Text(
-                  line.text,
-                  textAlign: TextAlign.left,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+      final syncedLyrics = List.of(manager.syncedLyrics);
+      if (syncedLyrics.isEmpty) {
+        content = Text(manager.lyricsText ?? '', style: textStyle);
+      } else {
+        final rawCurrentIndex = manager.currentSyncedLyricIndex;
+        final currentIndex = rawCurrentIndex.clamp(-1, syncedLyrics.length - 1);
+        _scrollToCurrentLyric(currentIndex);
+        content = ListView.builder(
+          key: ValueKey('synced_${manager.currentVideoId}'),
+          controller: _syncedScrollController,
+          physics: const BouncingScrollPhysics(),
+          itemCount: syncedLyrics.length,
+          itemBuilder: (context, index) {
+            final line = syncedLyrics[index];
+            final isActive = index == currentIndex;
+            double liveProgress = 0.0;
+            if (isActive) {
+              final lineStart = line.timestamp;
+              Duration lineEnd;
+              if (index + 1 < syncedLyrics.length) {
+                lineEnd = syncedLyrics[index + 1].timestamp;
+              } else if (manager.trackDuration > lineStart) {
+                lineEnd = manager.trackDuration;
+              } else {
+                lineEnd = lineStart + const Duration(seconds: 3);
+              }
+              final spanMs = (lineEnd - lineStart).inMilliseconds;
+              final elapsedMs = (manager.position - lineStart).inMilliseconds;
+              if (spanMs > 0) {
+                liveProgress = (elapsedMs / spanMs).clamp(0.0, 1.0);
+              } else {
+                liveProgress = 1.0;
+              }
+            }
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeInOutCubic,
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+                opacity: isActive ? 1 : 0.86,
+                child: AnimatedDefaultTextStyle(
+                  duration: const Duration(milliseconds: 320),
+                  curve: Curves.easeInOutCubic,
+                  style: textStyle.copyWith(
+                    fontSize: isActive ? 22 : 17,
+                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                    color: isActive
+                        ? Theme.of(context).colorScheme.primary
+                        : CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                  child: isActive && liveLyricsEnabled
+                      ? _LiveLyricSweepText(
+                          key: ValueKey(
+                            'live_${manager.currentVideoId}_$index',
+                          ),
+                          text: line.text,
+                          progress: liveProgress,
+                          recognizedText: manager.liveRecognizedText,
+                          baseStyle: textStyle.copyWith(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w700,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                          ),
+                          activeStyle: textStyle.copyWith(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w700,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        )
+                      : Text(
+                          line.text,
+                          textAlign: TextAlign.left,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                 ),
               ),
-            ),
-          );
-        },
-      );
+            );
+          },
+        );
+      }
     } else {
       content = Text(manager.lyricsText ?? '', style: textStyle);
     }
@@ -2836,6 +2895,141 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         curve: Curves.easeInOutCubicEmphasized,
       );
     });
+  }
+
+  Future<void> _syncLiveRecognition({
+    required VideoPlayerManager manager,
+    required bool liveLyricsEnabled,
+  }) async {
+    if (_isSyncingRecognizer) return;
+    _isSyncingRecognizer = true;
+    try {
+      final shouldRun =
+          liveLyricsEnabled &&
+          manager.isLyricsLayout &&
+          manager.hasSyncedLyrics &&
+          manager.isPlaying;
+      if (shouldRun) {
+        if (!_liveRecognizer.isActive) {
+          final started = await _liveRecognizer.start(
+            onText: manager.updateLiveRecognizedText,
+          );
+          if (!started) {
+            manager.updateLiveRecognizedText('');
+          }
+        }
+      } else {
+        if (_liveRecognizer.isActive) {
+          await _liveRecognizer.stop();
+        }
+        if (manager.liveRecognizedText.isNotEmpty) {
+          manager.updateLiveRecognizedText('');
+        }
+      }
+    } finally {
+      _isSyncingRecognizer = false;
+    }
+  }
+}
+
+class _LiveLyricSweepText extends StatelessWidget {
+  final String text;
+  final double progress;
+  final String recognizedText;
+  final TextStyle baseStyle;
+  final TextStyle activeStyle;
+
+  const _LiveLyricSweepText({
+    super.key,
+    required this.text,
+    required this.progress,
+    required this.recognizedText,
+    required this.baseStyle,
+    required this.activeStyle,
+  });
+
+  String _normalize(String value) {
+    return value
+        .toLowerCase()
+        .replaceAll(RegExp(r"[^\p{L}\p{N}\s]", unicode: true), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  double? _recognizedProgress() {
+    final normalizedLine = _normalize(text);
+    final normalizedRecognized = _normalize(recognizedText);
+    if (normalizedLine.isEmpty || normalizedRecognized.isEmpty) return null;
+
+    final lineWords = normalizedLine.split(' ');
+    final recognizedWords = normalizedRecognized.split(' ');
+    if (lineWords.isEmpty || recognizedWords.isEmpty) return null;
+
+    var matched = 0;
+    var cursor = 0;
+    for (final word in lineWords) {
+      var found = false;
+      for (var i = cursor; i < recognizedWords.length; i++) {
+        if (recognizedWords[i] == word) {
+          matched++;
+          cursor = i + 1;
+          found = true;
+          break;
+        }
+      }
+      if (!found) break;
+    }
+    if (matched == 0) return null;
+    return (matched / lineWords.length).clamp(0.0, 1.0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final recognizedProgress = _recognizedProgress();
+    final targetProgress = (recognizedProgress ?? progress).clamp(0.0, 1.0);
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: targetProgress),
+      duration: const Duration(milliseconds: 110),
+      curve: Curves.linear,
+      builder: (context, animatedProgress, _) {
+        final p = animatedProgress.clamp(0.0, 1.0);
+        final edge = (p + 0.002).clamp(0.0, 1.0);
+        return Stack(
+          children: [
+            Text(
+              text,
+              textAlign: TextAlign.left,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: baseStyle,
+            ),
+            ShaderMask(
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (rect) {
+                return LinearGradient(
+                  begin: Alignment.centerLeft,
+                  end: Alignment.centerRight,
+                  colors: const [
+                    Color(0xFFFFFFFF),
+                    Color(0xFFFFFFFF),
+                    Color(0x00000000),
+                    Color(0x00000000),
+                  ],
+                  stops: [0.0, p, edge, 1.0],
+                ).createShader(rect);
+              },
+              child: Text(
+                text,
+                textAlign: TextAlign.left,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: activeStyle,
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 }
 

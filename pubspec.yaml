@@ -33,6 +33,7 @@ dependencies:
   palette_generator: ^0.3.3+7
   image: ^4.5.4
   connectivity_plus: ^6.1.5
+  speech_to_text: ^7.0.0
 
 dev_dependencies:
   flutter_test:

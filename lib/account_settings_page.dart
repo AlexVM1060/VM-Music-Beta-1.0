@@ -96,6 +96,14 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                       value: settings.normalizeVolume,
                       onChanged: (value) => settings.setNormalizeVolume(value),
                     ),
+                    const _SectionDivider(),
+                    _SettingSwitchRow(
+                      title: 'Live Lyrics',
+                      subtitle:
+                          'Resalta la letra en tiempo real con barrido progresivo',
+                      value: settings.liveLyrics,
+                      onChanged: (value) => settings.setLiveLyrics(value),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 18),

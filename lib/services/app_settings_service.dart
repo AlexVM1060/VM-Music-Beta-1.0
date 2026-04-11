@@ -14,6 +14,7 @@ class AppSettingsService extends ChangeNotifier {
   static const String _downloadOnlyOnWifiKey = 'download_only_on_wifi';
   static const String _explicitContentKey = 'explicit_content';
   static const String _animatedCutoutCoversKey = 'animated_cutout_covers';
+  static const String _liveLyricsKey = 'live_lyrics';
 
   late final Box _box;
   bool _initialized = false;
@@ -25,6 +26,7 @@ class AppSettingsService extends ChangeNotifier {
   bool _downloadOnlyOnWifi = true;
   bool _allowExplicitContent = true;
   bool _animatedCutoutCovers = true;
+  bool _liveLyrics = true;
 
   bool get initialized => _initialized;
   AudioQualityPreference get audioQuality => _audioQuality;
@@ -40,6 +42,7 @@ class AppSettingsService extends ChangeNotifier {
   bool get downloadOnlyOnWifi => _downloadOnlyOnWifi;
   bool get allowExplicitContent => _allowExplicitContent;
   bool get animatedCutoutCovers => _animatedCutoutCovers;
+  bool get liveLyrics => _liveLyrics;
 
   Future<void> init() async {
     if (_initialized) return;
@@ -64,6 +67,7 @@ class AppSettingsService extends ChangeNotifier {
         _box.get(_explicitContentKey, defaultValue: true) == true;
     _animatedCutoutCovers =
         _box.get(_animatedCutoutCoversKey, defaultValue: true) == true;
+    _liveLyrics = _box.get(_liveLyricsKey, defaultValue: true) == true;
     _initialized = true;
   }
 
@@ -138,6 +142,13 @@ class AppSettingsService extends ChangeNotifier {
     if (_animatedCutoutCovers == value) return;
     _animatedCutoutCovers = value;
     await _box.put(_animatedCutoutCoversKey, value);
+    notifyListeners();
+  }
+
+  Future<void> setLiveLyrics(bool value) async {
+    if (_liveLyrics == value) return;
+    _liveLyrics = value;
+    await _box.put(_liveLyricsKey, value);
     notifyListeners();
   }
 }

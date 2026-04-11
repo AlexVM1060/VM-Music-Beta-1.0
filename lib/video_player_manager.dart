@@ -127,6 +127,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String? _lyricsText;
   String? _lyricsError;
   List<SyncedLyricLine> _syncedLyrics = const [];
+  String _liveRecognizedText = '';
   bool _isAdvancingQueue = false;
   bool _completionHandledForCurrent = false;
   bool _skipHistoryPushOnce = false;
@@ -149,6 +150,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, Future<List<PlaybackQueueItem>>> _relatedQueueRequests = {};
   final Map<String, String> _lyricsCache = {};
   final Map<String, List<SyncedLyricLine>> _syncedLyricsCache = {};
+  final Map<String, Duration?> _djFirstLyricOffsetCache = {};
+  final Map<String, Future<Duration?>> _djFirstLyricOffsetRequests = {};
   final Map<String, String> _searchThumbnailOverrides = {};
   final NowPlayingArtworkService _nowPlayingArtworkService =
       NowPlayingArtworkService();
@@ -288,6 +291,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String? get lyricsText => _lyricsText;
   String? get lyricsError => _lyricsError;
   List<SyncedLyricLine> get syncedLyrics => _syncedLyrics;
+  String get liveRecognizedText => _liveRecognizedText;
   bool get hasSyncedLyrics => _syncedLyrics.isNotEmpty;
   int get currentSyncedLyricIndex {
     if (_syncedLyrics.isEmpty) return -1;
@@ -2798,6 +2802,51 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return const Duration(seconds: 42);
   }
 
+  Duration _resolveDjIncomingStartOffset({
+    required Duration? firstLyricOffset,
+    required Duration incomingDuration,
+    required Duration mixDuration,
+  }) {
+    if (firstLyricOffset == null || firstLyricOffset <= Duration.zero) {
+      return Duration.zero;
+    }
+    // Dejamos que la primera frase caiga cerca del final de la mezcla.
+    const lyricLead = Duration(milliseconds: 350);
+    var offset = firstLyricOffset - mixDuration + lyricLead;
+    if (offset <= Duration.zero) return Duration.zero;
+
+    if (incomingDuration > Duration.zero) {
+      final maxOffset = incomingDuration - const Duration(seconds: 2);
+      if (maxOffset <= Duration.zero) return Duration.zero;
+      if (offset > maxOffset) {
+        offset = maxOffset;
+      }
+    }
+    return offset;
+  }
+
+  double _resolveDjIncomingSpeed({
+    required Duration? firstLyricOffset,
+    required Duration incomingStartOffset,
+    required Duration mixDuration,
+  }) {
+    if (firstLyricOffset == null ||
+        firstLyricOffset <= Duration.zero ||
+        mixDuration <= Duration.zero) {
+      return 1.0;
+    }
+
+    final remainingToLyric = firstLyricOffset - incomingStartOffset;
+    if (remainingToLyric <= Duration(milliseconds: 120)) {
+      return 1.0;
+    }
+
+    // Queremos que la primera línea caiga cerca del cierre de la mezcla.
+    final desiredHitMs = math.max(300, mixDuration.inMilliseconds - 260);
+    final requiredSpeed = remainingToLyric.inMilliseconds / desiredHitMs;
+    return requiredSpeed.clamp(0.94, 1.08);
+  }
+
   Future<void> _applyTrackStartFadeInIfEnabled() async {
     if (!_isMixingEnabled) return;
     final fadeId = ++_volumeFadeEpoch;
@@ -3531,6 +3580,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         currentVideoId: currentId,
       );
       if (!prepared) return;
+      if (_settingsService.djMode) {
+        unawaited(
+          _resolveFirstLyricOffsetForQueueItem(next, allowNetwork: true),
+        );
+      }
       unawaited(
         _prepareSystemArtwork(
           videoId: next.videoId,
@@ -3558,7 +3612,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     final remaining = _trackDuration - _position;
     final triggerLeadTime = _effectiveCrossfadeTriggerLeadTime();
-    if (remaining > triggerLeadTime) return;
+    final lyricDrivenTrigger = _shouldTriggerDjFromLastLyric();
+    if (!lyricDrivenTrigger && remaining > triggerLeadTime) return;
     if (!_crossfadePreparedPrimed) {
       // Intento final de prebuffer antes de disparar el crossfade.
       unawaited(_maybePreloadUpcomingQueueTrack());
@@ -3568,6 +3623,28 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _crossfadeTriggeredForCurrent = true;
     _completionHandledForCurrent = true;
     await _playNextFromQueue(triggeredByCrossfade: true);
+  }
+
+  bool _shouldTriggerDjFromLastLyric() {
+    if (!_settingsService.djMode) return false;
+    if (_syncedLyrics.isEmpty || _trackDuration <= Duration.zero) return false;
+    if (_trackDuration.inMilliseconds <= 0) return false;
+
+    final lastIndex = _syncedLyrics.length - 1;
+    final currentIndex = currentSyncedLyricIndex;
+    if (currentIndex < lastIndex) return false;
+
+    final lastLyricTs = _syncedLyrics[lastIndex].timestamp;
+    if (lastLyricTs <= Duration.zero) return false;
+
+    // Evita disparos prematuros por letras mal sincronizadas.
+    final lyricProgress =
+        lastLyricTs.inMilliseconds / _trackDuration.inMilliseconds;
+    if (lyricProgress < 0.55) return false;
+
+    // Pequeña tolerancia para activar cerca del inicio de la última línea.
+    final triggerAt = lastLyricTs - const Duration(milliseconds: 180);
+    return _position >= (triggerAt > Duration.zero ? triggerAt : Duration.zero);
   }
 
   Future<void> _warmUpAutoplayQueue(String currentVideoId) async {
@@ -3624,6 +3701,33 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       _isCrossfadeTransitioning = true;
+      final incomingDuration = nextPlayer.duration ?? Duration.zero;
+      final mixDuration = _resolveMixDuration(
+        outgoingDuration: outgoingDurationSnapshot,
+        outgoingPosition: outgoingPositionSnapshot,
+        incomingDuration: incomingDuration,
+      );
+      Duration incomingStartOffset = Duration.zero;
+      Duration? incomingFirstLyricOffset;
+      if (_settingsService.djMode) {
+        incomingFirstLyricOffset = await _resolveFirstLyricOffsetForQueueItem(
+          next,
+          allowNetwork: false,
+        );
+        incomingStartOffset = _resolveDjIncomingStartOffset(
+          firstLyricOffset: incomingFirstLyricOffset,
+          incomingDuration: incomingDuration,
+          mixDuration: mixDuration,
+        );
+        if (incomingStartOffset > Duration.zero) {
+          try {
+            await nextPlayer.seek(incomingStartOffset);
+          } catch (_) {
+            incomingStartOffset = Duration.zero;
+          }
+        }
+      }
+
       await nextPlayer.setVolume(0.0);
       unawaited(nextPlayer.play());
       final ready = await _waitForPlayerReady(nextPlayer);
@@ -3644,16 +3748,41 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       final targetVolume = _settingsService.normalizeVolume
           ? 1.0
           : _defaultPlaybackVolume;
-      final mixDuration = _resolveMixDuration(
-        outgoingDuration: outgoingDurationSnapshot,
-        outgoingPosition: outgoingPositionSnapshot,
-        incomingDuration: nextPlayer.duration ?? Duration.zero,
-      );
       final totalMs = mixDuration.inMilliseconds;
       final steps = math.max(16, (totalMs / 220).round());
       final stepDelay = Duration(
         milliseconds: math.max(1, (totalMs / steps).round()),
       );
+      double outgoingSpeed = 1.0;
+      double incomingSpeed = 1.0;
+      if (_settingsService.djMode && totalMs > 0) {
+        final remainingMs = math.max(
+          1,
+          (outgoingDurationSnapshot - outgoingPositionSnapshot).inMilliseconds,
+        );
+        final requiredSpeed = remainingMs / totalMs;
+        outgoingSpeed = requiredSpeed.clamp(1.0, 1.12);
+        if (outgoingSpeed > 1.01) {
+          try {
+            await currentPlayer.setSpeed(outgoingSpeed);
+          } catch (_) {
+            outgoingSpeed = 1.0;
+          }
+        }
+
+        incomingSpeed = _resolveDjIncomingSpeed(
+          firstLyricOffset: incomingFirstLyricOffset,
+          incomingStartOffset: incomingStartOffset,
+          mixDuration: mixDuration,
+        );
+        if ((incomingSpeed - 1.0).abs() > 0.01) {
+          try {
+            await nextPlayer.setSpeed(incomingSpeed);
+          } catch (_) {
+            incomingSpeed = 1.0;
+          }
+        }
+      }
       for (var step = 1; step <= steps; step++) {
         final ratio = step / steps;
         final inGain = _settingsService.djMode
@@ -3672,6 +3801,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       await currentPlayer.stop();
       await currentPlayer.seek(Duration.zero);
       await currentPlayer.setVolume(0.0);
+      if (outgoingSpeed > 1.0) {
+        try {
+          await currentPlayer.setSpeed(1.0);
+        } catch (_) {}
+      }
+      if ((incomingSpeed - 1.0).abs() > 0.01) {
+        try {
+          await nextPlayer.setSpeed(1.0);
+        } catch (_) {}
+      }
 
       _rememberCurrentForHistory();
       _player = nextPlayer;
@@ -3765,6 +3904,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _currentStreamUrl = previousStreamUrl;
       _isPlaying = previousIsPlaying;
       _isBuffering = previousIsBuffering;
+      try {
+        await currentPlayer.setSpeed(1.0);
+      } catch (_) {}
+      try {
+        await nextPlayer.setSpeed(1.0);
+      } catch (_) {}
       try {
         await nextPlayer.stop();
       } catch (_) {}
@@ -4041,12 +4186,101 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  String _lyricsLookupKey({String? artist, String? title}) {
+    final normalizedArtist = (artist ?? '').trim();
+    final normalizedTitle = (title ?? '').trim();
+    return '$normalizedArtist::$normalizedTitle'.toLowerCase();
+  }
+
+  Duration? _firstSyncedLyricOffset(List<SyncedLyricLine> lines) {
+    for (final line in lines) {
+      final ts = line.timestamp;
+      if (ts > const Duration(milliseconds: 100) &&
+          line.text.trim().isNotEmpty) {
+        return ts;
+      }
+    }
+    return null;
+  }
+
+  Future<Duration?> _resolveFirstLyricOffsetForQueueItem(
+    PlaybackQueueItem item, {
+    required bool allowNetwork,
+  }) async {
+    final queueKey = _queueItemKey(item);
+    if (_djFirstLyricOffsetCache.containsKey(queueKey)) {
+      return _djFirstLyricOffsetCache[queueKey];
+    }
+    final inFlight = _djFirstLyricOffsetRequests[queueKey];
+    if (inFlight != null) return inFlight;
+
+    final request = () async {
+      // 1) Fuente local directa (descargadas).
+      final localSynced = item.localSyncedLyrics?.trim();
+      if (localSynced != null && localSynced.isNotEmpty) {
+        final parsed = _lyricsService.parseSyncedLyrics(localSynced);
+        final first = _firstSyncedLyricOffset(parsed);
+        _djFirstLyricOffsetCache[queueKey] = first;
+        return first;
+      }
+
+      // 2) Caché global de letras sincronizadas.
+      final lyricsKey = _lyricsLookupKey(
+        artist: item.artist,
+        title: item.title,
+      );
+      final cachedSynced = _syncedLyricsCache[lyricsKey];
+      if (cachedSynced != null && cachedSynced.isNotEmpty) {
+        final first = _firstSyncedLyricOffset(cachedSynced);
+        _djFirstLyricOffsetCache[queueKey] = first;
+        return first;
+      }
+
+      if (!allowNetwork) {
+        _djFirstLyricOffsetCache[queueKey] = null;
+        return null;
+      }
+
+      // 3) Best effort online con timeout corto para no bloquear.
+      final result = await _lyricsService
+          .fetchLyrics(title: item.title, artist: item.artist)
+          .timeout(const Duration(seconds: 3), onTimeout: () => null);
+      if (result == null) {
+        _djFirstLyricOffsetCache[queueKey] = null;
+        return null;
+      }
+
+      _lyricsCache[lyricsKey] = result.plainLyrics;
+      _syncedLyricsCache[lyricsKey] = List<SyncedLyricLine>.from(
+        result.syncedLyrics,
+      );
+      final first = _firstSyncedLyricOffset(result.syncedLyrics);
+      _djFirstLyricOffsetCache[queueKey] = first;
+      return first;
+    }();
+
+    _djFirstLyricOffsetRequests[queueKey] = request;
+    try {
+      return await request;
+    } finally {
+      _djFirstLyricOffsetRequests.remove(queueKey);
+    }
+  }
+
   void _resetLyricsState() {
     ++_lyricsEpoch;
     _isLyricsLoading = false;
     _lyricsText = null;
     _lyricsError = null;
     _syncedLyrics = const [];
+    _liveRecognizedText = '';
+  }
+
+  void updateLiveRecognizedText(String value) {
+    final normalized = value.trim();
+    if (_liveRecognizedText == normalized) return;
+    _liveRecognizedText = normalized;
+    notifyListeners();
   }
 
   Future<void> _loadLyricsForCurrentTrack() async {
