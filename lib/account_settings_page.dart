@@ -56,6 +56,8 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
           ),
         ),
         backgroundColor: navBackground,
+        automaticBackgroundVisibility: !isDark,
+        transitionBetweenRoutes: !isDark,
         border: null,
       ),
       child: ColoredBox(
@@ -172,62 +174,129 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
     BuildContext context,
     AppSettingsService settings,
   ) async {
-    final popupIsDark = Theme.of(context).brightness == Brightness.dark;
-    final popupTextColor = popupIsDark
-        ? const Color(0xFFF5F5F7)
-        : const Color(0xFF111111);
     final result = await showCupertinoModalPopup<AudioQualityPreference>(
       context: context,
       builder: (popupContext) {
-        return CupertinoActionSheet(
-          title: Text(
-            'Calidad de audio',
-            style: TextStyle(
-              color: popupTextColor,
-              decoration: TextDecoration.none,
-            ),
-          ),
-          actions: AudioQualityPreference.values
-              .map((option) {
-                final selected = option == settings.audioQuality;
-                return CupertinoActionSheetAction(
-                  onPressed: () => Navigator.of(popupContext).pop(option),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.center,
+        final isDark = Theme.of(popupContext).brightness == Brightness.dark;
+        final panelColor = isDark
+            ? const Color(0xFF151517)
+            : const Color(0xFFF5F5F7);
+        final cardColor = isDark
+            ? const Color(0xFF1F1F22)
+            : CupertinoColors.white;
+        final primaryText = isDark
+            ? const Color(0xFFF5F5F7)
+            : const Color(0xFF111111);
+        final secondaryText = isDark
+            ? const Color(0xFFA1A1AA)
+            : const Color(0xFF6B7280);
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: panelColor,
+                    borderRadius: BorderRadius.circular(24),
+                  ),
+                  child: Column(
                     children: [
-                      Flexible(
-                        child: Text(
-                          _audioQualityLabel(option),
-                          style: TextStyle(
-                            color: popupTextColor,
-                            decoration: TextDecoration.none,
-                          ),
-                          overflow: TextOverflow.ellipsis,
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 38,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color: secondaryText.withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(999),
                         ),
                       ),
-                      if (selected) ...[
-                        const SizedBox(width: 10),
-                        const Icon(
-                          CupertinoIcons.check_mark_circled_solid,
-                          size: 18,
-                          color: CupertinoColors.activeBlue,
+                      const SizedBox(height: 12),
+                      Text(
+                        'Calidad de audio',
+                        style: TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.w700,
+                          color: primaryText,
+                          decoration: TextDecoration.none,
                         ),
-                      ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Elige el perfil de reproducción',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: secondaryText,
+                          decoration: TextDecoration.none,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      ...AudioQualityPreference.values.map((option) {
+                        final selected = option == settings.audioQuality;
+                        return Padding(
+                          padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+                          child: CupertinoButton(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 12,
+                            ),
+                            color: cardColor,
+                            borderRadius: BorderRadius.circular(16),
+                            onPressed: () =>
+                                Navigator.of(popupContext).pop(option),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    _audioQualityLabel(option),
+                                    style: TextStyle(
+                                      color: primaryText,
+                                      fontSize: 16,
+                                      fontWeight: selected
+                                          ? FontWeight.w700
+                                          : FontWeight.w500,
+                                      decoration: TextDecoration.none,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                Icon(
+                                  selected
+                                      ? CupertinoIcons.check_mark_circled_solid
+                                      : CupertinoIcons.circle,
+                                  size: 20,
+                                  color: selected
+                                      ? CupertinoColors.activeBlue
+                                      : secondaryText.withValues(alpha: 0.65),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }),
+                      const SizedBox(height: 4),
                     ],
                   ),
-                );
-              })
-              .toList(growable: false),
-          cancelButton: CupertinoActionSheetAction(
-            isDefaultAction: true,
-            onPressed: () => Navigator.of(popupContext).pop(),
-            child: Text(
-              'Cancelar',
-              style: TextStyle(
-                color: popupTextColor,
-                decoration: TextDecoration.none,
-              ),
+                ),
+                const SizedBox(height: 8),
+                CupertinoButton(
+                  color: panelColor,
+                  borderRadius: BorderRadius.circular(18),
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  onPressed: () => Navigator.of(popupContext).pop(),
+                  child: Text(
+                    'Cancelar',
+                    style: TextStyle(
+                      color: primaryText,
+                      fontWeight: FontWeight.w700,
+                      decoration: TextDecoration.none,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         );

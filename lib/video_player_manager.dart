@@ -1022,6 +1022,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
         final formats = streamingData['formats'];
         if (formats is List) {
+          final targetHeight = _targetVideoHeightForCurrentQuality();
           final muxedFormats =
               formats
                   .whereType<Map>()
@@ -1034,11 +1035,31 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
                         (mime.contains('video/') || mime.contains('mp4'));
                   })
                   .toList()
-                ..sort(
-                  (a, b) => (b['bitrate'] as num? ?? 0).compareTo(
+                ..sort((a, b) {
+                  final aHeight = (a['height'] as num? ?? 0).toInt();
+                  final bHeight = (b['height'] as num? ?? 0).toInt();
+
+                  if (targetHeight == null) {
+                    final heightCompare = bHeight.compareTo(aHeight);
+                    if (heightCompare != 0) return heightCompare;
+                  } else {
+                    final aWithinTarget = aHeight <= targetHeight;
+                    final bWithinTarget = bHeight <= targetHeight;
+                    if (aWithinTarget != bWithinTarget) {
+                      return aWithinTarget ? -1 : 1;
+                    }
+                    if (aWithinTarget) {
+                      final heightCompare = bHeight.compareTo(aHeight);
+                      if (heightCompare != 0) return heightCompare;
+                    } else {
+                      final heightCompare = aHeight.compareTo(bHeight);
+                      if (heightCompare != 0) return heightCompare;
+                    }
+                  }
+                  return (b['bitrate'] as num? ?? 0).compareTo(
                     a['bitrate'] as num? ?? 0,
-                  ),
-                );
+                  );
+                });
           if (muxedFormats.isNotEmpty) {
             pickedMuxed = muxedFormats.first['url']?.toString();
           }
@@ -3030,10 +3051,36 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   List<MuxedStreamInfo> _prioritizeMuxedStreams(List<MuxedStreamInfo> streams) {
+    final targetHeight = _targetVideoHeightForCurrentQuality();
     final sortedByQuality = [...streams]
-      ..sort(
-        (a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond),
-      );
+      ..sort((a, b) {
+        final aHeight = a.videoResolution.height;
+        final bHeight = b.videoResolution.height;
+
+        if (targetHeight == null) {
+          final heightCompare = bHeight.compareTo(aHeight);
+          if (heightCompare != 0) return heightCompare;
+        } else {
+          final aWithinTarget = aHeight <= targetHeight;
+          final bWithinTarget = bHeight <= targetHeight;
+          if (aWithinTarget != bWithinTarget) {
+            return aWithinTarget ? -1 : 1;
+          }
+          if (aWithinTarget) {
+            final heightCompare = bHeight.compareTo(aHeight);
+            if (heightCompare != 0) return heightCompare;
+          } else {
+            final heightCompare = aHeight.compareTo(bHeight);
+            if (heightCompare != 0) return heightCompare;
+          }
+        }
+
+        final frameRateCompare = b.videoQuality.index.compareTo(
+          a.videoQuality.index,
+        );
+        if (frameRateCompare != 0) return frameRateCompare;
+        return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+      });
 
     if (!Platform.isIOS) {
       return sortedByQuality;
@@ -3050,6 +3097,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     return [...preferred, ...fallback];
+  }
+
+  int? _targetVideoHeightForCurrentQuality() {
+    return switch (_settingsService.audioQuality) {
+      AudioQualityPreference.low => 240,
+      AudioQualityPreference.normal => 420,
+      AudioQualityPreference.high => 720,
+      AudioQualityPreference.veryHigh => null,
+      AudioQualityPreference.automatic => 420,
+    };
   }
 
   Future<void> _resetEngines() async {
@@ -3639,6 +3696,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _crossfadeFailedQueueKey = null;
       _clearPreloadedNextTrack();
 
+      if (_isLyricsLayout) {
+        unawaited(_loadLyricsForCurrentTrack());
+      }
+
       _isCrossfadeTransitioning = false;
       _syncSystemNowPlaying();
       _syncSystemPlaybackState(force: true);
@@ -3655,6 +3716,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           _syncSystemNowPlaying();
           _syncSystemPlaybackState(force: true);
           notifyListeners();
+          final hasLyrics =
+              (_lyricsText?.trim().isNotEmpty ?? false) ||
+              _syncedLyrics.isNotEmpty;
+          if (_isLyricsLayout && !hasLyrics && !_isLyricsLoading) {
+            await _loadLyricsForCurrentTrack();
+          }
           if (_autoplayEnabled) {
             await _loadOnlineQueue(video, currentVideoId: next.videoId);
           }

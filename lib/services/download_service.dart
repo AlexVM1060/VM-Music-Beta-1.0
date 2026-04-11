@@ -690,10 +690,36 @@ class DownloadService with ChangeNotifier {
   }
 
   List<MuxedStreamInfo> _prioritizeMuxedStreams(List<MuxedStreamInfo> streams) {
+    final targetHeight = _targetVideoHeightForCurrentQuality();
     final sortedByQuality = [...streams]
-      ..sort(
-        (a, b) => b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond),
-      );
+      ..sort((a, b) {
+        final aHeight = a.videoResolution.height;
+        final bHeight = b.videoResolution.height;
+
+        if (targetHeight == null) {
+          final heightCompare = bHeight.compareTo(aHeight);
+          if (heightCompare != 0) return heightCompare;
+        } else {
+          final aWithinTarget = aHeight <= targetHeight;
+          final bWithinTarget = bHeight <= targetHeight;
+          if (aWithinTarget != bWithinTarget) {
+            return aWithinTarget ? -1 : 1;
+          }
+          if (aWithinTarget) {
+            final heightCompare = bHeight.compareTo(aHeight);
+            if (heightCompare != 0) return heightCompare;
+          } else {
+            final heightCompare = aHeight.compareTo(bHeight);
+            if (heightCompare != 0) return heightCompare;
+          }
+        }
+
+        final frameRateCompare = b.videoQuality.index.compareTo(
+          a.videoQuality.index,
+        );
+        if (frameRateCompare != 0) return frameRateCompare;
+        return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+      });
 
     if (!Platform.isIOS) {
       return sortedByQuality;
@@ -711,6 +737,16 @@ class DownloadService with ChangeNotifier {
     }
 
     return [...preferred, ...fallback];
+  }
+
+  int? _targetVideoHeightForCurrentQuality() {
+    return switch (_settingsService.audioQuality) {
+      AudioQualityPreference.low => 240,
+      AudioQualityPreference.normal => 420,
+      AudioQualityPreference.high => 720,
+      AudioQualityPreference.veryHigh => null,
+      AudioQualityPreference.automatic => 420,
+    };
   }
 
   String _inferFileExtension(String sourceUrl, {String fallback = 'm4a'}) {

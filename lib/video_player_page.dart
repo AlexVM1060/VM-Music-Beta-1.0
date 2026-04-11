@@ -6,6 +6,7 @@ import 'package:chewie/chewie.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:myapp/models/video_history.dart';
+import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
@@ -52,6 +53,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     });
 
     try {
+      final settings = context.read<AppSettingsService?>();
+      final targetHeight = _targetVideoHeightForQuality(settings?.audioQuality);
       await _manager.play(widget.videoId);
       final manifestFuture = _runYoutubeWithRetry(
         () => _ytExplode.videos.streamsClient.getManifest(widget.videoId),
@@ -67,7 +70,33 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         _videoTitle = _video!.title;
       }
 
-      final allMuxedStreams = manifest.muxed.sortByVideoQuality().reversed.toList();
+      final allMuxedStreams = manifest.muxed.toList()
+        ..sort((a, b) {
+          final aHeight = a.videoResolution.height;
+          final bHeight = b.videoResolution.height;
+          if (targetHeight == null) {
+            final heightCompare = bHeight.compareTo(aHeight);
+            if (heightCompare != 0) return heightCompare;
+          } else {
+            final aWithinTarget = aHeight <= targetHeight;
+            final bWithinTarget = bHeight <= targetHeight;
+            if (aWithinTarget != bWithinTarget) {
+              return aWithinTarget ? -1 : 1;
+            }
+            if (aWithinTarget) {
+              final heightCompare = bHeight.compareTo(aHeight);
+              if (heightCompare != 0) return heightCompare;
+            } else {
+              final heightCompare = aHeight.compareTo(bHeight);
+              if (heightCompare != 0) return heightCompare;
+            }
+          }
+          final frameRateCompare = b.videoQuality.index.compareTo(
+            a.videoQuality.index,
+          );
+          if (frameRateCompare != 0) return frameRateCompare;
+          return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+        });
       final mp4Streams = allMuxedStreams
           .where((stream) => stream.container.name.toLowerCase() == 'mp4')
           .toList();
@@ -193,7 +222,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         lastError = e;
       }
     }
-    throw Exception('No se pudo inicializar ninguna calidad de video: $lastError');
+    throw Exception(
+      'No se pudo inicializar ninguna calidad de video: $lastError',
+    );
   }
 
   Future<void> _changeQuality(MuxedStreamInfo newStreamInfo) async {
@@ -248,6 +279,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
   Future<void> _fetchRelatedVideos(Video video) async {
     // Eliminado: funcionalidad de videos relacionados
+  }
+
+  int? _targetVideoHeightForQuality(AudioQualityPreference? quality) {
+    return switch (quality) {
+      AudioQualityPreference.low => 240,
+      AudioQualityPreference.normal => 420,
+      AudioQualityPreference.high => 720,
+      AudioQualityPreference.veryHigh => null,
+      AudioQualityPreference.automatic => 420,
+      null => 420,
+    };
   }
 
   @override
@@ -373,7 +415,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
               // Portada de álbum (en vez de video)
               if (_video != null)
                 Padding(
-                  padding: const EdgeInsets.only(top: 24.0, left: 24.0, right: 24.0, bottom: 8.0),
+                  padding: const EdgeInsets.only(
+                    top: 24.0,
+                    left: 24.0,
+                    right: 24.0,
+                    bottom: 8.0,
+                  ),
                   child: Center(
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(16),
@@ -390,7 +437,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                                 width: 260,
                                 height: 260,
                                 color: Colors.grey[300],
-                                child: const Icon(Icons.music_note, size: 80, color: Colors.grey),
+                                child: const Icon(
+                                  Icons.music_note,
+                                  size: 80,
+                                  color: Colors.grey,
+                                ),
                               ),
                         ),
                       ),
@@ -420,8 +471,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                       tooltip: 'Añadir a favoritos',
                       onPressed: () async {
                         if (_video == null) return;
-                        final downloadService =
-                            Provider.of<DownloadService>(context, listen: false);
+                        final downloadService = Provider.of<DownloadService>(
+                          context,
+                          listen: false,
+                        );
                         final videoHistory = VideoHistory(
                           videoId: _video!.id.value,
                           title: _video!.title,
@@ -477,7 +530,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                   children: [
                     Text(
                       'Letra',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                     const SizedBox(height: 8),
                     Container(
@@ -501,8 +556,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       ),
     );
   }
-
-
 
   Widget _buildMinimizedLayout(double width, double height, Widget player) {
     return SizedBox(
