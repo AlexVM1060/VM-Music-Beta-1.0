@@ -3496,12 +3496,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (currentId == null ||
         _isLoading ||
         _isAdvancingQueue ||
-        _isCrossfadeTransitioning ||
-        _isLocal) {
+        _isCrossfadeTransitioning) {
       return;
     }
     final next = _peekNextQueueItem();
-    if (next == null || next.isLocal) {
+    if (next == null) {
       _clearPreloadedNextTrack();
       return;
     }
@@ -3554,7 +3553,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     if (_usingHiddenVideo) return;
-    if (!_isPlaying || _trackDuration <= Duration.zero || _isLocal) return;
+    if (!_isPlaying || _trackDuration <= Duration.zero) return;
     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) return;
 
     final remaining = _trackDuration - _position;
@@ -3590,7 +3589,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     PlaybackQueueItem next,
   ) async {
     if (!_isMixingEnabled) return false;
-    if (_usingHiddenVideo || next.isLocal) return false;
+    if (_usingHiddenVideo) return false;
     final currentVideoId = _currentVideoId;
     if (currentVideoId == null) return false;
     final queueKey = _queueItemKey(next);
@@ -3636,7 +3635,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _trackArtist = next.artist;
       _trackThumbnailUrl = next.thumbnailUrl;
       _trackDuration = Duration.zero;
-      _currentStreamUrl = _preloadedNextStreamUrl;
+      _currentStreamUrl = _preloadedNextStreamUrl ?? next.localFilePath;
       _isLoading = false;
       _syncSystemNowPlaying();
       _syncSystemPlaybackState(force: true);
@@ -3680,7 +3679,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _attachActivePlayerSubscriptions();
 
       _currentVideoId = next.videoId;
-      _isLocal = false;
+      _isLocal = next.isLocal;
       _isMinimized = false;
       _isFullScreen = false;
       _position = Duration.zero;
@@ -3691,12 +3690,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _isBuffering = false;
       _usingHiddenVideo = false;
       _resetLyricsState();
+      final hasAppliedLocalLyrics = next.isLocal
+          ? _applyLocalLyrics(
+              plainLyrics: next.localPlainLyrics,
+              syncedLyrics: next.localSyncedLyrics,
+            )
+          : false;
       _sessionPlayedVideoIds.add(next.videoId);
       _crossfadeFailedForCurrentVideoId = null;
       _crossfadeFailedQueueKey = null;
       _clearPreloadedNextTrack();
 
-      if (_isLyricsLayout) {
+      if (_isLyricsLayout &&
+          (!hasAppliedLocalLyrics ||
+              ((_lyricsText?.trim().isEmpty ?? true) &&
+                  _syncedLyrics.isEmpty))) {
         unawaited(_loadLyricsForCurrentTrack());
       }
 
@@ -3706,6 +3714,22 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
 
       unawaited(() async {
+        if (next.isLocal) {
+          if (_autoplayEnabled) {
+            await _loadLocalQueue(currentVideoId: next.videoId);
+          }
+          final hasLyrics =
+              (_lyricsText?.trim().isNotEmpty ?? false) ||
+              _syncedLyrics.isNotEmpty;
+          if (_isLyricsLayout &&
+              !hasAppliedLocalLyrics &&
+              !hasLyrics &&
+              !_isLyricsLoading) {
+            await _loadLyricsForCurrentTrack();
+          }
+          return;
+        }
+
         try {
           final video = await _getVideoWithRetry(next.videoId);
           if (_currentVideoId != next.videoId) return;
@@ -3761,7 +3785,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     PlaybackQueueItem next, {
     required String currentVideoId,
   }) async {
-    if (next.isLocal) return false;
     final queueKey = _queueItemKey(next);
     final alreadyFailedForCurrentAndQueue =
         _crossfadeFailedForCurrentVideoId == currentVideoId &&
@@ -3773,6 +3796,41 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         (_preloadedNextStreamUrl?.isNotEmpty ?? false) &&
         _crossfadePreparedQueueKey == queueKey;
     if (alreadyPrepared) return true;
+
+    if (next.isLocal) {
+      final localPath = next.localFilePath?.trim() ?? '';
+      if (localPath.isEmpty || kIsWeb) return false;
+      final localFile = File(localPath);
+      if (!await localFile.exists()) return false;
+      try {
+        await _crossfadePlayer.stop();
+        await _crossfadePlayer.setVolume(0.0);
+        await _crossfadePlayer.setAudioSource(AudioSource.file(localPath));
+        final primed = await _primeCrossfadePlayerBuffer();
+        if (!primed) return false;
+        _preloadedForCurrentVideoId = currentVideoId;
+        _preloadedNextQueueKey = queueKey;
+        _preloadedNextStreamUrl = localPath;
+        _crossfadePreparedQueueKey = queueKey;
+        _crossfadePreparedPrimed = true;
+        _crossfadeFailedForCurrentVideoId = null;
+        _crossfadeFailedQueueKey = null;
+        return true;
+      } catch (e) {
+        _preloadedForCurrentVideoId = null;
+        _preloadedNextQueueKey = null;
+        _preloadedNextStreamUrl = null;
+        _crossfadePreparedQueueKey = null;
+        _crossfadePreparedPrimed = false;
+        _crossfadeFailedForCurrentVideoId = currentVideoId;
+        _crossfadeFailedQueueKey = queueKey;
+        log(
+          'No se pudo preparar crossfade local para ${next.videoId}',
+          error: e,
+        );
+        return false;
+      }
+    }
 
     final manifest = await _getManifestWithRetry(next.videoId);
     final audioStreams = manifest.audioOnly.toList();

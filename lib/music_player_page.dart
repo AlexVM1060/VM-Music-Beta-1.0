@@ -2821,12 +2821,15 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     if (currentIndex < 0 || currentIndex == _lastSyncedIndex) return;
     _lastSyncedIndex = currentIndex;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_syncedScrollController.hasClients) return;
+      if (!mounted) return;
+      final positions = _syncedScrollController.positions;
+      if (positions.isEmpty) return;
+      final position = positions.first;
       const itemExtent = 46.0;
-      final viewport = _syncedScrollController.position.viewportDimension;
+      final viewport = position.viewportDimension;
       final target =
           (currentIndex * itemExtent) - (viewport / 2) + (itemExtent / 2);
-      final max = _syncedScrollController.position.maxScrollExtent;
+      final max = position.maxScrollExtent;
       _syncedScrollController.animateTo(
         target.clamp(0.0, max),
         duration: const Duration(milliseconds: 420),
