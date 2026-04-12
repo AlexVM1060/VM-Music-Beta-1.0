@@ -14,7 +14,7 @@ import 'package:myapp/models/playlist.dart' as app_models;
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
-import 'package:myapp/services/live_lyrics_recognizer_service.dart';
+import 'package:myapp/services/ios_live_lyrics_alignment_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/artwork_subject_cutout_service.dart';
 import 'package:myapp/video_player_manager.dart';
@@ -2699,15 +2699,19 @@ class _LyricsPanel extends StatefulWidget {
 
 class _LyricsPanelState extends State<_LyricsPanel> {
   final ScrollController _syncedScrollController = ScrollController();
-  final LiveLyricsRecognizerService _liveRecognizer =
-      LiveLyricsRecognizerService();
+  final IosLiveLyricsAlignmentService _iosAlignmentService =
+      IosLiveLyricsAlignmentService();
+  final Map<int, GlobalKey> _syncedLineKeys = <int, GlobalKey>{};
   int _lastSyncedIndex = -1;
+  int _lastSyncedLength = 0;
   String? _lastVideoId;
-  bool _isSyncingRecognizer = false;
+  bool _isAligningWords = false;
+  DateTime _lastFollowScrollAt = DateTime.fromMillisecondsSinceEpoch(0);
+  String? _alignedTrackKey;
+  List<LiveLyricWordTiming> _alignedWords = const [];
 
   @override
   void dispose() {
-    unawaited(_liveRecognizer.stop());
     _syncedScrollController.dispose();
     super.dispose();
   }
@@ -2718,7 +2722,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     final settings = context.watch<AppSettingsService?>();
     final liveLyricsEnabled = settings?.liveLyrics ?? true;
     unawaited(
-      _syncLiveRecognition(
+      _syncIosWordAlignment(
         manager: manager,
         liveLyricsEnabled: liveLyricsEnabled,
       ),
@@ -2726,6 +2730,8 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     if (_lastVideoId != manager.currentVideoId) {
       _lastVideoId = manager.currentVideoId;
       _lastSyncedIndex = -1;
+      _lastSyncedLength = 0;
+      _syncedLineKeys.clear();
     }
     final textStyle = CupertinoTheme.of(context).textTheme.textStyle.copyWith(
       fontSize: 17,
@@ -2756,6 +2762,10 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       if (syncedLyrics.isEmpty) {
         content = Text(manager.lyricsText ?? '', style: textStyle);
       } else {
+        if (_lastSyncedLength != syncedLyrics.length) {
+          _lastSyncedLength = syncedLyrics.length;
+          _syncedLineKeys.clear();
+        }
         final rawCurrentIndex = manager.currentSyncedLyricIndex;
         final currentIndex = rawCurrentIndex.clamp(-1, syncedLyrics.length - 1);
         _scrollToCurrentLyric(currentIndex);
@@ -2767,6 +2777,10 @@ class _LyricsPanelState extends State<_LyricsPanel> {
           itemBuilder: (context, index) {
             final line = syncedLyrics[index];
             final isActive = index == currentIndex;
+            final lineKey = _syncedLineKeys.putIfAbsent(
+              index,
+              () => GlobalKey(),
+            );
             double liveProgress = 0.0;
             if (isActive) {
               final lineStart = line.timestamp;
@@ -2785,52 +2799,65 @@ class _LyricsPanelState extends State<_LyricsPanel> {
               } else {
                 liveProgress = 1.0;
               }
+              if (liveLyricsEnabled) {
+                final wordBased = _wordProgressForLine(
+                  lineText: line.text,
+                  lineStart: lineStart,
+                  lineEnd: lineEnd,
+                  now: manager.position,
+                );
+                if (wordBased != null) {
+                  // Priorizamos progreso por palabra cuando la confianza es válida.
+                  liveProgress = wordBased;
+                }
+              }
             }
-            return AnimatedContainer(
-              duration: const Duration(milliseconds: 320),
-              curve: Curves.easeInOutCubic,
-              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-              child: AnimatedOpacity(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeInOut,
-                opacity: isActive ? 1 : 0.86,
-                child: AnimatedDefaultTextStyle(
-                  duration: const Duration(milliseconds: 320),
-                  curve: Curves.easeInOutCubic,
-                  style: textStyle.copyWith(
-                    fontSize: isActive ? 22 : 17,
-                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
-                    color: isActive
-                        ? Theme.of(context).colorScheme.primary
-                        : CupertinoColors.secondaryLabel.resolveFrom(context),
-                  ),
-                  child: isActive && liveLyricsEnabled
-                      ? _LiveLyricSweepText(
-                          key: ValueKey(
-                            'live_${manager.currentVideoId}_$index',
-                          ),
-                          text: line.text,
-                          progress: liveProgress,
-                          recognizedText: manager.liveRecognizedText,
-                          baseStyle: textStyle.copyWith(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(
-                              context,
+            return KeyedSubtree(
+              key: lineKey,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeInOutCubic,
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                  opacity: isActive ? 1 : 0.86,
+                  child: AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 320),
+                    curve: Curves.easeInOutCubic,
+                    style: textStyle.copyWith(
+                      fontSize: isActive ? 22 : 17,
+                      fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                      color: isActive
+                          ? Theme.of(context).colorScheme.primary
+                          : CupertinoColors.secondaryLabel.resolveFrom(context),
+                    ),
+                    child: isActive && liveLyricsEnabled
+                        ? _LiveLyricSweepText(
+                            key: ValueKey(
+                              'live_${manager.currentVideoId}_$index',
                             ),
+                            text: line.text,
+                            progress: liveProgress,
+                            baseStyle: textStyle.copyWith(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w700,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(
+                                context,
+                              ),
+                            ),
+                            activeStyle: textStyle.copyWith(
+                              fontSize: 22,
+                              fontWeight: FontWeight.w700,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          )
+                        : Text(
+                            line.text,
+                            textAlign: TextAlign.left,
+                            softWrap: true,
                           ),
-                          activeStyle: textStyle.copyWith(
-                            fontSize: 22,
-                            fontWeight: FontWeight.w700,
-                            color: Theme.of(context).colorScheme.primary,
-                          ),
-                        )
-                      : Text(
-                          line.text,
-                          textAlign: TextAlign.left,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                  ),
                 ),
               ),
             );
@@ -2877,78 +2904,77 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   }
 
   void _scrollToCurrentLyric(int currentIndex) {
-    if (currentIndex < 0 || currentIndex == _lastSyncedIndex) return;
+    if (currentIndex < 0) return;
+    final now = DateTime.now();
+    final sameIndex = currentIndex == _lastSyncedIndex;
+    if (sameIndex &&
+        now.difference(_lastFollowScrollAt) <
+            const Duration(milliseconds: 650)) {
+      return;
+    }
     _lastSyncedIndex = currentIndex;
+    _lastFollowScrollAt = now;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final positions = _syncedScrollController.positions;
-      if (positions.isEmpty) return;
-      final position = positions.first;
-      const itemExtent = 46.0;
-      final viewport = position.viewportDimension;
-      final target =
-          (currentIndex * itemExtent) - (viewport / 2) + (itemExtent / 2);
-      final max = position.maxScrollExtent;
-      _syncedScrollController.animateTo(
-        target.clamp(0.0, max),
-        duration: const Duration(milliseconds: 420),
-        curve: Curves.easeInOutCubicEmphasized,
-      );
+      if (!_syncedScrollController.hasClients) return;
+      final targetKey = _syncedLineKeys[currentIndex];
+      final targetContext = targetKey?.currentContext;
+      if (targetContext == null) return;
+      final targetRenderObject = targetContext.findRenderObject();
+      if (targetRenderObject == null) return;
+      try {
+        _syncedScrollController.position.ensureVisible(
+          targetRenderObject,
+          alignment: 0.35,
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeInOutCubicEmphasized,
+        );
+      } catch (_) {
+        // Best effort: si la lista cambia de frame, el siguiente tick vuelve a intentar.
+      }
     });
   }
 
-  Future<void> _syncLiveRecognition({
+  Future<void> _syncIosWordAlignment({
     required VideoPlayerManager manager,
     required bool liveLyricsEnabled,
   }) async {
-    if (_isSyncingRecognizer) return;
-    _isSyncingRecognizer = true;
+    if (_isAligningWords) return;
+    final shouldRun =
+        liveLyricsEnabled &&
+        manager.isLyricsLayout &&
+        manager.hasSyncedLyrics &&
+        manager.isPlaying &&
+        manager.isLocal &&
+        !kIsWeb &&
+        Platform.isIOS;
+    if (!shouldRun) {
+      _alignedTrackKey = null;
+      _alignedWords = const [];
+      return;
+    }
+
+    final filePath = manager.currentStreamUrl?.trim() ?? '';
+    final trackId = manager.currentVideoId?.trim() ?? '';
+    if (filePath.isEmpty || trackId.isEmpty) return;
+    final key = '$trackId::$filePath';
+    if (_alignedTrackKey == key && _alignedWords.isNotEmpty) return;
+
+    _isAligningWords = true;
     try {
-      final shouldRun =
-          liveLyricsEnabled &&
-          manager.isLyricsLayout &&
-          manager.hasSyncedLyrics &&
-          manager.isPlaying;
-      if (shouldRun) {
-        if (!_liveRecognizer.isActive) {
-          final started = await _liveRecognizer.start(
-            onText: manager.updateLiveRecognizedText,
-          );
-          if (!started) {
-            manager.updateLiveRecognizedText('');
-          }
-        }
-      } else {
-        if (_liveRecognizer.isActive) {
-          await _liveRecognizer.stop();
-        }
-        if (manager.liveRecognizedText.isNotEmpty) {
-          manager.updateLiveRecognizedText('');
-        }
-      }
+      final words = await _iosAlignmentService.transcribeLocalFile(
+        filePath: filePath,
+      );
+      if (!mounted) return;
+      _alignedTrackKey = key;
+      _alignedWords = words;
+      setState(() {});
     } finally {
-      _isSyncingRecognizer = false;
+      _isAligningWords = false;
     }
   }
-}
 
-class _LiveLyricSweepText extends StatelessWidget {
-  final String text;
-  final double progress;
-  final String recognizedText;
-  final TextStyle baseStyle;
-  final TextStyle activeStyle;
-
-  const _LiveLyricSweepText({
-    super.key,
-    required this.text,
-    required this.progress,
-    required this.recognizedText,
-    required this.baseStyle,
-    required this.activeStyle,
-  });
-
-  String _normalize(String value) {
+  String _normalizeWord(String value) {
     return value
         .toLowerCase()
         .replaceAll(RegExp(r"[^\p{L}\p{N}\s]", unicode: true), ' ')
@@ -2956,79 +2982,270 @@ class _LiveLyricSweepText extends StatelessWidget {
         .trim();
   }
 
-  double? _recognizedProgress() {
-    final normalizedLine = _normalize(text);
-    final normalizedRecognized = _normalize(recognizedText);
-    if (normalizedLine.isEmpty || normalizedRecognized.isEmpty) return null;
+  double? _wordProgressForLine({
+    required String lineText,
+    required Duration lineStart,
+    required Duration lineEnd,
+    required Duration now,
+  }) {
+    if (_alignedWords.isEmpty) return null;
+    final windowStart = lineStart - const Duration(milliseconds: 350);
+    final safeWindowStart = windowStart > Duration.zero
+        ? windowStart
+        : Duration.zero;
+    final windowEnd = lineEnd + const Duration(milliseconds: 350);
+    final candidateWords = _alignedWords
+        .where(
+          (w) =>
+              w.start >= safeWindowStart &&
+              w.start <= windowEnd &&
+              w.confidence >= 0.22,
+        )
+        .toList(growable: false);
+    if (candidateWords.isEmpty) return null;
 
-    final lineWords = normalizedLine.split(' ');
-    final recognizedWords = normalizedRecognized.split(' ');
-    if (lineWords.isEmpty || recognizedWords.isEmpty) return null;
+    final lineWords = _normalizeWord(
+      lineText,
+    ).split(' ').where((w) => w.isNotEmpty).toList(growable: false);
+    if (lineWords.isEmpty) return null;
 
-    var matched = 0;
+    var matchedTotal = 0;
+    var matchedCompleted = 0;
     var cursor = 0;
-    for (final word in lineWords) {
+    for (final lw in lineWords) {
       var found = false;
-      for (var i = cursor; i < recognizedWords.length; i++) {
-        if (recognizedWords[i] == word) {
-          matched++;
+      for (var i = cursor; i < candidateWords.length; i++) {
+        final cw = _normalizeWord(candidateWords[i].word);
+        if (cw == lw) {
+          matchedTotal++;
+          if (now >= candidateWords[i].end) {
+            matchedCompleted++;
+          }
           cursor = i + 1;
           found = true;
           break;
         }
       }
-      if (!found) break;
+      if (!found) continue;
     }
-    if (matched == 0) return null;
-    return (matched / lineWords.length).clamp(0.0, 1.0);
+
+    final coverage = matchedTotal / lineWords.length;
+    if (coverage < 0.35) return null;
+    return (matchedCompleted / lineWords.length).clamp(0.0, 1.0);
   }
+}
+
+class _LiveLyricSweepText extends StatelessWidget {
+  final String text;
+  final double progress;
+  final TextStyle baseStyle;
+  final TextStyle activeStyle;
+
+  const _LiveLyricSweepText({
+    super.key,
+    required this.text,
+    required this.progress,
+    required this.baseStyle,
+    required this.activeStyle,
+  });
+
+  static const Duration _sweepAnimationDuration = Duration(milliseconds: 180);
+  static const double _sweepFeather = 0.07;
 
   @override
   Widget build(BuildContext context) {
-    final recognizedProgress = _recognizedProgress();
-    final targetProgress = (recognizedProgress ?? progress).clamp(0.0, 1.0);
+    final targetProgress = progress.clamp(0.0, 1.0);
     return TweenAnimationBuilder<double>(
       tween: Tween<double>(end: targetProgress),
-      duration: const Duration(milliseconds: 110),
-      curve: Curves.linear,
+      duration: _sweepAnimationDuration,
+      curve: Curves.easeOutCubic,
       builder: (context, animatedProgress, _) {
         final p = animatedProgress.clamp(0.0, 1.0);
-        final edge = (p + 0.002).clamp(0.0, 1.0);
-        return Stack(
-          children: [
-            Text(
-              text,
-              textAlign: TextAlign.left,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: baseStyle,
-            ),
-            ShaderMask(
-              blendMode: BlendMode.dstIn,
-              shaderCallback: (rect) {
-                return LinearGradient(
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                  colors: const [
-                    Color(0xFFFFFFFF),
-                    Color(0xFFFFFFFF),
-                    Color(0x00000000),
-                    Color(0x00000000),
-                  ],
-                  stops: [0.0, p, edge, 1.0],
-                ).createShader(rect);
-              },
-              child: Text(
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final maxWidth = constraints.maxWidth.isFinite
+                ? constraints.maxWidth
+                : MediaQuery.sizeOf(context).width;
+
+            final lines = _wrapIntoLines(
+              text: text,
+              style: activeStyle,
+              maxWidth: maxWidth,
+              textDirection: Directionality.of(context),
+            );
+            if (lines.isEmpty) {
+              return Text(
                 text,
                 textAlign: TextAlign.left,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: activeStyle,
-              ),
-            ),
-          ],
+                softWrap: true,
+                style: baseStyle,
+              );
+            }
+
+            final weights = lines
+                .map((line) => math.max(1, line.trim().runes.length))
+                .toList(growable: false);
+            final totalWeight = weights.fold<int>(0, (sum, w) => sum + w);
+
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                for (var i = 0; i < lines.length; i++)
+                  _buildSweepLine(
+                    line: lines[i],
+                    globalProgress: p,
+                    lineWeight: weights[i],
+                    cumulativeWeightBefore: weights
+                        .take(i)
+                        .fold<int>(0, (sum, w) => sum + w),
+                    totalWeight: totalWeight,
+                  ),
+              ],
+            );
+          },
         );
       },
+    );
+  }
+
+  List<String> _wrapIntoLines({
+    required String text,
+    required TextStyle style,
+    required double maxWidth,
+    required TextDirection textDirection,
+  }) {
+    final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (normalized.isEmpty) return const [];
+    final words = normalized.split(' ').where((w) => w.isNotEmpty).toList();
+    if (words.isEmpty) return const [];
+
+    double widthFor(String value) {
+      final painter = TextPainter(
+        text: TextSpan(text: value, style: style),
+        textDirection: textDirection,
+        maxLines: 1,
+      )..layout(maxWidth: double.infinity);
+      return painter.width;
+    }
+
+    final lines = <String>[];
+    var current = '';
+    var index = 0;
+    while (index < words.length) {
+      final word = words[index];
+      final candidate = current.isEmpty ? word : '$current $word';
+      final fits = widthFor(candidate) <= maxWidth || current.isEmpty;
+
+      if (fits) {
+        current = candidate;
+        index++;
+        continue;
+      }
+
+      lines.add(current);
+      current = '';
+    }
+
+    if (current.isNotEmpty) {
+      lines.add(current);
+    }
+    return lines;
+  }
+
+  Widget _buildSweepLine({
+    required String line,
+    required double globalProgress,
+    required int lineWeight,
+    required int cumulativeWeightBefore,
+    required int totalWeight,
+  }) {
+    final startShare = cumulativeWeightBefore / totalWeight;
+    final endShare = (cumulativeWeightBefore + lineWeight) / totalWeight;
+    final span = math.max(0.0001, endShare - startShare);
+    final localProgress = ((globalProgress - startShare) / span).clamp(
+      0.0,
+      1.0,
+    );
+    final softStart = (localProgress - _sweepFeather).clamp(0.0, 1.0);
+    final softEdge = (localProgress + _sweepFeather).clamp(0.0, 1.0);
+    final glowStart = (localProgress - 0.03).clamp(0.0, 1.0);
+    final glowEnd = (localProgress + 0.055).clamp(0.0, 1.0);
+    final baseActiveColor = activeStyle.color ?? const Color(0xFFFFFFFF);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 1),
+      child: Stack(
+        children: [
+          Text(
+            line,
+            textAlign: TextAlign.left,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: baseStyle,
+          ),
+          ShaderMask(
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (rect) {
+              return LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: const [
+                  Color(0xFFFFFFFF),
+                  Color(0xFFFFFFFF),
+                  Color(0xCCFFFFFF),
+                  Color(0x66FFFFFF),
+                  Color(0x00000000),
+                  Color(0x00000000),
+                ],
+                stops: [0.0, softStart, localProgress, softEdge, 0.98, 1.0],
+              ).createShader(rect);
+            },
+            child: Text(
+              line,
+              textAlign: TextAlign.left,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: activeStyle,
+            ),
+          ),
+          // Banda de brillo sutil en el frente del barrido.
+          ShaderMask(
+            blendMode: BlendMode.dstIn,
+            shaderCallback: (rect) {
+              return LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: const [
+                  Color(0x00000000),
+                  Color(0xFFFFFFFF),
+                  Color(0x00000000),
+                ],
+                stops: [glowStart, localProgress, glowEnd],
+              ).createShader(rect);
+            },
+            child: Text(
+              line,
+              textAlign: TextAlign.left,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: activeStyle.copyWith(
+                color: Colors.white.withValues(alpha: 0.96),
+                shadows: [
+                  Shadow(
+                    color: baseActiveColor.withValues(alpha: 0.55),
+                    blurRadius: 11,
+                  ),
+                  Shadow(
+                    color: Colors.white.withValues(alpha: 0.35),
+                    blurRadius: 6,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

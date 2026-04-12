@@ -127,7 +127,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String? _lyricsText;
   String? _lyricsError;
   List<SyncedLyricLine> _syncedLyrics = const [];
-  String _liveRecognizedText = '';
   bool _isAdvancingQueue = false;
   bool _completionHandledForCurrent = false;
   bool _skipHistoryPushOnce = false;
@@ -291,7 +290,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String? get lyricsText => _lyricsText;
   String? get lyricsError => _lyricsError;
   List<SyncedLyricLine> get syncedLyrics => _syncedLyrics;
-  String get liveRecognizedText => _liveRecognizedText;
   bool get hasSyncedLyrics => _syncedLyrics.isNotEmpty;
   int get currentSyncedLyricIndex {
     if (_syncedLyrics.isEmpty) return -1;
@@ -4273,14 +4271,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _lyricsText = null;
     _lyricsError = null;
     _syncedLyrics = const [];
-    _liveRecognizedText = '';
-  }
-
-  void updateLiveRecognizedText(String value) {
-    final normalized = value.trim();
-    if (_liveRecognizedText == normalized) return;
-    _liveRecognizedText = normalized;
-    notifyListeners();
   }
 
   Future<void> _loadLyricsForCurrentTrack() async {

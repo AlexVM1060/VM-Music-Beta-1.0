@@ -2,11 +2,14 @@ import Flutter
 import UIKit
 import Vision
 import CoreImage
+import Speech
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   private let artworkCutoutChannelName = "com.vm.music.beta/artwork_cutout"
+  private let liveLyricsAlignmentChannelName = "com.vm.music.beta/ios_live_lyrics_alignment"
   private let ciContext = CIContext(options: nil)
+  private var liveLyricsTask: SFSpeechRecognitionTask?
 
   override func application(
     _ application: UIApplication,
@@ -19,6 +22,16 @@ import CoreImage
       )
       channel.setMethodCallHandler { [weak self] call, result in
         self?.handleArtworkCutout(call: call, result: result)
+      }
+    }
+
+    if let registrar = self.registrar(forPlugin: "LiveLyricsAlignmentChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: liveLyricsAlignmentChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleLiveLyricsAlignment(call: call, result: result)
       }
     }
 
@@ -53,6 +66,125 @@ import CoreImage
           result(nil)
         }
       }
+    }
+  }
+
+  private func handleLiveLyricsAlignment(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard call.method == "transcribeLocalFile" else {
+      result(FlutterMethodNotImplemented)
+      return
+    }
+
+    guard #available(iOS 13.0, *) else {
+      result(FlutterError(code: "unsupported_ios", message: "Requires iOS 13+", details: nil))
+      return
+    }
+
+    guard let args = call.arguments as? [String: Any],
+          let path = args["filePath"] as? String else {
+      result(FlutterError(code: "invalid_args", message: "filePath is required", details: nil))
+      return
+    }
+
+    let normalizedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedPath.isEmpty else {
+      result(FlutterError(code: "invalid_args", message: "filePath is empty", details: nil))
+      return
+    }
+    guard FileManager.default.fileExists(atPath: normalizedPath) else {
+      result(FlutterError(code: "file_not_found", message: "Audio file not found", details: nil))
+      return
+    }
+
+    requestSpeechAuthorization { [weak self] authorized in
+      guard let self else { return }
+      guard authorized else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "speech_denied", message: "Speech recognition denied", details: nil))
+        }
+        return
+      }
+      self.transcribeLocalFile(path: normalizedPath, flutterResult: result)
+    }
+  }
+
+  private func requestSpeechAuthorization(_ completion: @escaping (Bool) -> Void) {
+    if #available(iOS 13.0, *) {
+      let status = SFSpeechRecognizer.authorizationStatus()
+      switch status {
+      case .authorized:
+        completion(true)
+      case .denied, .restricted:
+        completion(false)
+      case .notDetermined:
+        SFSpeechRecognizer.requestAuthorization { auth in
+          completion(auth == .authorized)
+        }
+      @unknown default:
+        completion(false)
+      }
+    } else {
+      completion(false)
+    }
+  }
+
+  @available(iOS 13.0, *)
+  private func transcribeLocalFile(path: String, flutterResult: @escaping FlutterResult) {
+    liveLyricsTask?.cancel()
+    liveLyricsTask = nil
+
+    let localeCandidates: [Locale] = [
+      Locale.current,
+      Locale(identifier: "es-MX"),
+      Locale(identifier: "es-ES"),
+      Locale(identifier: "en-US")
+    ]
+    guard let recognizer = localeCandidates.compactMap({ SFSpeechRecognizer(locale: $0) }).first else {
+      flutterResult(FlutterError(code: "recognizer_unavailable", message: "No speech recognizer available", details: nil))
+      return
+    }
+
+    guard recognizer.isAvailable else {
+      flutterResult(FlutterError(code: "recognizer_unavailable", message: "Speech recognizer unavailable", details: nil))
+      return
+    }
+    if recognizer.supportsOnDeviceRecognition == false {
+      flutterResult(FlutterError(code: "on_device_unavailable", message: "On-device recognition unavailable", details: nil))
+      return
+    }
+
+    let request = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: path))
+    request.shouldReportPartialResults = false
+    request.requiresOnDeviceRecognition = true
+
+    var didFinish = false
+    liveLyricsTask = recognizer.recognitionTask(with: request) { [weak self] recognitionResult, error in
+      guard !didFinish else { return }
+      if let error = error {
+        didFinish = true
+        self?.liveLyricsTask = nil
+        flutterResult(FlutterError(code: "recognition_failed", message: error.localizedDescription, details: nil))
+        return
+      }
+
+      guard let recognitionResult = recognitionResult, recognitionResult.isFinal else {
+        return
+      }
+
+      let words: [[String: Any]] = recognitionResult.bestTranscription.segments.map { segment in
+        let startMs = Int((segment.timestamp * 1000.0).rounded())
+        let endMs = Int(((segment.timestamp + segment.duration) * 1000.0).rounded())
+        return [
+          "word": segment.substring,
+          "startMs": max(0, startMs),
+          "endMs": max(max(0, startMs), endMs),
+          "confidence": segment.confidence
+        ]
+      }
+
+      didFinish = true
+      self?.liveLyricsTask = nil
+      flutterResult(words)
     }
   }
 
