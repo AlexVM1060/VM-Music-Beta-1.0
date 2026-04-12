@@ -15,6 +15,7 @@ import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/ios_live_lyrics_alignment_service.dart';
+import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/artwork_subject_cutout_service.dart';
 import 'package:myapp/video_player_manager.dart';
@@ -2767,7 +2768,13 @@ class _LyricsPanelState extends State<_LyricsPanel> {
           _syncedLineKeys.clear();
         }
         final rawCurrentIndex = manager.currentSyncedLyricIndex;
-        final currentIndex = rawCurrentIndex.clamp(-1, syncedLyrics.length - 1);
+        final currentIndex = _resolveDisplayedCurrentIndex(
+          baseIndex: rawCurrentIndex.clamp(-1, syncedLyrics.length - 1),
+          lyrics: syncedLyrics,
+          now: manager.position,
+          trackDuration: manager.trackDuration,
+          liveLyricsEnabled: liveLyricsEnabled,
+        );
         _scrollToCurrentLyric(currentIndex);
         content = ListView.builder(
           key: ValueKey('synced_${manager.currentVideoId}'),
@@ -2784,30 +2791,27 @@ class _LyricsPanelState extends State<_LyricsPanel> {
             double liveProgress = 0.0;
             if (isActive) {
               final lineStart = line.timestamp;
-              Duration lineEnd;
-              if (index + 1 < syncedLyrics.length) {
-                lineEnd = syncedLyrics[index + 1].timestamp;
-              } else if (manager.trackDuration > lineStart) {
-                lineEnd = manager.trackDuration;
-              } else {
-                lineEnd = lineStart + const Duration(seconds: 3);
-              }
-              final spanMs = (lineEnd - lineStart).inMilliseconds;
-              final elapsedMs = (manager.position - lineStart).inMilliseconds;
-              if (spanMs > 0) {
-                liveProgress = (elapsedMs / spanMs).clamp(0.0, 1.0);
-              } else {
-                liveProgress = 1.0;
-              }
+              final lineEnd = _resolveLineEnd(
+                index: index,
+                lyrics: syncedLyrics,
+                trackDuration: manager.trackDuration,
+              );
+              final temporalProgress = _temporalProgressForLine(
+                lineStart: lineStart,
+                lineEnd: lineEnd,
+                now: manager.position,
+              );
+              liveProgress = temporalProgress;
               if (liveLyricsEnabled) {
                 final wordBased = _wordProgressForLine(
                   lineText: line.text,
                   lineStart: lineStart,
                   lineEnd: lineEnd,
                   now: manager.position,
+                  fallbackProgress: temporalProgress,
                 );
                 if (wordBased != null) {
-                  // Priorizamos progreso por palabra cuando la confianza es válida.
+                  // Priorizamos progreso por palabra cuando la señal es confiable.
                   liveProgress = wordBased;
                 }
               }
@@ -2903,6 +2907,263 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     );
   }
 
+  Duration _resolveLineEnd({
+    required int index,
+    required List<SyncedLyricLine> lyrics,
+    required Duration trackDuration,
+  }) {
+    final lineStart = lyrics[index].timestamp;
+    final nominalEnd = _resolveNominalLineEnd(
+      index: index,
+      lyrics: lyrics,
+      trackDuration: trackDuration,
+    );
+    final voiceAwareEnd = _resolveVoiceAlignedLineEnd(
+      lineText: lyrics[index].text,
+      lineStart: lineStart,
+      nominalLineEnd: nominalEnd,
+    );
+    final activityAwareEnd = _resolveVoiceActivityLineEnd(
+      lineStart: lineStart,
+      nominalLineEnd: nominalEnd,
+    );
+    Duration resolved = nominalEnd;
+    if (voiceAwareEnd != null && voiceAwareEnd > lineStart) {
+      resolved = voiceAwareEnd < resolved ? voiceAwareEnd : resolved;
+    }
+    if (activityAwareEnd != null && activityAwareEnd > lineStart) {
+      resolved = activityAwareEnd < resolved ? activityAwareEnd : resolved;
+    }
+    return resolved;
+  }
+
+  Duration _resolveNominalLineEnd({
+    required int index,
+    required List<SyncedLyricLine> lyrics,
+    required Duration trackDuration,
+  }) {
+    final lineStart = lyrics[index].timestamp;
+    for (var i = index + 1; i < lyrics.length; i++) {
+      final nextTs = lyrics[i].timestamp;
+      if (nextTs > lineStart + const Duration(milliseconds: 120)) {
+        return nextTs;
+      }
+    }
+    if (trackDuration > lineStart) return trackDuration;
+    return lineStart + const Duration(seconds: 3);
+  }
+
+  Duration? _resolveVoiceAlignedLineEnd({
+    required String lineText,
+    required Duration lineStart,
+    required Duration nominalLineEnd,
+  }) {
+    if (_alignedWords.isEmpty) return null;
+    final lineWords = _normalizeWord(
+      lineText,
+    ).split(' ').where((w) => w.isNotEmpty).toList(growable: false);
+    if (lineWords.isEmpty) return null;
+
+    final windowStart = lineStart - const Duration(milliseconds: 700);
+    final safeWindowStart = windowStart > Duration.zero
+        ? windowStart
+        : Duration.zero;
+    final windowEnd = nominalLineEnd + const Duration(milliseconds: 350);
+    final candidateWords = _alignedWords
+        .where(
+          (w) =>
+              w.end >= safeWindowStart &&
+              w.start <= windowEnd &&
+              w.confidence >= 0.22,
+        )
+        .toList(growable: false);
+    if (candidateWords.isEmpty) return null;
+
+    final candidateNormalized = candidateWords
+        .map((w) => _normalizeWord(w.word))
+        .toList(growable: false);
+    final matches = _alignLyricWordsToCandidates(
+      lineWords: lineWords,
+      candidateWords: candidateNormalized,
+      candidateSegments: candidateWords,
+    );
+
+    var matchedCount = 0;
+    var matchedSimilarity = 0.0;
+    Duration? lastMatchedEnd;
+    for (var i = 0; i < lineWords.length; i++) {
+      final mapped = matches[i];
+      if (mapped < 0 || mapped >= candidateWords.length) continue;
+      final similarity = _wordSimilarity(
+        lineWords[i],
+        candidateNormalized[mapped],
+      );
+      if (similarity < 0.54) continue;
+      matchedCount++;
+      matchedSimilarity += similarity;
+      final end = candidateWords[mapped].end;
+      if (lastMatchedEnd == null || end > lastMatchedEnd) {
+        lastMatchedEnd = end;
+      }
+    }
+    if (matchedCount == 0 || lastMatchedEnd == null) return null;
+
+    final coverage = matchedCount / lineWords.length;
+    final avgSimilarity = matchedSimilarity / matchedCount;
+    if (coverage < 0.34 && avgSimilarity < 0.68) return null;
+
+    // Ajuste para que la línea termine cuando acaba la última palabra cantada,
+    // sin arrastrar silencios hasta el siguiente timestamp.
+    final voiceEnd = lastMatchedEnd + const Duration(milliseconds: 95);
+    final minValidEnd = lineStart + const Duration(milliseconds: 220);
+    if (voiceEnd < minValidEnd) return null;
+    if (voiceEnd < nominalLineEnd) {
+      return voiceEnd;
+    }
+    return nominalLineEnd;
+  }
+
+  Duration? _resolveVoiceActivityLineEnd({
+    required Duration lineStart,
+    required Duration nominalLineEnd,
+  }) {
+    if (_alignedWords.isEmpty) return null;
+    final windowStart = lineStart - const Duration(milliseconds: 160);
+    final safeWindowStart = windowStart > Duration.zero
+        ? windowStart
+        : Duration.zero;
+    final candidates = _alignedWords
+        .where(
+          (w) =>
+              w.end >= safeWindowStart &&
+              w.start <= nominalLineEnd &&
+              w.confidence >= 0.16,
+        )
+        .toList(growable: false);
+    if (candidates.isEmpty) return null;
+
+    Duration? lastSpeechEnd;
+    for (final w in candidates) {
+      final end = w.end <= nominalLineEnd ? w.end : nominalLineEnd;
+      if (end < lineStart + const Duration(milliseconds: 140)) continue;
+      if (lastSpeechEnd == null || end > lastSpeechEnd) {
+        lastSpeechEnd = end;
+      }
+    }
+    if (lastSpeechEnd == null) return null;
+
+    final trailingGap = nominalLineEnd - lastSpeechEnd;
+    // Si al final de la línea hay hueco largo sin voz, terminamos antes
+    // aunque siga instrumental/fondo.
+    if (trailingGap >= const Duration(milliseconds: 520)) {
+      final clamped = lastSpeechEnd + const Duration(milliseconds: 85);
+      final minValid = lineStart + const Duration(milliseconds: 220);
+      if (clamped > minValid) return clamped;
+    }
+    return null;
+  }
+
+  double _temporalProgressForLine({
+    required Duration lineStart,
+    required Duration lineEnd,
+    required Duration now,
+  }) {
+    final spanMs = (lineEnd - lineStart).inMilliseconds;
+    if (spanMs <= 0) return 1.0;
+    final elapsedMs = (now - lineStart).inMilliseconds;
+    return (elapsedMs / spanMs).clamp(0.0, 1.0);
+  }
+
+  int _resolveDisplayedCurrentIndex({
+    required int baseIndex,
+    required List<SyncedLyricLine> lyrics,
+    required Duration now,
+    required Duration trackDuration,
+    required bool liveLyricsEnabled,
+  }) {
+    if (lyrics.isEmpty) return -1;
+    if (!liveLyricsEnabled || _alignedWords.isEmpty) return baseIndex;
+
+    // Antes del primer timestamp: si ya detectamos la primera línea en voz,
+    // activamos de inmediato para evitar que el barrido entre tarde.
+    if (baseIndex < 0) {
+      final firstEnd = _resolveLineEnd(
+        index: 0,
+        lyrics: lyrics,
+        trackDuration: trackDuration,
+      );
+      final firstProgress = _wordProgressForLine(
+        lineText: lyrics.first.text,
+        lineStart: lyrics.first.timestamp,
+        lineEnd: firstEnd,
+        now: now,
+        fallbackProgress: 0.0,
+      );
+      if ((firstProgress ?? 0.0) >= 0.06) return 0;
+      return -1;
+    }
+
+    if (baseIndex >= lyrics.length - 1) return baseIndex;
+    final currentLine = lyrics[baseIndex];
+    final nextLine = lyrics[baseIndex + 1];
+    final currentEnd = _resolveLineEnd(
+      index: baseIndex,
+      lyrics: lyrics,
+      trackDuration: trackDuration,
+    );
+    final nextEnd = _resolveLineEnd(
+      index: baseIndex + 1,
+      lyrics: lyrics,
+      trackDuration: trackDuration,
+    );
+    final currentTemporal = _temporalProgressForLine(
+      lineStart: currentLine.timestamp,
+      lineEnd: currentEnd,
+      now: now,
+    );
+    final nextTemporal = _temporalProgressForLine(
+      lineStart: nextLine.timestamp,
+      lineEnd: nextEnd,
+      now: now,
+    );
+    final currentWord =
+        _wordProgressForLine(
+          lineText: currentLine.text,
+          lineStart: currentLine.timestamp,
+          lineEnd: currentEnd,
+          now: now,
+          fallbackProgress: currentTemporal,
+        ) ??
+        currentTemporal;
+    final nextWord = _wordProgressForLine(
+      lineText: nextLine.text,
+      lineStart: nextLine.timestamp,
+      lineEnd: nextEnd,
+      now: now,
+      fallbackProgress: nextTemporal,
+    );
+
+    final remainingToCurrentEnd = currentEnd - now;
+    final remainingToNext = nextLine.timestamp - now;
+    final nearTransition =
+        remainingToCurrentEnd <= const Duration(milliseconds: 1400);
+    final currentDone = currentWord >= 0.93 || currentTemporal >= 0.985;
+    final nextHasLead = (nextWord ?? 0.0) >= 0.08;
+
+    if (now >= currentEnd + const Duration(milliseconds: 110)) {
+      return baseIndex + 1;
+    }
+    if (nearTransition && currentDone && nextHasLead) {
+      return baseIndex + 1;
+    }
+    if (currentWord >= 0.985 &&
+        remainingToNext > Duration.zero &&
+        remainingToNext <= const Duration(milliseconds: 900)) {
+      return baseIndex + 1;
+    }
+    return baseIndex;
+  }
+
   void _scrollToCurrentLyric(int currentIndex) {
     if (currentIndex < 0) return;
     final now = DateTime.now();
@@ -2975,11 +3236,144 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   }
 
   String _normalizeWord(String value) {
-    return value
+    return _stripDiacritics(value.toLowerCase())
         .toLowerCase()
         .replaceAll(RegExp(r"[^\p{L}\p{N}\s]", unicode: true), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
+  }
+
+  String _stripDiacritics(String value) {
+    return value
+        .replaceAll(RegExp(r'[àáâãäåāăą]'), 'a')
+        .replaceAll(RegExp(r'[èéêëēĕėęě]'), 'e')
+        .replaceAll(RegExp(r'[ìíîïĩīĭįı]'), 'i')
+        .replaceAll(RegExp(r'[òóôõöøōŏő]'), 'o')
+        .replaceAll(RegExp(r'[ùúûüũūŭůűų]'), 'u')
+        .replaceAll(RegExp(r'[ýÿŷ]'), 'y')
+        .replaceAll(RegExp(r'[ñ]'), 'n')
+        .replaceAll(RegExp(r'[ç]'), 'c');
+  }
+
+  double _wordSimilarity(String a, String b) {
+    if (a == b) return 1.0;
+    if (a.isEmpty || b.isEmpty) return 0.0;
+    if (a.length >= 4 &&
+        b.length >= 4 &&
+        (a.startsWith(b) || b.startsWith(a))) {
+      return 0.92;
+    }
+    final distance = _levenshteinDistance(a, b);
+    final longest = math.max(a.length, b.length);
+    if (longest == 0) return 0.0;
+    return (1.0 - (distance / longest)).clamp(0.0, 1.0);
+  }
+
+  int _levenshteinDistance(String a, String b) {
+    if (a == b) return 0;
+    if (a.isEmpty) return b.length;
+    if (b.isEmpty) return a.length;
+    final prev = List<int>.generate(b.length + 1, (j) => j);
+    final curr = List<int>.filled(b.length + 1, 0);
+    for (var i = 1; i <= a.length; i++) {
+      curr[0] = i;
+      for (var j = 1; j <= b.length; j++) {
+        final cost = a.codeUnitAt(i - 1) == b.codeUnitAt(j - 1) ? 0 : 1;
+        curr[j] = math.min(
+          math.min(curr[j - 1] + 1, prev[j] + 1),
+          prev[j - 1] + cost,
+        );
+      }
+      for (var j = 0; j <= b.length; j++) {
+        prev[j] = curr[j];
+      }
+    }
+    return prev[b.length];
+  }
+
+  List<int> _alignLyricWordsToCandidates({
+    required List<String> lineWords,
+    required List<String> candidateWords,
+    required List<LiveLyricWordTiming> candidateSegments,
+  }) {
+    final n = lineWords.length;
+    final m = candidateWords.length;
+    if (n == 0 || m == 0) return List<int>.filled(n, -1);
+
+    const skipLyricPenalty = -0.30;
+    const skipCandidatePenalty = -0.18;
+    const minMatchScore = 0.46;
+    const lowMatchPenalty = -0.50;
+
+    final dp = List<List<double>>.generate(
+      n + 1,
+      (_) => List<double>.filled(m + 1, 0.0),
+    );
+    final backtrack = List<List<int>>.generate(
+      n + 1,
+      (_) => List<int>.filled(m + 1, 0),
+    );
+
+    for (var i = 1; i <= n; i++) {
+      dp[i][0] = i * skipLyricPenalty;
+      backtrack[i][0] = 2;
+    }
+    for (var j = 1; j <= m; j++) {
+      dp[0][j] = j * skipCandidatePenalty;
+      backtrack[0][j] = 3;
+    }
+
+    for (var i = 1; i <= n; i++) {
+      for (var j = 1; j <= m; j++) {
+        final similarity = _wordSimilarity(
+          lineWords[i - 1],
+          candidateWords[j - 1],
+        );
+        final confidence = candidateSegments[j - 1].confidence;
+        final matchBonus = similarity >= minMatchScore
+            ? similarity * (0.78 + (confidence * 0.35))
+            : lowMatchPenalty;
+        final diag = dp[i - 1][j - 1] + matchBonus;
+        final up = dp[i - 1][j] + skipLyricPenalty;
+        final left = dp[i][j - 1] + skipCandidatePenalty;
+
+        if (diag >= up && diag >= left) {
+          dp[i][j] = diag;
+          backtrack[i][j] = 1;
+        } else if (up >= left) {
+          dp[i][j] = up;
+          backtrack[i][j] = 2;
+        } else {
+          dp[i][j] = left;
+          backtrack[i][j] = 3;
+        }
+      }
+    }
+
+    final matches = List<int>.filled(n, -1);
+    var i = n;
+    var j = m;
+    while (i > 0 || j > 0) {
+      final action = backtrack[i][j];
+      if (action == 1 && i > 0 && j > 0) {
+        final similarity = _wordSimilarity(
+          lineWords[i - 1],
+          candidateWords[j - 1],
+        );
+        if (similarity >= minMatchScore) {
+          matches[i - 1] = j - 1;
+        }
+        i--;
+        j--;
+      } else if (action == 2 && i > 0) {
+        i--;
+      } else if (action == 3 && j > 0) {
+        j--;
+      } else {
+        break;
+      }
+    }
+    return matches;
   }
 
   double? _wordProgressForLine({
@@ -2987,19 +3381,20 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     required Duration lineStart,
     required Duration lineEnd,
     required Duration now,
+    required double fallbackProgress,
   }) {
     if (_alignedWords.isEmpty) return null;
-    final windowStart = lineStart - const Duration(milliseconds: 350);
+    final windowStart = lineStart - const Duration(milliseconds: 700);
     final safeWindowStart = windowStart > Duration.zero
         ? windowStart
         : Duration.zero;
-    final windowEnd = lineEnd + const Duration(milliseconds: 350);
+    final windowEnd = lineEnd + const Duration(milliseconds: 550);
     final candidateWords = _alignedWords
         .where(
           (w) =>
-              w.start >= safeWindowStart &&
+              w.end >= safeWindowStart &&
               w.start <= windowEnd &&
-              w.confidence >= 0.22,
+              w.confidence >= 0.26,
         )
         .toList(growable: false);
     if (candidateWords.isEmpty) return null;
@@ -3009,29 +3404,74 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     ).split(' ').where((w) => w.isNotEmpty).toList(growable: false);
     if (lineWords.isEmpty) return null;
 
+    final candidateNormalized = candidateWords
+        .map((w) => _normalizeWord(w.word))
+        .toList(growable: false);
+    final matches = _alignLyricWordsToCandidates(
+      lineWords: lineWords,
+      candidateWords: candidateNormalized,
+      candidateSegments: candidateWords,
+    );
+
+    final lineSpanMs = math.max(850, (lineEnd - lineStart).inMilliseconds);
+    final lineStartMs = lineStart.inMilliseconds;
+    final wordCount = lineWords.length;
+
+    var weightedProgress = 0.0;
+    var totalWeight = 0.0;
     var matchedTotal = 0;
-    var matchedCompleted = 0;
-    var cursor = 0;
-    for (final lw in lineWords) {
-      var found = false;
-      for (var i = cursor; i < candidateWords.length; i++) {
-        final cw = _normalizeWord(candidateWords[i].word);
-        if (cw == lw) {
-          matchedTotal++;
-          if (now >= candidateWords[i].end) {
-            matchedCompleted++;
-          }
-          cursor = i + 1;
-          found = true;
-          break;
-        }
+    var matchedSimilarity = 0.0;
+
+    for (var idx = 0; idx < wordCount; idx++) {
+      final matchedIndex = matches[idx];
+      double partialProgress;
+      double weight;
+
+      if (matchedIndex >= 0 && matchedIndex < candidateWords.length) {
+        final segment = candidateWords[matchedIndex];
+        final spanMs = math.max(
+          90,
+          (segment.end - segment.start).inMilliseconds,
+        );
+        final elapsedMs = (now - segment.start).inMilliseconds;
+        partialProgress = (elapsedMs / spanMs).clamp(0.0, 1.0);
+        final similarity = _wordSimilarity(
+          lineWords[idx],
+          candidateNormalized[matchedIndex],
+        );
+        matchedSimilarity += similarity;
+        matchedTotal++;
+        final confidenceWeight =
+            0.72 + (segment.confidence.clamp(0.0, 1.0) * 0.38);
+        final similarityWeight = 0.65 + (similarity * 0.45);
+        weight = confidenceWeight * similarityWeight;
+      } else {
+        final startMs = lineStartMs + ((lineSpanMs * idx) ~/ wordCount);
+        final endMs = lineStartMs + ((lineSpanMs * (idx + 1)) ~/ wordCount);
+        final spanMs = math.max(90, endMs - startMs);
+        final elapsedMs = now.inMilliseconds - startMs;
+        partialProgress = (elapsedMs / spanMs).clamp(0.0, 1.0);
+        weight = 0.52;
       }
-      if (!found) continue;
+
+      weightedProgress += partialProgress * weight;
+      totalWeight += weight;
     }
 
-    final coverage = matchedTotal / lineWords.length;
-    if (coverage < 0.35) return null;
-    return (matchedCompleted / lineWords.length).clamp(0.0, 1.0);
+    if (matchedTotal == 0 || totalWeight <= 0.0) return null;
+    final coverage = matchedTotal / wordCount;
+    final avgSimilarity = matchedSimilarity / matchedTotal;
+    if (coverage < 0.20 && avgSimilarity < 0.58) return null;
+
+    final wordProgress = (weightedProgress / totalWeight).clamp(0.0, 1.0);
+    final trust = ((coverage * 0.72) + (avgSimilarity * 0.28)).clamp(0.0, 1.0);
+    final fallbackWeight = (0.58 - (trust * 0.46)).clamp(0.14, 0.58);
+    final blended =
+        (wordProgress * (1 - fallbackWeight)) +
+        (fallbackProgress * fallbackWeight);
+    final maxAhead = (fallbackProgress + 0.12 + (trust * 0.16)).clamp(0.0, 1.0);
+    final minBehind = (fallbackProgress - 0.28).clamp(0.0, 1.0);
+    return blended.clamp(minBehind, maxAhead);
   }
 }
 
@@ -3049,8 +3489,8 @@ class _LiveLyricSweepText extends StatelessWidget {
     required this.activeStyle,
   });
 
-  static const Duration _sweepAnimationDuration = Duration(milliseconds: 180);
-  static const double _sweepFeather = 0.07;
+  static const Duration _sweepAnimationDuration = Duration(milliseconds: 280);
+  static const double _sweepFeather = 0.11;
 
   @override
   Widget build(BuildContext context) {
@@ -3167,10 +3607,22 @@ class _LiveLyricSweepText extends StatelessWidget {
       0.0,
       1.0,
     );
-    final softStart = (localProgress - _sweepFeather).clamp(0.0, 1.0);
-    final softEdge = (localProgress + _sweepFeather).clamp(0.0, 1.0);
-    final glowStart = (localProgress - 0.03).clamp(0.0, 1.0);
-    final glowEnd = (localProgress + 0.055).clamp(0.0, 1.0);
+    final easedProgress = Curves.easeInOutCubic.transform(localProgress);
+
+    final softFeather = (_sweepFeather + ((1 - easedProgress) * 0.03)).clamp(
+      0.09,
+      0.15,
+    );
+    final softStart = (easedProgress - softFeather).clamp(0.0, 1.0);
+    final softMidLeft = (easedProgress - (softFeather * 0.42)).clamp(0.0, 1.0);
+    final softMidRight = (easedProgress + (softFeather * 0.42)).clamp(0.0, 1.0);
+    final softEdge = (easedProgress + softFeather).clamp(0.0, 1.0);
+
+    final glowHalf = (0.075 + ((1 - easedProgress) * 0.02)).clamp(0.06, 0.11);
+    final glowStart = (easedProgress - glowHalf).clamp(0.0, 1.0);
+    final glowInnerStart = (easedProgress - (glowHalf * 0.4)).clamp(0.0, 1.0);
+    final glowInnerEnd = (easedProgress + (glowHalf * 0.4)).clamp(0.0, 1.0);
+    final glowEnd = (easedProgress + glowHalf).clamp(0.0, 1.0);
     final baseActiveColor = activeStyle.color ?? const Color(0xFFFFFFFF);
 
     return Padding(
@@ -3193,12 +3645,21 @@ class _LiveLyricSweepText extends StatelessWidget {
                 colors: const [
                   Color(0xFFFFFFFF),
                   Color(0xFFFFFFFF),
-                  Color(0xCCFFFFFF),
-                  Color(0x66FFFFFF),
+                  Color(0xF3FFFFFF),
+                  Color(0xD6FFFFFF),
+                  Color(0x8AFFFFFF),
                   Color(0x00000000),
                   Color(0x00000000),
                 ],
-                stops: [0.0, softStart, localProgress, softEdge, 0.98, 1.0],
+                stops: [
+                  0.0,
+                  softStart,
+                  softMidLeft,
+                  easedProgress,
+                  softMidRight,
+                  softEdge,
+                  1.0,
+                ],
               ).createShader(rect);
             },
             child: Text(
@@ -3218,10 +3679,18 @@ class _LiveLyricSweepText extends StatelessWidget {
                 end: Alignment.centerRight,
                 colors: const [
                   Color(0x00000000),
-                  Color(0xFFFFFFFF),
+                  Color(0x33FFFFFF),
+                  Color(0xE0FFFFFF),
+                  Color(0x33FFFFFF),
                   Color(0x00000000),
                 ],
-                stops: [glowStart, localProgress, glowEnd],
+                stops: [
+                  glowStart,
+                  glowInnerStart,
+                  easedProgress,
+                  glowInnerEnd,
+                  glowEnd,
+                ],
               ).createShader(rect);
             },
             child: Text(
@@ -3230,15 +3699,15 @@ class _LiveLyricSweepText extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: activeStyle.copyWith(
-                color: Colors.white.withValues(alpha: 0.96),
+                color: Colors.white.withValues(alpha: 0.90),
                 shadows: [
                   Shadow(
-                    color: baseActiveColor.withValues(alpha: 0.55),
-                    blurRadius: 11,
+                    color: baseActiveColor.withValues(alpha: 0.40),
+                    blurRadius: 14,
                   ),
                   Shadow(
-                    color: Colors.white.withValues(alpha: 0.35),
-                    blurRadius: 6,
+                    color: Colors.white.withValues(alpha: 0.22),
+                    blurRadius: 8,
                   ),
                 ],
               ),
