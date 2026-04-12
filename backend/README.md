@@ -6,6 +6,7 @@ Backend de fallback para resolver URLs de audio/video cuando YouTube limita soli
 
 - `GET /health`
 - `GET /resolve?videoId=<youtube_video_id>`
+- `POST /stems/separate`
 
 Respuesta de `resolve`:
 
@@ -17,6 +18,25 @@ Respuesta de `resolve`:
   "isVideoSource": false,
   "audio": { "url": "https://..." },
   "muxed": { "url": "https://..." }
+}
+```
+
+Body de `POST /stems/separate`:
+
+```json
+{
+  "trackId": "opcional_id_cancion",
+  "sourceUrl": "https://url-directa-de-audio"
+}
+```
+
+Respuesta:
+
+```json
+{
+  "ok": true,
+  "trackId": "abc123",
+  "instrumentalUrl": "https://<tu-servicio>/stems-files/cache/..."
 }
 ```
 
@@ -32,10 +52,22 @@ Respuesta de `resolve`:
    - `Runtime`: Node
 5. Variables de entorno:
    - opcional `RESOLVER_API_KEY` (si la pones, la app debe enviarla).
+   - opcional `STEMS_ROOT` (default: `/tmp/vmmusic-stems`)
+   - opcional `STEMS_MODEL` (default: `htdemucs_ft`)
+   - opcional `STEMS_PYTHON` (default: `python3`)
+   - opcional `STEMS_TIMEOUT_MS` (default: `720000`)
 6. Deploy.
 7. Prueba:
    - `https://<tu-servicio>.onrender.com/health`
    - `https://<tu-servicio>.onrender.com/resolve?videoId=dQw4w9WgXcQ`
+
+## Requisitos AI Stems (Demucs)
+
+El endpoint de stems usa `backend/scripts/stems_demucs.py`, que requiere:
+
+- Python 3
+- paquete `demucs` instalado en el servidor (`pip install demucs`)
+- `ffmpeg` disponible en PATH
 
 ## Integración Flutter
 
@@ -44,7 +76,9 @@ Ejecuta la app con:
 ```bash
 flutter run \
   --dart-define=YT_RESOLVER_BASE_URL=https://<tu-servicio>.onrender.com \
-  --dart-define=YT_RESOLVER_API_KEY=<tu_key_opcional>
+  --dart-define=YT_RESOLVER_API_KEY=<tu_key_opcional> \
+  --dart-define=STEMS_API_BASE_URL=https://<tu-servicio>.onrender.com \
+  --dart-define=STEMS_API_KEY=<tu_key_opcional>
 ```
 
 > Si no usas `RESOLVER_API_KEY` en Render, omite `YT_RESOLVER_API_KEY`.

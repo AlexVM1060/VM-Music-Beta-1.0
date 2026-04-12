@@ -13,6 +13,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:myapp/audio_handler.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
+import 'package:myapp/services/ai_stems_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
@@ -79,7 +80,7 @@ class _RecommendationSignals {
 
 // Mantiene el nombre para no romper imports, pero ahora gestiona audio estilo app musical.
 class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
-  static const MethodChannel _iosBassBoostChannel = MethodChannel(
+  static const MethodChannel _iosAudioEffectsChannel = MethodChannel(
     'com.vm.music.beta/ios_bass_boost',
   );
   static const _QueueHistoryProfile _emptyHistoryProfile = _QueueHistoryProfile(
@@ -91,9 +92,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final AppSettingsService _settingsService;
   late AudioPlayer _player;
   late AudioPlayer _crossfadePlayer;
-  AndroidLoudnessEnhancer? _androidBassEnhancer;
-  AndroidEqualizer? _androidBassEqualizer;
-  bool _bassBoostConfigured = false;
+  AndroidLoudnessEnhancer? _androidAudioEnhancer;
+  AndroidEqualizer? _androidAudioEqualizer;
+  bool _audioEffectsConfigured = false;
   YoutubeExplode _ytExplode = YoutubeExplode();
   final LyricsService _lyricsService = LyricsService();
   VideoPlayerController? _hiddenVideoController;
@@ -121,7 +122,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _isBuffering = false;
   bool _usingHiddenVideo = false;
   bool _autoplayEnabled = true;
-  bool _bassBoostEnabled = false;
+  bool _karaokeModeEnabled = false;
+  bool _isAiStemsLoading = false;
+  bool _usingAiInstrumental = false;
+  String? _karaokeOriginalStreamUrl;
   bool _isLyricsLayout = false;
   bool _isLyricsLoading = false;
   String? _lyricsText;
@@ -149,11 +153,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, Future<List<PlaybackQueueItem>>> _relatedQueueRequests = {};
   final Map<String, String> _lyricsCache = {};
   final Map<String, List<SyncedLyricLine>> _syncedLyricsCache = {};
+  final Map<String, String> _aiInstrumentalCache = {};
   final Map<String, Duration?> _djFirstLyricOffsetCache = {};
   final Map<String, Future<Duration?>> _djFirstLyricOffsetRequests = {};
   final Map<String, String> _searchThumbnailOverrides = {};
   final NowPlayingArtworkService _nowPlayingArtworkService =
       NowPlayingArtworkService();
+  final AiStemsService _aiStemsService = AiStemsService();
   final Map<String, Uri> _systemArtworkByVideoId = {};
   final Map<String, String> _systemArtworkSourceByVideoId = {};
   final MyAudioHandler? _appAudioHandler;
@@ -197,11 +203,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           ? _audioHandler
           : null {
     if (!kIsWeb && Platform.isAndroid) {
-      _androidBassEnhancer = AndroidLoudnessEnhancer();
-      _androidBassEqualizer = AndroidEqualizer();
+      _androidAudioEnhancer = AndroidLoudnessEnhancer();
+      _androidAudioEqualizer = AndroidEqualizer();
       _player = AudioPlayer(
         audioPipeline: AudioPipeline(
-          androidAudioEffects: [_androidBassEnhancer!, _androidBassEqualizer!],
+          androidAudioEffects: [
+            _androidAudioEnhancer!,
+            _androidAudioEqualizer!,
+          ],
         ),
       );
       _crossfadePlayer = AudioPlayer();
@@ -282,8 +291,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool get isLocal => _isLocal;
   bool get isUsingVideoFallback => _usingHiddenVideo;
   bool get autoplayEnabled => _autoplayEnabled;
-  bool get bassBoostEnabled => _bassBoostEnabled;
-  bool get isBassBoostSupported =>
+  bool get karaokeModeEnabled => _karaokeModeEnabled;
+  bool get isAiStemsLoading => _isAiStemsLoading;
+  bool get isKaraokeSupported =>
       !kIsWeb && (Platform.isAndroid || Platform.isIOS);
   bool get isLyricsLayout => _isLyricsLayout;
   bool get isLyricsLoading => _isLyricsLoading;
@@ -523,7 +533,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     bool isRecoveryAttempt = false,
   }) async {
     _rememberCurrentForHistory();
-    await _disableBassBoostOnTrackChange();
+    _isAiStemsLoading = false;
+    _usingAiInstrumental = false;
+    _karaokeOriginalStreamUrl = null;
     await _resetEngines();
     await _applyPlaybackVolumeSetting();
     _isLoading = true;
@@ -661,7 +673,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (!_autoplayEnabled) {
         _clearQueueForAutoplayDisabled();
       }
-      unawaited(_applyBassBoostEffect());
+      unawaited(_applyAudioEffects());
       if (_autoplayEnabled && !isLocalVideo) {
         unawaited(_warmUpAutoplayQueue(videoId));
       }
@@ -1105,7 +1117,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (!source.isVideoSource) {
       try {
         await _player.setAudioSource(AudioSource.uri(uri, headers: headers));
-        unawaited(_applyBassBoostEffect());
+        unawaited(_applyAudioEffects());
         await _player.play();
         unawaited(_applyTrackStartFadeInIfEnabled());
         _usingHiddenVideo = false;
@@ -2448,7 +2460,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String? localSyncedLyrics,
   }) async {
     _rememberCurrentForHistory();
-    await _disableBassBoostOnTrackChange();
+    _isAiStemsLoading = false;
+    _usingAiInstrumental = false;
+    _karaokeOriginalStreamUrl = null;
     await _resetEngines();
     await _applyPlaybackVolumeSetting();
     _isLoading = true;
@@ -2508,7 +2522,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       await _player.setAudioSource(AudioSource.file(filePath));
-      unawaited(_applyBassBoostEffect());
+      unawaited(_applyAudioEffects());
       // No esperamos a que termine la reproducción para no bloquear la UI.
       unawaited(_playInBackgroundSafely(isLocalPlayback: true, fadeIn: true));
       _sessionPlayedVideoIds.add(id);
@@ -2653,82 +2667,201 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
-  void toggleBassBoost() {
-    if (!isBassBoostSupported) {
-      _bassBoostEnabled = false;
+  void toggleKaraokeMode() {
+    if (!isKaraokeSupported) {
+      _karaokeModeEnabled = false;
       notifyListeners();
       return;
     }
-    _bassBoostEnabled = !_bassBoostEnabled;
-    unawaited(_applyBassBoostEffect());
+    _karaokeModeEnabled = !_karaokeModeEnabled;
+    if (_karaokeModeEnabled) {
+      unawaited(_tryActivateAiInstrumentalKaraoke());
+    } else {
+      unawaited(_restoreOriginalAudioIfUsingAiStems());
+    }
+    unawaited(_applyAudioEffects());
     notifyListeners();
   }
 
-  Future<void> _disableBassBoostOnTrackChange() async {
-    if (!_bassBoostEnabled) return;
-    _bassBoostEnabled = false;
-    await _applyBassBoostEffect();
-    notifyListeners();
-  }
-
-  Future<void> _applyBassBoostEffect() async {
+  Future<void> _applyAudioEffects() async {
     if (kIsWeb) return;
     if (Platform.isIOS) {
       try {
-        await _iosBassBoostChannel.invokeMethod<void>(
-          'setBassBoost',
-          <String, Object>{
-            'enabled': _bassBoostEnabled,
-            'amount': _bassBoostEnabled ? 1.1 : 0.0,
-          },
-        );
-        _bassBoostConfigured = true;
+        await _iosAudioEffectsChannel
+            .invokeMethod<void>('setKaraokeMode', <String, Object>{
+              'enabled': _karaokeModeEnabled && !_usingAiInstrumental,
+              'amount': _karaokeModeEnabled ? 2.0 : 0.0,
+            });
+        _audioEffectsConfigured = true;
       } catch (e, s) {
-        log('No se pudo aplicar Bass Boost en iOS', error: e, stackTrace: s);
-        if (_bassBoostConfigured) return;
-        _bassBoostEnabled = false;
-        _bassBoostConfigured = true;
+        log(
+          'No se pudo aplicar efectos de audio en iOS',
+          error: e,
+          stackTrace: s,
+        );
+        if (_audioEffectsConfigured) return;
+        _karaokeModeEnabled = false;
+        _audioEffectsConfigured = true;
       }
       return;
     }
     if (!Platform.isAndroid) return;
-    final enhancer = _androidBassEnhancer;
-    final equalizer = _androidBassEqualizer;
+    final enhancer = _androidAudioEnhancer;
+    final equalizer = _androidAudioEqualizer;
     if (enhancer == null || equalizer == null) return;
 
     try {
-      await enhancer.setEnabled(_bassBoostEnabled);
-      await equalizer.setEnabled(_bassBoostEnabled);
+      final effectsEnabled = _karaokeModeEnabled && !_usingAiInstrumental;
+      await enhancer.setEnabled(effectsEnabled);
+      await equalizer.setEnabled(effectsEnabled);
 
       final params = await equalizer.parameters;
       final minDb = params.minDecibels;
       final maxDb = params.maxDecibels;
       for (final band in params.bands) {
         double targetGain = 0.0;
-        if (_bassBoostEnabled) {
+        if (effectsEnabled) {
           final f = band.centerFrequency;
-          if (f <= 90) {
-            targetGain = 6.0;
-          } else if (f <= 180) {
-            targetGain = 4.8;
-          } else if (f <= 320) {
-            targetGain = 2.4;
-          } else if (f <= 600) {
-            targetGain = 0.8;
+          if (f <= 120) {
+            targetGain += -4.0;
+          } else if (f <= 250) {
+            targetGain += -2.3;
+          } else if (f <= 500) {
+            targetGain += 0.6;
+          } else if (f <= 1200) {
+            targetGain += 2.7;
+          } else if (f <= 3000) {
+            targetGain += 4.7;
+          } else if (f <= 4500) {
+            targetGain += 3.4;
+          } else if (f <= 8000) {
+            targetGain += 1.5;
           } else {
-            targetGain = 0.0;
+            targetGain += 0.2;
           }
         }
         await band.setGain(targetGain.clamp(minDb, maxDb).toDouble());
       }
 
-      await enhancer.setTargetGain(_bassBoostEnabled ? 1.8 : 0.0);
-      _bassBoostConfigured = true;
+      var enhancerGain = 0.0;
+      if (effectsEnabled) enhancerGain += 1.1;
+      await enhancer.setTargetGain(enhancerGain.clamp(0.0, 2.4));
+      _audioEffectsConfigured = true;
     } catch (e, s) {
-      log('No se pudo aplicar Bass Boost', error: e, stackTrace: s);
-      if (_bassBoostConfigured) return;
-      _bassBoostEnabled = false;
-      _bassBoostConfigured = true;
+      log('No se pudo aplicar efectos de audio', error: e, stackTrace: s);
+      if (_audioEffectsConfigured) return;
+      _karaokeModeEnabled = false;
+      _audioEffectsConfigured = true;
+    }
+  }
+
+  Future<void> _tryActivateAiInstrumentalKaraoke() async {
+    if (!_karaokeModeEnabled) return;
+    if (_isLocal || _usingHiddenVideo) return;
+    if (_isAiStemsLoading) return;
+    if (!_aiStemsService.isConfigured) return;
+
+    final videoId = _currentVideoId?.trim() ?? '';
+    final source = _currentStreamUrl?.trim() ?? '';
+    if (videoId.isEmpty || source.isEmpty) return;
+    if (!source.startsWith('http://') && !source.startsWith('https://')) return;
+
+    final cacheKey = '$videoId::$source';
+    final cached = _aiInstrumentalCache[cacheKey];
+    if (cached != null && cached.isNotEmpty) {
+      await _switchToAiInstrumental(cached);
+      return;
+    }
+
+    _isAiStemsLoading = true;
+    notifyListeners();
+    try {
+      final instrumental = await _aiStemsService.requestInstrumentalUrl(
+        trackId: videoId,
+        sourceUrl: source,
+      );
+      if (instrumental == null || instrumental.isEmpty) return;
+      _aiInstrumentalCache[cacheKey] = instrumental;
+      if (!_karaokeModeEnabled || _currentVideoId != videoId) return;
+      await _switchToAiInstrumental(instrumental);
+    } catch (e, s) {
+      log('No se pudo generar stem instrumental AI', error: e, stackTrace: s);
+    } finally {
+      _isAiStemsLoading = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> _switchToAiInstrumental(String instrumentalUrl) async {
+    if (_usingHiddenVideo) return;
+    final current = _currentStreamUrl?.trim() ?? '';
+    if (_karaokeOriginalStreamUrl == null && current.isNotEmpty) {
+      _karaokeOriginalStreamUrl = current;
+    }
+
+    final uri = Uri.parse(instrumentalUrl);
+    final wasPlaying = _isPlaying;
+    final positionSnapshot = _position;
+    final speedSnapshot = _player.speed;
+
+    await _player.setAudioSource(AudioSource.uri(uri));
+    if (positionSnapshot > Duration.zero) {
+      await _player.seek(positionSnapshot);
+    }
+    if ((speedSnapshot - 1.0).abs() > 0.0001) {
+      await _player.setSpeed(speedSnapshot);
+    }
+    if (wasPlaying) {
+      await _player.play();
+    } else {
+      await _player.pause();
+    }
+
+    _usingAiInstrumental = true;
+    unawaited(_applyAudioEffects());
+    _syncSystemPlaybackState(force: true);
+    notifyListeners();
+  }
+
+  Future<void> _restoreOriginalAudioIfUsingAiStems() async {
+    if (!_usingAiInstrumental) return;
+    final source = _karaokeOriginalStreamUrl?.trim() ?? '';
+    if (source.isEmpty) {
+      _usingAiInstrumental = false;
+      _karaokeOriginalStreamUrl = null;
+      return;
+    }
+
+    try {
+      final uri = Uri.parse(source);
+      final headers = _headersForStreamUri(uri) ?? const <String, String>{};
+      final wasPlaying = _isPlaying;
+      final positionSnapshot = _position;
+      final speedSnapshot = _player.speed;
+      await _player.setAudioSource(AudioSource.uri(uri, headers: headers));
+      if (positionSnapshot > Duration.zero) {
+        await _player.seek(positionSnapshot);
+      }
+      if ((speedSnapshot - 1.0).abs() > 0.0001) {
+        await _player.setSpeed(speedSnapshot);
+      }
+      if (wasPlaying) {
+        await _player.play();
+      } else {
+        await _player.pause();
+      }
+    } catch (e, s) {
+      log(
+        'No se pudo restaurar audio original tras stems AI',
+        error: e,
+        stackTrace: s,
+      );
+    } finally {
+      _usingAiInstrumental = false;
+      _karaokeOriginalStreamUrl = null;
+      unawaited(_applyAudioEffects());
+      _syncSystemPlaybackState(force: true);
+      notifyListeners();
     }
   }
 
@@ -3057,6 +3190,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _resetLyricsState();
     _errorMessage = null;
     _currentStreamUrl = null;
+    _isAiStemsLoading = false;
+    _usingAiInstrumental = false;
+    _karaokeOriginalStreamUrl = null;
     _manualPlaybackQueue = const [];
     _playbackQueue = const [];
     _playbackHistory.clear();
@@ -3221,7 +3357,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         await _player.setAudioSource(
           AudioSource.uri(Uri.parse(streamUrl), headers: _youtubeHeaders),
         );
-        unawaited(_applyBassBoostEffect());
+        unawaited(_applyAudioEffects());
         await _player.seek(position);
         await _player.play();
         unawaited(_applyTrackStartFadeInIfEnabled());

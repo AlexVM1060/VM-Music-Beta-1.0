@@ -19,17 +19,20 @@ class PlaylistAdapter extends TypeAdapter<Playlist> {
     return Playlist(
       name: fields[0] as String,
       videos: (fields[1] as List).cast<VideoHistory>(),
+      coverUrl: fields[2] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Playlist obj) {
     writer
-      ..writeByte(2)
+      ..writeByte(3)
       ..writeByte(0)
       ..write(obj.name)
       ..writeByte(1)
-      ..write(obj.videos);
+      ..write(obj.videos)
+      ..writeByte(2)
+      ..write(obj.coverUrl);
   }
 
   @override

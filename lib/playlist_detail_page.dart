@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/playlist.dart';
 import 'package:myapp/models/video_history.dart';
@@ -9,6 +10,8 @@ import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:collection/collection.dart';
 
@@ -35,6 +38,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     _currentPlaylist = Playlist(
       name: widget.playlist.name,
       videos: List.from(widget.playlist.videos),
+      coverUrl: widget.playlist.coverUrl,
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -111,6 +115,15 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
+        trailing: _isFavoritesPlaylist
+            ? null
+            : CupertinoButton(
+                padding: EdgeInsets.zero,
+                minimumSize: const Size(28, 28),
+                onPressed: () =>
+                    _showEditPlaylistDialog(playlistService: playlistService),
+                child: const Icon(CupertinoIcons.pencil, size: 20),
+              ),
       ),
       body: FutureBuilder<List<DownloadedVideo>>(
         future: downloadService.getDownloadedVideos(),
@@ -592,16 +605,24 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         .resolveFrom(context)
         .withValues(alpha: 0.38);
     final favoritesIcon = CupertinoColors.label.resolveFrom(context);
-    String? cover;
-    String? localCoverPath;
-    for (final video in _currentPlaylist.videos) {
-      cover ??= video.thumbnailUrl;
-      final localPath = downloadedById[video.videoId]?.localThumbnailPath;
-      if (localPath != null &&
-          localPath.isNotEmpty &&
-          File(localPath).existsSync()) {
-        localCoverPath = localPath;
-        break;
+    var cover = _currentPlaylist.coverUrl?.trim();
+    String? localCoverPath =
+        (cover != null &&
+            cover.isNotEmpty &&
+            cover.startsWith('/') &&
+            File(cover).existsSync())
+        ? cover
+        : null;
+    if (cover == null || cover.isEmpty) {
+      for (final video in _currentPlaylist.videos) {
+        cover ??= video.thumbnailUrl;
+        final localPath = downloadedById[video.videoId]?.localThumbnailPath;
+        if (localPath != null &&
+            localPath.isNotEmpty &&
+            File(localPath).existsSync()) {
+          localCoverPath = localPath;
+          break;
+        }
       }
     }
     final hasLocalCover = localCoverPath != null;
@@ -738,6 +759,259 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     } catch (_) {
       return false;
     }
+  }
+
+  Future<void> _showEditPlaylistDialog({
+    required PlaylistService playlistService,
+  }) async {
+    final nameController = TextEditingController(text: _currentPlaylist.name);
+    String? errorText;
+    var selectedCover = (_currentPlaylist.coverUrl ?? '').trim();
+    final pendingDeletes = <String>{};
+
+    try {
+      await showCupertinoDialog<void>(
+        context: context,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (dialogContext, setDialogState) {
+              final hasCover = selectedCover.isNotEmpty;
+              final isLocalCover = hasCover && selectedCover.startsWith('/');
+              final localFile = isLocalCover ? File(selectedCover) : null;
+              final hasLocalFile = localFile != null && localFile.existsSync();
+
+              return CupertinoAlertDialog(
+                title: const Text('Editar playlist'),
+                content: Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Column(
+                    children: [
+                      CupertinoTextField(
+                        controller: nameController,
+                        autofocus: true,
+                        placeholder: 'Nombre de la playlist',
+                        textCapitalization: TextCapitalization.words,
+                        style: const TextStyle(fontFamily: '.SF Pro Text'),
+                      ),
+                      const SizedBox(height: 10),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: SizedBox(
+                          width: 88,
+                          height: 88,
+                          child: hasCover
+                              ? (hasLocalFile
+                                    ? Image.file(localFile, fit: BoxFit.cover)
+                                    : (!isLocalCover
+                                          ? Image.network(
+                                              selectedCover,
+                                              fit: BoxFit.cover,
+                                              errorBuilder: (_, _, _) =>
+                                                  Container(
+                                                    color: CupertinoColors
+                                                        .tertiarySystemFill
+                                                        .resolveFrom(context),
+                                                    alignment: Alignment.center,
+                                                    child: const Icon(
+                                                      CupertinoIcons.photo,
+                                                    ),
+                                                  ),
+                                            )
+                                          : Container(
+                                              color: CupertinoColors
+                                                  .tertiarySystemFill
+                                                  .resolveFrom(context),
+                                              alignment: Alignment.center,
+                                              child: const Icon(
+                                                CupertinoIcons.photo,
+                                              ),
+                                            )))
+                              : Container(
+                                  color: CupertinoColors.tertiarySystemFill
+                                      .resolveFrom(context),
+                                  alignment: Alignment.center,
+                                  child: const Icon(CupertinoIcons.photo),
+                                ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      CupertinoButton(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        minimumSize: const Size(30, 30),
+                        onPressed: () async {
+                          try {
+                            final picker = ImagePicker();
+                            final picked = await picker.pickImage(
+                              source: ImageSource.gallery,
+                              imageQuality: 92,
+                            );
+                            if (picked == null) return;
+                            final copiedPath = await _persistPlaylistCoverImage(
+                              pickedFilePath: picked.path,
+                              playlistName: nameController.text.trim().isEmpty
+                                  ? _currentPlaylist.name
+                                  : nameController.text.trim(),
+                            );
+                            if (!dialogContext.mounted) return;
+                            setDialogState(() {
+                              if (selectedCover.startsWith('/')) {
+                                pendingDeletes.add(selectedCover);
+                              }
+                              selectedCover = copiedPath;
+                              errorText = null;
+                            });
+                          } catch (_) {
+                            if (!dialogContext.mounted) return;
+                            setDialogState(() {
+                              errorText =
+                                  'No se pudo seleccionar la imagen de la galería.';
+                            });
+                          }
+                        },
+                        child: const Text('Elegir de galería'),
+                      ),
+                      if (hasCover)
+                        CupertinoButton(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          minimumSize: const Size(26, 26),
+                          onPressed: () {
+                            setDialogState(() {
+                              if (selectedCover.startsWith('/')) {
+                                pendingDeletes.add(selectedCover);
+                              }
+                              selectedCover = '';
+                            });
+                          },
+                          child: const Text(
+                            'Quitar portada',
+                            style: TextStyle(color: CupertinoColors.systemRed),
+                          ),
+                        ),
+                      if (errorText != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          errorText!,
+                          style: const TextStyle(
+                            color: CupertinoColors.systemRed,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                actions: [
+                  CupertinoDialogAction(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text('Cancelar'),
+                  ),
+                  CupertinoDialogAction(
+                    isDefaultAction: true,
+                    onPressed: () async {
+                      final trimmedName = nameController.text.trim();
+                      if (trimmedName.isEmpty) {
+                        setDialogState(() {
+                          errorText = 'Escribe un nombre válido.';
+                        });
+                        return;
+                      }
+                      try {
+                        final updated = await playlistService
+                            .updatePlaylistDetails(
+                              currentName: _currentPlaylist.name,
+                              newName: trimmedName,
+                              coverUrl: selectedCover,
+                            );
+                        for (final path in pendingDeletes) {
+                          if (path == updated.coverUrl) continue;
+                          unawaited(_deletePlaylistCoverIfOwned(path));
+                        }
+                        if (!mounted) return;
+                        setState(() {
+                          _currentPlaylist = Playlist(
+                            name: updated.name,
+                            videos: List.from(_currentPlaylist.videos),
+                            coverUrl: updated.coverUrl,
+                          );
+                        });
+                        if (!dialogContext.mounted) return;
+                        Navigator.of(dialogContext).pop();
+                        if (!context.mounted) return;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Playlist actualizada correctamente.',
+                            ),
+                          ),
+                        );
+                      } catch (e) {
+                        setDialogState(() {
+                          errorText = e.toString().replaceFirst(
+                            'Exception: ',
+                            '',
+                          );
+                        });
+                      }
+                    },
+                    child: const Text('Guardar'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      nameController.dispose();
+    }
+  }
+
+  Future<String> _persistPlaylistCoverImage({
+    required String pickedFilePath,
+    required String playlistName,
+  }) async {
+    final docsDir = await getApplicationDocumentsDirectory();
+    final coverDir = Directory(p.join(docsDir.path, 'playlist_covers'));
+    if (!await coverDir.exists()) {
+      await coverDir.create(recursive: true);
+    }
+
+    final source = File(pickedFilePath);
+    final ext = p.extension(pickedFilePath).trim().toLowerCase();
+    final safeExt = ext.isEmpty ? '.jpg' : ext;
+    final safeName = playlistName
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    final fileName =
+        '${safeName.isEmpty ? 'playlist' : safeName}_${DateTime.now().millisecondsSinceEpoch}$safeExt';
+    final destination = File(p.join(coverDir.path, fileName));
+    await source.copy(destination.path);
+    return destination.path;
+  }
+
+  Future<void> _deletePlaylistCoverIfOwned(String? maybePath) async {
+    final path = (maybePath ?? '').trim();
+    if (path.isEmpty || !path.startsWith('/')) return;
+    try {
+      final docsDir = await getApplicationDocumentsDirectory();
+      final coverDir = Directory(
+        p.normalize(p.join(docsDir.path, 'playlist_covers')),
+      );
+      final normalizedPath = p.normalize(path);
+      if (!normalizedPath.startsWith(coverDir.path)) return;
+      final file = File(normalizedPath);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {}
   }
 
   Future<void> _syncPlaylistAutoDownloads({

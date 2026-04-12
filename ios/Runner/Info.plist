@@ -28,6 +28,8 @@
 	<true/>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Usamos reconocimiento on-device para sincronizar Live Lyrics con la canción.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Usamos tu galería para elegir una portada personalizada para tus playlists.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

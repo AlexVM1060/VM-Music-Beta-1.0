@@ -19,6 +19,7 @@ import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/artwork_subject_cutout_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:provider/provider.dart';
@@ -260,6 +261,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                           _ArtworkImage(
                             url: widget.manager.trackThumbnailUrl,
                             size: 44,
+                            borderRadius: 10,
                           ),
                           const SizedBox(width: 10),
                           Expanded(
@@ -593,12 +595,6 @@ class _FullPlayer extends StatelessWidget {
                                         isActive: manager.isLyricsLayout,
                                         onPressed: manager.toggleLyricsLayout,
                                       ),
-                                      const SizedBox(width: 8),
-                                      if (manager.isBassBoostSupported)
-                                        _InlineBassBoostButton(
-                                          isActive: manager.bassBoostEnabled,
-                                          onPressed: manager.toggleBassBoost,
-                                        ),
                                       const Spacer(),
                                       _InlineAutoplayButton(
                                         isActive: manager.autoplayEnabled,
@@ -641,117 +637,24 @@ class _FullPlayer extends StatelessWidget {
       return;
     }
 
-    await showModalBottomSheet<void>(
+    final selectedName = await showGlassPlaylistPickerSheet(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) {
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(26),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                child: Container(
-                  constraints: BoxConstraints(
-                    maxHeight: MediaQuery.of(sheetContext).size.height * 0.78,
-                  ),
-                  decoration: BoxDecoration(
-                    color: CupertinoColors.systemGrey6
-                        .resolveFrom(sheetContext)
-                        .withValues(alpha: 0.82),
-                    borderRadius: BorderRadius.circular(26),
-                    border: Border.all(
-                      color: CupertinoColors.white.withValues(alpha: 0.24),
-                      width: 0.7,
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(height: 8),
-                      Container(
-                        width: 42,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: CupertinoColors.systemGrey3
-                              .resolveFrom(sheetContext)
-                              .withValues(alpha: 0.75),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                        child: Row(
-                          children: [
-                            Text(
-                              'Añadir a playlist',
-                              style: CupertinoTheme.of(sheetContext)
-                                  .textTheme
-                                  .navTitleTextStyle
-                                  .copyWith(fontWeight: FontWeight.w700),
-                            ),
-                            const Spacer(),
-                            CupertinoButton(
-                              padding: EdgeInsets.zero,
-                              minimumSize: const Size(34, 34),
-                              onPressed: () => Navigator.of(sheetContext).pop(),
-                              child: Icon(
-                                CupertinoIcons.xmark_circle_fill,
-                                size: 24,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(sheetContext),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Flexible(
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
-                          itemCount: playlists.length,
-                          itemBuilder: (context, index) {
-                            final playlist = playlists[index];
-                            final cover = playlist.videos.isNotEmpty
-                                ? playlist.videos.first.thumbnailUrl
-                                : null;
-                            final isFavorites =
-                                PlaylistService.isFavoritesPlaylistName(
-                                  playlist.name,
-                                );
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: _PlaylistPickerRow(
-                                name: playlist.name,
-                                songsCount: playlist.videos.length,
-                                coverUrl: cover,
-                                isFavorites: isFavorites,
-                                onTap: () {
-                                  Navigator.of(sheetContext).pop();
-                                  _addCurrentTrackToPlaylist(
-                                    context: context,
-                                    playlistService: playlistService,
-                                    downloadService: downloadService,
-                                    manager: manager,
-                                    playlist: playlist,
-                                  );
-                                },
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
+      playlists: playlists,
+      subtitle: manager.trackTitle,
+    );
+    if (!context.mounted || selectedName == null || selectedName.isEmpty) {
+      return;
+    }
+    final selected = playlists.firstWhere(
+      (playlist) => playlist.name == selectedName,
+      orElse: () => app_models.Playlist(name: selectedName),
+    );
+    await _addCurrentTrackToPlaylist(
+      context: context,
+      playlistService: playlistService,
+      downloadService: downloadService,
+      manager: manager,
+      playlist: selected,
     );
   }
 
@@ -1140,145 +1043,6 @@ class _InlineAutoplayButton extends StatefulWidget {
 
   @override
   State<_InlineAutoplayButton> createState() => _InlineAutoplayButtonState();
-}
-
-class _InlineBassBoostButton extends StatefulWidget {
-  final bool isActive;
-  final VoidCallback onPressed;
-
-  const _InlineBassBoostButton({
-    required this.isActive,
-    required this.onPressed,
-  });
-
-  @override
-  State<_InlineBassBoostButton> createState() => _InlineBassBoostButtonState();
-}
-
-class _InlineBassBoostButtonState extends State<_InlineBassBoostButton>
-    with TickerProviderStateMixin {
-  AnimationController? _ringController;
-
-  @override
-  void initState() {
-    super.initState();
-    _ensureController();
-  }
-
-  @override
-  void didUpdateWidget(covariant _InlineBassBoostButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _ensureController();
-    if (oldWidget.isActive == widget.isActive) return;
-    _ringController!.duration = widget.isActive
-        ? const Duration(milliseconds: 1100)
-        : const Duration(milliseconds: 2300);
-    _ringController!
-      ..reset()
-      ..repeat();
-  }
-
-  @override
-  void dispose() {
-    _ringController?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    _ensureController();
-    return AnimatedBuilder(
-      animation: _ringController!,
-      builder: (context, _) {
-        final borderRadius = BorderRadius.circular(14);
-        const warmRed = Color(0xFFE65245);
-        const warmOrange = Color(0xFFFF8A3D);
-        return CupertinoButton(
-          padding: EdgeInsets.zero,
-          minimumSize: Size.zero,
-          onPressed: widget.onPressed,
-          child: Container(
-            padding: const EdgeInsets.all(1.25),
-            decoration: BoxDecoration(
-              borderRadius: borderRadius,
-              gradient: SweepGradient(
-                transform: GradientRotation(
-                  _ringController!.value * 6.28318530718,
-                ),
-                colors: const [
-                  Color(0xFFE65245),
-                  Color(0xFFFF8A3D),
-                  Color(0xFFFFB347),
-                  Color(0xFFD84315),
-                  Color(0xFFE65245),
-                ],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: warmOrange.withValues(
-                    alpha: widget.isActive ? 0.30 : 0.14,
-                  ),
-                  blurRadius: widget.isActive ? 18 : 10,
-                  spreadRadius: widget.isActive ? 0.8 : 0.0,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: borderRadius,
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                child: Container(
-                  height: 30,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  decoration: BoxDecoration(
-                    color: widget.isActive
-                        ? warmRed.withValues(alpha: 0.24)
-                        : CupertinoColors.systemGrey6
-                              .resolveFrom(context)
-                              .withValues(alpha: 0.52),
-                    borderRadius: borderRadius,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        CupertinoIcons.waveform_path_ecg,
-                        size: 14,
-                        color: widget.isActive
-                            ? warmOrange
-                            : CupertinoColors.label.resolveFrom(context),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Bass Boost',
-                        style: CupertinoTheme.of(context).textTheme.textStyle
-                            .copyWith(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: widget.isActive ? warmOrange : null,
-                            ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  void _ensureController() {
-    if (_ringController != null) return;
-    _ringController = AnimationController(
-      vsync: this,
-      duration: widget.isActive
-          ? const Duration(milliseconds: 1100)
-          : const Duration(milliseconds: 2300),
-    )..repeat();
-  }
 }
 
 class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>
@@ -1928,156 +1692,6 @@ class _InlineArtistActionButton extends StatelessWidget {
           icon,
           size: iconSize,
           color: CupertinoColors.label.resolveFrom(context),
-        ),
-      ),
-    );
-  }
-}
-
-class _PlaylistPickerRow extends StatelessWidget {
-  final String name;
-  final int songsCount;
-  final String? coverUrl;
-  final bool isFavorites;
-  final VoidCallback onTap;
-
-  const _PlaylistPickerRow({
-    required this.name,
-    required this.songsCount,
-    required this.coverUrl,
-    required this.isFavorites,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Material(
-          color: Colors.white.withValues(alpha: 0.05),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(16),
-            onTap: onTap,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: CupertinoColors.white.withValues(alpha: 0.18),
-                  width: 0.6,
-                ),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.08),
-                    Colors.white.withValues(alpha: 0.02),
-                  ],
-                ),
-              ),
-              child: Row(
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: SizedBox(
-                      width: 52,
-                      height: 52,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          coverUrl == null || coverUrl!.isEmpty
-                              ? Container(
-                                  color: CupertinoColors.systemGrey4
-                                      .resolveFrom(context),
-                                  alignment: Alignment.center,
-                                  child: Icon(
-                                    isFavorites
-                                        ? CupertinoIcons.star_fill
-                                        : CupertinoIcons.music_note_list,
-                                    size: 20,
-                                    color: CupertinoColors.white,
-                                  ),
-                                )
-                              : SquareThumbnail.network(
-                                  imageUrl: coverUrl!,
-                                  size: 52,
-                                  borderRadius: 0,
-                                  zoom: 0,
-                                  fallback: Container(
-                                    color: CupertinoColors.systemGrey4
-                                        .resolveFrom(context),
-                                    alignment: Alignment.center,
-                                    child: Icon(
-                                      isFavorites
-                                          ? CupertinoIcons.star_fill
-                                          : CupertinoIcons.music_note_list,
-                                      size: 20,
-                                      color: CupertinoColors.white,
-                                    ),
-                                  ),
-                                ),
-                          if (isFavorites)
-                            Align(
-                              alignment: Alignment.topRight,
-                              child: Container(
-                                margin: const EdgeInsets.all(3),
-                                width: 15,
-                                height: 15,
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.42),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  CupertinoIcons.star_fill,
-                                  size: 9,
-                                  color: Color(0xFFFFD24A),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontWeight: FontWeight.w700,
-                            fontSize: 15,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '$songsCount canciones',
-                          style: TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontSize: 12,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(
-                              context,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Icon(
-                    CupertinoIcons.chevron_right,
-                    size: 17,
-                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                  ),
-                ],
-              ),
-            ),
-          ),
         ),
       ),
     );
@@ -2890,17 +2504,36 @@ class _LyricsPanelState extends State<_LyricsPanel> {
               width: 0.5,
             ),
           ),
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
-            child: manager.hasSyncedLyrics
-                ? content
-                : SingleChildScrollView(
-                    key: ValueKey(
-                      '${manager.isLyricsLoading}-${manager.lyricsError}-${manager.lyricsText}',
-                    ),
-                    physics: const BouncingScrollPhysics(),
-                    child: content,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 34),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 220),
+                    child: manager.hasSyncedLyrics
+                        ? content
+                        : SingleChildScrollView(
+                            key: ValueKey(
+                              '${manager.isLyricsLoading}-${manager.lyricsError}-${manager.lyricsText}',
+                            ),
+                            physics: const BouncingScrollPhysics(),
+                            child: content,
+                          ),
                   ),
+                ),
+              ),
+              if (manager.isKaraokeSupported)
+                Positioned(
+                  right: 2,
+                  bottom: 2,
+                  child: _LyricsKaraokeButton(
+                    isActive: manager.karaokeModeEnabled,
+                    isLoading: manager.isAiStemsLoading,
+                    onPressed: manager.toggleKaraokeMode,
+                  ),
+                ),
+            ],
           ),
         ),
       ),
@@ -3475,6 +3108,136 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   }
 }
 
+class _LyricsKaraokeButton extends StatefulWidget {
+  final bool isActive;
+  final bool isLoading;
+  final VoidCallback onPressed;
+
+  const _LyricsKaraokeButton({
+    required this.isActive,
+    required this.isLoading,
+    required this.onPressed,
+  });
+
+  @override
+  State<_LyricsKaraokeButton> createState() => _LyricsKaraokeButtonState();
+}
+
+class _LyricsKaraokeButtonState extends State<_LyricsKaraokeButton>
+    with TickerProviderStateMixin {
+  AnimationController? _ringController;
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureController();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LyricsKaraokeButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _ensureController();
+    if (oldWidget.isActive == widget.isActive) return;
+    _ringController!.duration = widget.isActive
+        ? const Duration(milliseconds: 1200)
+        : const Duration(milliseconds: 2300);
+    _ringController!
+      ..reset()
+      ..repeat();
+  }
+
+  @override
+  void dispose() {
+    _ringController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    _ensureController();
+    return AnimatedBuilder(
+      animation: _ringController!,
+      builder: (context, _) {
+        final borderRadius = BorderRadius.circular(16);
+        const activeColor = Color(0xFFFF4778);
+        const activeSecondary = Color(0xFFFF9B54);
+        return CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: Size.zero,
+          onPressed: widget.onPressed,
+          child: Container(
+            padding: const EdgeInsets.all(1.35),
+            decoration: BoxDecoration(
+              borderRadius: borderRadius,
+              gradient: SweepGradient(
+                transform: GradientRotation(_ringController!.value * 6.2831853),
+                colors: const [
+                  Color(0xFFFF4778),
+                  Color(0xFFFF6B4A),
+                  Color(0xFFFFA43D),
+                  Color(0xFFFF4778),
+                ],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: activeColor.withValues(
+                    alpha: widget.isActive ? 0.36 : 0.16,
+                  ),
+                  blurRadius: widget.isActive ? 16 : 9,
+                  spreadRadius: widget.isActive ? 0.8 : 0.0,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: borderRadius,
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
+                child: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: widget.isActive
+                        ? activeColor.withValues(alpha: 0.24)
+                        : CupertinoColors.systemGrey6
+                              .resolveFrom(context)
+                              .withValues(alpha: 0.52),
+                    borderRadius: borderRadius,
+                  ),
+                  child: widget.isLoading
+                      ? CupertinoActivityIndicator(
+                          radius: 8,
+                          color: widget.isActive
+                              ? activeSecondary
+                              : CupertinoColors.label.resolveFrom(context),
+                        )
+                      : Icon(
+                          CupertinoIcons.mic_fill,
+                          size: 18,
+                          color: widget.isActive
+                              ? activeSecondary
+                              : CupertinoColors.label.resolveFrom(context),
+                        ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _ensureController() {
+    if (_ringController != null) return;
+    _ringController = AnimationController(
+      vsync: this,
+      duration: widget.isActive
+          ? const Duration(milliseconds: 1200)
+          : const Duration(milliseconds: 2300),
+    )..repeat();
+  }
+}
+
 class _LiveLyricSweepText extends StatelessWidget {
   final String text;
   final double progress;
@@ -3725,6 +3488,7 @@ class _ArtworkImage extends StatefulWidget {
   final bool animated;
   final bool isPlaying;
   final double motionEnergy;
+  final double borderRadius;
 
   const _ArtworkImage({
     super.key,
@@ -3733,6 +3497,7 @@ class _ArtworkImage extends StatefulWidget {
     this.animated = false,
     this.isPlaying = false,
     this.motionEnergy = 1.0,
+    this.borderRadius = 20,
   });
 
   @override
@@ -3942,7 +3707,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
                 Positioned.fill(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(widget.borderRadius),
                       boxShadow: [
                         BoxShadow(
                           color: glowColor.withValues(alpha: glow * 0.58),
@@ -3967,7 +3732,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
                   ),
                 ),
               ClipRRect(
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(widget.borderRadius),
                 child: ColoredBox(
                   color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   child: hasImage

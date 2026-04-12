@@ -17,14 +17,20 @@
 #define ERROR_ABORT 10000000
 
 typedef struct {
-    float amount;
+    float bassAmount;
+    float karaokeAmount;
     float alpha;
     BOOL isFloat;
     BOOL isSignedInt16;
     BOOL isInterleaved;
     UInt32 channels;
     float prev[8];
-} VMBassTapData;
+} VMAudioTapData;
+
+typedef struct {
+    float bassAmount;
+    float karaokeAmount;
+} VMAudioTapConfig;
 
 static inline float vm_bass_clamp(float value, float minValue, float maxValue) {
     if (value < minValue) return minValue;
@@ -36,22 +42,61 @@ static inline CMItemCount vm_min_frames(CMItemCount a, CMItemCount b) {
     return a < b ? a : b;
 }
 
+static inline void vm_apply_karaoke_pair(
+    float leftDry,
+    float rightDry,
+    float karaokeAmount,
+    float *leftOut,
+    float *rightOut
+) {
+    const float side = (leftDry - rightDry) * 0.5f;
+    const float center = (leftDry + rightDry) * 0.5f;
+    const float centerCancel = vm_bass_clamp(
+        0.90f + (karaokeAmount * 0.08f),
+        0.90f,
+        0.995f
+    );
+    const float centerKeep = vm_bass_clamp(
+        0.12f - (karaokeAmount * 0.06f),
+        0.02f,
+        0.12f
+    );
+    const float sideBoost = vm_bass_clamp(
+        1.10f + (karaokeAmount * 0.12f),
+        1.10f,
+        1.32f
+    );
+
+    const float reducedCenter = center * (1.0f - centerCancel) * centerKeep;
+    const float wetL = (side * sideBoost) + reducedCenter;
+    const float wetR = (-side * sideBoost) + reducedCenter;
+
+    const float dryMix = vm_bass_clamp(0.16f - (karaokeAmount * 0.07f), 0.03f, 0.16f);
+    const float wetMix = 1.0f - dryMix;
+
+    *leftOut = vm_bass_clamp((leftDry * dryMix) + (wetL * wetMix), -1.0f, 1.0f);
+    *rightOut = vm_bass_clamp((rightDry * dryMix) + (wetR * wetMix), -1.0f, 1.0f);
+}
+
 static void vm_bass_tap_init(
     MTAudioProcessingTapRef tap,
     void *clientInfo,
     void **tapStorageOut
 ) {
-    VMBassTapData *storage = calloc(1, sizeof(VMBassTapData));
-    storage->amount = 0.95f;
+    VMAudioTapData *storage = calloc(1, sizeof(VMAudioTapData));
+    storage->bassAmount = 0.95f;
+    storage->karaokeAmount = 0.0f;
     if (clientInfo != NULL) {
-        storage->amount = *((float *)clientInfo);
-        free(clientInfo);
+        VMAudioTapConfig *cfg = (VMAudioTapConfig *)clientInfo;
+        storage->bassAmount = cfg->bassAmount;
+        storage->karaokeAmount = cfg->karaokeAmount;
+        free(cfg);
     }
     *tapStorageOut = storage;
 }
 
 static void vm_bass_tap_finalize(MTAudioProcessingTapRef tap) {
-    VMBassTapData *storage = (VMBassTapData *)MTAudioProcessingTapGetStorage(tap);
+    VMAudioTapData *storage = (VMAudioTapData *)MTAudioProcessingTapGetStorage(tap);
     if (storage != NULL) {
         free(storage);
     }
@@ -62,7 +107,7 @@ static void vm_bass_tap_prepare(
     CMItemCount maxFrames,
     const AudioStreamBasicDescription *processingFormat
 ) {
-    VMBassTapData *storage = (VMBassTapData *)MTAudioProcessingTapGetStorage(tap);
+    VMAudioTapData *storage = (VMAudioTapData *)MTAudioProcessingTapGetStorage(tap);
     if (storage == NULL || processingFormat == NULL) return;
     storage->channels = processingFormat->mChannelsPerFrame;
     storage->isFloat = (processingFormat->mFormatFlags & kAudioFormatFlagIsFloat) != 0;
@@ -105,13 +150,17 @@ static void vm_bass_tap_process(
     );
     if (status != noErr) return;
 
-    VMBassTapData *storage = (VMBassTapData *)MTAudioProcessingTapGetStorage(tap);
-    if (storage == NULL || storage->amount <= 0.0f || numberFramesOut == NULL) return;
+    VMAudioTapData *storage = (VMAudioTapData *)MTAudioProcessingTapGetStorage(tap);
+    if (storage == NULL || numberFramesOut == NULL) return;
     // Safety: process only formats we explicitly support.
     if (!storage->isFloat && !storage->isSignedInt16) return;
 
     const float alpha = vm_bass_clamp(storage->alpha, 0.0005f, 0.95f);
-    const float amount = vm_bass_clamp(storage->amount, 0.0f, 2.2f);
+    const float bassAmount = vm_bass_clamp(storage->bassAmount, 0.0f, 2.2f);
+    const float karaokeAmount = vm_bass_clamp(storage->karaokeAmount, 0.0f, 1.8f);
+    const BOOL applyBass = bassAmount > 0.0f;
+    const BOOL applyKaraoke = karaokeAmount > 0.0f;
+    if (!applyBass && !applyKaraoke) return;
     const CMItemCount requestedFrames = *numberFramesOut;
     if (requestedFrames <= 0) return;
 
@@ -135,8 +184,28 @@ static void vm_bass_tap_process(
                     const float dry = samples[idx];
                     const float low = storage->prev[channel] + alpha * (dry - storage->prev[channel]);
                     storage->prev[channel] = low;
-                    const float wet = dry + (low * amount);
+                    float wet = dry;
+                    if (applyBass) {
+                        wet = dry + (low * bassAmount);
+                    }
                     samples[idx] = vm_bass_clamp(wet, -1.0f, 1.0f);
+                }
+                if (applyKaraoke && channels >= 2) {
+                    const UInt32 leftIdx = (UInt32)(frame * channels);
+                    const UInt32 rightIdx = leftIdx + 1;
+                    const float leftDry = samples[leftIdx];
+                    const float rightDry = samples[rightIdx];
+                    float outL = leftDry;
+                    float outR = rightDry;
+                    vm_apply_karaoke_pair(
+                        leftDry,
+                        rightDry,
+                        karaokeAmount,
+                        &outL,
+                        &outR
+                    );
+                    samples[leftIdx] = outL;
+                    samples[rightIdx] = outR;
                 }
             }
             return;
@@ -156,8 +225,37 @@ static void vm_bass_tap_process(
                 const float dry = samples[frame];
                 const float low = storage->prev[channel] + alpha * (dry - storage->prev[channel]);
                 storage->prev[channel] = low;
-                const float wet = dry + (low * amount);
+                float wet = dry;
+                if (applyBass) {
+                    wet = dry + (low * bassAmount);
+                }
                 samples[frame] = vm_bass_clamp(wet, -1.0f, 1.0f);
+            }
+        }
+        if (applyKaraoke && bufferListInOut->mNumberBuffers >= 2) {
+            AudioBuffer *leftBuffer = &bufferListInOut->mBuffers[0];
+            AudioBuffer *rightBuffer = &bufferListInOut->mBuffers[1];
+            float *leftSamples = (float *)leftBuffer->mData;
+            float *rightSamples = (float *)rightBuffer->mData;
+            if (leftSamples != NULL && rightSamples != NULL) {
+                const CMItemCount leftFrames = (CMItemCount)(leftBuffer->mDataByteSize / sizeof(float));
+                const CMItemCount rightFrames = (CMItemCount)(rightBuffer->mDataByteSize / sizeof(float));
+                const CMItemCount framesToProcess = vm_min_frames(requestedFrames, vm_min_frames(leftFrames, rightFrames));
+                for (CMItemCount frame = 0; frame < framesToProcess; frame++) {
+                    const float leftDry = leftSamples[frame];
+                    const float rightDry = rightSamples[frame];
+                    float outL = leftDry;
+                    float outR = rightDry;
+                    vm_apply_karaoke_pair(
+                        leftDry,
+                        rightDry,
+                        karaokeAmount,
+                        &outL,
+                        &outR
+                    );
+                    leftSamples[frame] = outL;
+                    rightSamples[frame] = outR;
+                }
             }
         }
         return;
@@ -178,8 +276,28 @@ static void vm_bass_tap_process(
                 const float dry = (float)samples[idx] / 32768.0f;
                 const float low = storage->prev[channel] + alpha * (dry - storage->prev[channel]);
                 storage->prev[channel] = low;
-                const float wet = vm_bass_clamp(dry + (low * amount), -1.0f, 1.0f);
+                float wet = dry;
+                if (applyBass) {
+                    wet = vm_bass_clamp(dry + (low * bassAmount), -1.0f, 1.0f);
+                }
                 samples[idx] = (int16_t)(wet * 32767.0f);
+            }
+            if (applyKaraoke && channels >= 2) {
+                const UInt32 leftIdx = (UInt32)(frame * channels);
+                const UInt32 rightIdx = leftIdx + 1;
+                const float leftDry = (float)samples[leftIdx] / 32768.0f;
+                const float rightDry = (float)samples[rightIdx] / 32768.0f;
+                float outL = leftDry;
+                float outR = rightDry;
+                vm_apply_karaoke_pair(
+                    leftDry,
+                    rightDry,
+                    karaokeAmount,
+                    &outL,
+                    &outR
+                );
+                samples[leftIdx] = (int16_t)(outL * 32767.0f);
+                samples[rightIdx] = (int16_t)(outR * 32767.0f);
             }
         }
         return;
@@ -199,8 +317,37 @@ static void vm_bass_tap_process(
             const float dry = (float)samples[frame] / 32768.0f;
             const float low = storage->prev[channel] + alpha * (dry - storage->prev[channel]);
             storage->prev[channel] = low;
-            const float wet = vm_bass_clamp(dry + (low * amount), -1.0f, 1.0f);
+            float wet = dry;
+            if (applyBass) {
+                wet = vm_bass_clamp(dry + (low * bassAmount), -1.0f, 1.0f);
+            }
             samples[frame] = (int16_t)(wet * 32767.0f);
+        }
+    }
+    if (applyKaraoke && bufferListInOut->mNumberBuffers >= 2) {
+        AudioBuffer *leftBuffer = &bufferListInOut->mBuffers[0];
+        AudioBuffer *rightBuffer = &bufferListInOut->mBuffers[1];
+        int16_t *leftSamples = (int16_t *)leftBuffer->mData;
+        int16_t *rightSamples = (int16_t *)rightBuffer->mData;
+        if (leftSamples != NULL && rightSamples != NULL) {
+            const CMItemCount leftFrames = (CMItemCount)(leftBuffer->mDataByteSize / sizeof(int16_t));
+            const CMItemCount rightFrames = (CMItemCount)(rightBuffer->mDataByteSize / sizeof(int16_t));
+            const CMItemCount framesToProcess = vm_min_frames(requestedFrames, vm_min_frames(leftFrames, rightFrames));
+            for (CMItemCount frame = 0; frame < framesToProcess; frame++) {
+                const float leftDry = (float)leftSamples[frame] / 32768.0f;
+                const float rightDry = (float)rightSamples[frame] / 32768.0f;
+                float outL = leftDry;
+                float outR = rightDry;
+                vm_apply_karaoke_pair(
+                    leftDry,
+                    rightDry,
+                    karaokeAmount,
+                    &outL,
+                    &outR
+                );
+                leftSamples[frame] = (int16_t)(outL * 32767.0f);
+                rightSamples[frame] = (int16_t)(outR * 32767.0f);
+            }
         }
     }
     return;
@@ -247,6 +394,8 @@ static void vm_bass_tap_process(
     NSString *_errorMessage;
     BOOL _bassBoostEnabled;
     float _bassBoostAmount;
+    BOOL _karaokeEnabled;
+    float _karaokeAmount;
 }
 
 - (instancetype)initWithRegistrar:(NSObject<FlutterPluginRegistrar> *)registrar playerId:(NSString*)idParam loadConfiguration:(NSDictionary *)loadConfiguration useLazyPreparation:(BOOL)useLazyPreparation {
@@ -311,6 +460,8 @@ static void vm_bass_tap_process(
     _errorMessage = (NSString *)[NSNull null];
     _bassBoostEnabled = NO;
     _bassBoostAmount = 0.95f;
+    _karaokeEnabled = NO;
+    _karaokeAmount = 1.0f;
     __weak __typeof__(self) weakSelf = self;
     [_methodChannel setMethodCallHandler:^(FlutterMethodCall* call, FlutterResult result) {
         [weakSelf handleMethodCall:call result:result];
@@ -397,23 +548,29 @@ static void vm_bass_tap_process(
 - (void)setBassBoostEnabled:(BOOL)enabled amount:(float)amount {
     _bassBoostEnabled = enabled;
     _bassBoostAmount = vm_bass_clamp(amount, 0.0f, 2.2f);
-    [self applyBassBoostToAllItems];
+    [self applyAudioProcessingToAllItems];
 }
 
-- (void)applyBassBoostToAllItems {
+- (void)setKaraokeEnabled:(BOOL)enabled amount:(float)amount {
+    _karaokeEnabled = enabled;
+    _karaokeAmount = vm_bass_clamp(amount, 0.0f, 1.8f);
+    [self applyAudioProcessingToAllItems];
+}
+
+- (void)applyAudioProcessingToAllItems {
     if (_player == nil) return;
     NSMutableArray<AVPlayerItem *> *items = [NSMutableArray arrayWithArray:_player.items];
     if (_player.currentItem != nil && ![items containsObject:_player.currentItem]) {
         [items addObject:_player.currentItem];
     }
     for (AVPlayerItem *item in items) {
-        [self applyBassBoostToPlayerItem:item];
+        [self applyAudioProcessingToPlayerItem:item];
     }
 }
 
-- (void)applyBassBoostToPlayerItem:(AVPlayerItem *)playerItem {
+- (void)applyAudioProcessingToPlayerItem:(AVPlayerItem *)playerItem {
     if (playerItem == nil) return;
-    if (!_bassBoostEnabled) {
+    if (!_bassBoostEnabled && !_karaokeEnabled) {
         playerItem.audioMix = nil;
         return;
     }
@@ -424,13 +581,14 @@ static void vm_bass_tap_process(
     AVMutableAudioMixInputParameters *inputParams =
         [AVMutableAudioMixInputParameters audioMixInputParametersWithTrack:audioTracks.firstObject];
 
-    float *amountPtr = malloc(sizeof(float));
-    if (amountPtr == NULL) return;
-    *amountPtr = _bassBoostAmount;
+    VMAudioTapConfig *configPtr = malloc(sizeof(VMAudioTapConfig));
+    if (configPtr == NULL) return;
+    configPtr->bassAmount = _bassBoostEnabled ? _bassBoostAmount : 0.0f;
+    configPtr->karaokeAmount = _karaokeEnabled ? _karaokeAmount : 0.0f;
 
     MTAudioProcessingTapCallbacks callbacks;
     callbacks.version = kMTAudioProcessingTapCallbacksVersion_0;
-    callbacks.clientInfo = amountPtr;
+    callbacks.clientInfo = configPtr;
     callbacks.init = vm_bass_tap_init;
     callbacks.finalize = vm_bass_tap_finalize;
     callbacks.prepare = vm_bass_tap_prepare;
@@ -445,7 +603,7 @@ static void vm_bass_tap_process(
         &tap
     );
     if (tapStatus != noErr || tap == NULL) {
-        free(amountPtr);
+        free(configPtr);
         return;
     }
     inputParams.audioTapProcessor = tap;
@@ -1052,7 +1210,7 @@ static void vm_bass_tap_process(
         [playerItem.audioSource onStatusChanged:status];
         switch (status) {
             case AVPlayerItemStatusReadyToPlay: {
-                [self applyBassBoostToPlayerItem:playerItem];
+                [self applyAudioProcessingToPlayerItem:playerItem];
                 if (playerItem != _player.currentItem) return;
                 // Detect buffering in different ways depending on whether we're playing
                 if (_playing) {
@@ -1166,7 +1324,7 @@ static void vm_bass_tap_process(
     } else if ([keyPath isEqualToString:@"currentItem"] && _player.currentItem) {
         //NSLog(@"currentItem -> [%d]", [self indexForItem:_player.currentItem]);
         IndexedPlayerItem *playerItem = (IndexedPlayerItem *)change[NSKeyValueChangeNewKey];
-        [self applyBassBoostToPlayerItem:playerItem];
+        [self applyAudioProcessingToPlayerItem:playerItem];
         //IndexedPlayerItem *oldPlayerItem = (IndexedPlayerItem *)change[NSKeyValueChangeOldKey];
         if (playerItem.status == AVPlayerItemStatusFailed) {
             [self sendErrorForItem:playerItem];

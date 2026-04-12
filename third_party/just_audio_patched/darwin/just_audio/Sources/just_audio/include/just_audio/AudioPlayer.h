@@ -13,6 +13,7 @@
 - (instancetype)initWithRegistrar:(NSObject<FlutterPluginRegistrar> *)registrar playerId:(NSString*)idParam loadConfiguration:(NSDictionary *)loadConfiguration useLazyPreparation:(BOOL)useLazyPreparation;
 - (void)dispose:(BOOL)calledFromDealloc;
 - (void)setBassBoostEnabled:(BOOL)enabled amount:(float)amount;
+- (void)setKaraokeEnabled:(BOOL)enabled amount:(float)amount;
 
 @end
 

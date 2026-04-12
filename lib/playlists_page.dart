@@ -36,8 +36,10 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
 
   void _loadPlaylists() {
     setState(() {
-      _playlistsFuture =
-          Provider.of<PlaylistService>(context, listen: false).getPlaylists();
+      _playlistsFuture = Provider.of<PlaylistService>(
+        context,
+        listen: false,
+      ).getPlaylists();
     });
   }
 
@@ -67,12 +69,14 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
               isDefaultAction: true,
               onPressed: () async {
                 if (controller.text.isNotEmpty) {
-                  await Provider.of<PlaylistService>(context, listen: false)
-                      .createPlaylist(controller.text);
-                  
+                  await Provider.of<PlaylistService>(
+                    context,
+                    listen: false,
+                  ).createPlaylist(controller.text);
+
                   // Comprobación de seguridad
                   if (!context.mounted) return;
-                  
+
                   Navigator.of(context).pop();
                   _loadPlaylists();
                 }
@@ -95,252 +99,325 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
           return const Center(child: CupertinoActivityIndicator(radius: 14));
         }
         if (snapshot.hasError) {
-          return const Center(child: Text('No se pudieron cargar las playlists.'));
+          return const Center(
+            child: Text('No se pudieron cargar las playlists.'),
+          );
         }
 
         final playlists = snapshot.data ?? const <Playlist>[];
         return FutureBuilder<List<DownloadedVideo>>(
           future: downloadService.getDownloadedVideos(),
           builder: (context, downloadedSnapshot) {
-            final downloadedVideos = downloadedSnapshot.data ?? const <DownloadedVideo>[];
+            final downloadedVideos =
+                downloadedSnapshot.data ?? const <DownloadedVideo>[];
             final downloadedById = <String, DownloadedVideo>{
               for (final item in downloadedVideos) item.videoId: item,
             };
             return Column(
               children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
-              child: Align(
-                alignment: Alignment.centerRight,
-                child: CupertinoButton(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  minimumSize: const Size(30, 30),
-                  color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
-                  borderRadius: BorderRadius.circular(12),
-                  onPressed: _createPlaylist,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        CupertinoIcons.add,
-                        size: 16,
-                        color: CupertinoColors.systemPink.resolveFrom(context),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: CupertinoButton(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
                       ),
-                      const SizedBox(width: 6),
-                      const Text(
-                        'Nueva playlist',
-                        style: TextStyle(
-                          fontFamily: '.SF Pro Text',
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                        ),
+                      minimumSize: const Size(30, 30),
+                      color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                        context,
                       ),
-                    ],
+                      borderRadius: BorderRadius.circular(12),
+                      onPressed: _createPlaylist,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            CupertinoIcons.add,
+                            size: 16,
+                            color: CupertinoColors.systemPink.resolveFrom(
+                              context,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Nueva playlist',
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontWeight: FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
-              ),
-            ),
-            Expanded(
-              child: playlists.isEmpty
-                  ? const Center(child: Text('No tienes playlists.'))
-                  : ListView.builder(
-                      padding: EdgeInsets.fromLTRB(
-                        12,
-                        8,
-                        12,
-                        _accountBottomOverlayReserve(context),
-                      ),
-                      itemCount: playlists.length,
-                      itemBuilder: (context, index) {
-                        final isDark = Theme.of(context).brightness == Brightness.dark;
-                        final cardColor = isDark
-                            ? Colors.black
-                            : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
-                                context,
-                              );
-                        final cardBorder = isDark
-                            ? Colors.white.withValues(alpha: 0.12)
-                            : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
-                        final playlist = playlists[index];
-                        final isFavorites =
-                            PlaylistService.isFavoritesPlaylistName(playlist.name);
-                        String? cover;
-                        String? localCoverPath;
-                        for (final video in playlist.videos) {
-                          cover ??= video.thumbnailUrl;
-                          final localPath = downloadedById[video.videoId]?.localThumbnailPath;
-                          if (localPath != null &&
-                              localPath.isNotEmpty &&
-                              File(localPath).existsSync()) {
-                            localCoverPath = localPath;
-                            break;
-                          }
-                        }
-                        final hasLocalCover = localCoverPath != null;
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2.0),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(14),
-                            child: Material(
-                              color: cardColor,
-                              surfaceTintColor: Colors.transparent,
-                              child: InkWell(
+                Expanded(
+                  child: playlists.isEmpty
+                      ? const Center(child: Text('No tienes playlists.'))
+                      : ListView.builder(
+                          padding: EdgeInsets.fromLTRB(
+                            12,
+                            8,
+                            12,
+                            _accountBottomOverlayReserve(context),
+                          ),
+                          itemCount: playlists.length,
+                          itemBuilder: (context, index) {
+                            final isDark =
+                                Theme.of(context).brightness == Brightness.dark;
+                            final cardColor = isDark
+                                ? Colors.black
+                                : CupertinoColors
+                                      .secondarySystemGroupedBackground
+                                      .resolveFrom(context);
+                            final cardBorder = isDark
+                                ? Colors.white.withValues(alpha: 0.12)
+                                : CupertinoColors.separator
+                                      .resolveFrom(context)
+                                      .withValues(alpha: 0.12);
+                            final playlist = playlists[index];
+                            final isFavorites =
+                                PlaylistService.isFavoritesPlaylistName(
+                                  playlist.name,
+                                );
+                            var cover = playlist.coverUrl?.trim();
+                            String? localCoverPath =
+                                (cover != null &&
+                                    cover.isNotEmpty &&
+                                    cover.startsWith('/') &&
+                                    File(cover).existsSync())
+                                ? cover
+                                : null;
+                            if (cover == null || cover.isEmpty) {
+                              for (final video in playlist.videos) {
+                                cover ??= video.thumbnailUrl;
+                                final localPath = downloadedById[video.videoId]
+                                    ?.localThumbnailPath;
+                                if (localPath != null &&
+                                    localPath.isNotEmpty &&
+                                    File(localPath).existsSync()) {
+                                  localCoverPath = localPath;
+                                  break;
+                                }
+                              }
+                            }
+                            final hasLocalCover = localCoverPath != null;
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 2.0,
+                              ),
+                              child: ClipRRect(
                                 borderRadius: BorderRadius.circular(14),
-                                onTap: () {
-                                  if (widget.onOpenPlaylist != null) {
-                                    widget.onOpenPlaylist!(playlist);
-                                    return;
-                                  }
-                                  context
-                                      .push('/playlist', extra: playlist)
-                                      .then((_) => _loadPlaylists());
-                                },
-                                child: Container(
-                                  decoration: BoxDecoration(
+                                child: Material(
+                                  color: cardColor,
+                                  surfaceTintColor: Colors.transparent,
+                                  child: InkWell(
                                     borderRadius: BorderRadius.circular(14),
-                                    border: Border.all(
-                                      color: cardBorder,
-                                      width: 0.5,
-                                    ),
-                                  ),
-                                  padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
-                                  child: Row(
-                                    children: [
-                                        ClipRRect(
-                                          borderRadius: BorderRadius.circular(10.0),
-                                          child: SizedBox(
-                                            width: 64,
-                                            height: 64,
-                                            child: Stack(
-                                              fit: StackFit.expand,
-                                              children: [
-                                                (cover == null || cover.isEmpty) && !hasLocalCover
-                                                    ? Container(
-                                                        color: CupertinoColors
-                                                            .tertiarySystemFill
-                                                            .resolveFrom(context),
-                                                        alignment: Alignment.center,
-                                                        child: Icon(
-                                                          isFavorites
-                                                              ? CupertinoIcons.star_fill
-                                                              : CupertinoIcons.music_note_list,
-                                                        ),
-                                                      )
-                                                    : hasLocalCover
-                                                        ? SquareThumbnail.file(
-                                                            filePath: localCoverPath,
-                                                            size: 74,
-                                                            borderRadius: 0,
-                                                            fallback:
-                                                                cover == null || cover.isEmpty
-                                                                    ? Container(
-                                                                        color: CupertinoColors
-                                                                            .tertiarySystemFill
-                                                                            .resolveFrom(context),
-                                                                        alignment: Alignment.center,
-                                                                        child: Icon(
-                                                                          isFavorites
-                                                                              ? CupertinoIcons.star_fill
-                                                                              : CupertinoIcons.music_note_list,
-                                                                        ),
-                                                                      )
-                                                                    : SquareThumbnail.network(
-                                                                        imageUrl: cover,
-                                                                        size: 74,
-                                                                        borderRadius: 0,
-                                                                        fallback: Container(
-                                                                          color: CupertinoColors
-                                                                              .tertiarySystemFill
-                                                                              .resolveFrom(context),
-                                                                        ),
-                                                                      ),
-                                                          )
-                                                        : SquareThumbnail.network(
-                                                            imageUrl: cover!,
-                                                            size: 74,
-                                                            borderRadius: 0,
-                                                            fallback: Container(
-                                                              color: CupertinoColors
-                                                                  .tertiarySystemFill
-                                                                  .resolveFrom(context),
-                                                              alignment: Alignment.center,
-                                                              child: Icon(
-                                                                isFavorites
-                                                                    ? CupertinoIcons.star_fill
-                                                                    : CupertinoIcons.music_note_list,
+                                    onTap: () {
+                                      if (widget.onOpenPlaylist != null) {
+                                        widget.onOpenPlaylist!(playlist);
+                                        return;
+                                      }
+                                      context
+                                          .push('/playlist', extra: playlist)
+                                          .then((_) => _loadPlaylists());
+                                    },
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(14),
+                                        border: Border.all(
+                                          color: cardBorder,
+                                          width: 0.5,
+                                        ),
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12.0,
+                                        vertical: 5.0,
+                                      ),
+                                      child: Row(
+                                        children: [
+                                          ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              10.0,
+                                            ),
+                                            child: SizedBox(
+                                              width: 64,
+                                              height: 64,
+                                              child: Stack(
+                                                fit: StackFit.expand,
+                                                children: [
+                                                  (cover == null ||
+                                                              cover.isEmpty) &&
+                                                          !hasLocalCover
+                                                      ? Container(
+                                                          color: CupertinoColors
+                                                              .tertiarySystemFill
+                                                              .resolveFrom(
+                                                                context,
                                                               ),
+                                                          alignment:
+                                                              Alignment.center,
+                                                          child: Icon(
+                                                            isFavorites
+                                                                ? CupertinoIcons
+                                                                      .star_fill
+                                                                : CupertinoIcons
+                                                                      .music_note_list,
+                                                          ),
+                                                        )
+                                                      : hasLocalCover
+                                                      ? SquareThumbnail.file(
+                                                          filePath:
+                                                              localCoverPath,
+                                                          size: 74,
+                                                          borderRadius: 0,
+                                                          fallback:
+                                                              cover == null ||
+                                                                  cover.isEmpty
+                                                              ? Container(
+                                                                  color: CupertinoColors
+                                                                      .tertiarySystemFill
+                                                                      .resolveFrom(
+                                                                        context,
+                                                                      ),
+                                                                  alignment:
+                                                                      Alignment
+                                                                          .center,
+                                                                  child: Icon(
+                                                                    isFavorites
+                                                                        ? CupertinoIcons
+                                                                              .star_fill
+                                                                        : CupertinoIcons
+                                                                              .music_note_list,
+                                                                  ),
+                                                                )
+                                                              : SquareThumbnail.network(
+                                                                  imageUrl:
+                                                                      cover,
+                                                                  size: 74,
+                                                                  borderRadius:
+                                                                      0,
+                                                                  fallback: Container(
+                                                                    color: CupertinoColors
+                                                                        .tertiarySystemFill
+                                                                        .resolveFrom(
+                                                                          context,
+                                                                        ),
+                                                                  ),
+                                                                ),
+                                                        )
+                                                      : SquareThumbnail.network(
+                                                          imageUrl: cover!,
+                                                          size: 74,
+                                                          borderRadius: 0,
+                                                          fallback: Container(
+                                                            color: CupertinoColors
+                                                                .tertiarySystemFill
+                                                                .resolveFrom(
+                                                                  context,
+                                                                ),
+                                                            alignment: Alignment
+                                                                .center,
+                                                            child: Icon(
+                                                              isFavorites
+                                                                  ? CupertinoIcons
+                                                                        .star_fill
+                                                                  : CupertinoIcons
+                                                                        .music_note_list,
                                                             ),
                                                           ),
-                                                if (isFavorites)
-                                                  Align(
-                                                    alignment: Alignment.topRight,
-                                                    child: Container(
-                                                      margin: const EdgeInsets.all(4),
-                                                      width: 16,
-                                                      height: 16,
-                                                      decoration: BoxDecoration(
-                                                        color: CupertinoColors.label
-                                                            .resolveFrom(context)
-                                                            .withValues(alpha: 0.32),
-                                                        shape: BoxShape.circle,
-                                                      ),
-                                                      child: Icon(
-                                                        CupertinoIcons.star_fill,
-                                                        color: CupertinoColors.systemBackground
-                                                            .resolveFrom(context),
-                                                        size: 10,
+                                                        ),
+                                                  if (isFavorites)
+                                                    Align(
+                                                      alignment:
+                                                          Alignment.topRight,
+                                                      child: Container(
+                                                        margin:
+                                                            const EdgeInsets.all(
+                                                              4,
+                                                            ),
+                                                        width: 16,
+                                                        height: 16,
+                                                        decoration: BoxDecoration(
+                                                          color: CupertinoColors
+                                                              .label
+                                                              .resolveFrom(
+                                                                context,
+                                                              )
+                                                              .withValues(
+                                                                alpha: 0.32,
+                                                              ),
+                                                          shape:
+                                                              BoxShape.circle,
+                                                        ),
+                                                        child: Icon(
+                                                          CupertinoIcons
+                                                              .star_fill,
+                                                          color: CupertinoColors
+                                                              .systemBackground
+                                                              .resolveFrom(
+                                                                context,
+                                                              ),
+                                                          size: 10,
+                                                        ),
                                                       ),
                                                     ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 16),
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  playlist.name,
+                                                  style: const TextStyle(
+                                                    fontFamily: '.SF Pro Text',
+                                                    fontSize: 16,
+                                                    fontWeight: FontWeight.w700,
+                                                    letterSpacing: -0.1,
                                                   ),
+                                                  maxLines: 2,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Text(
+                                                  '${playlist.videos.length} canciones',
+                                                  style: TextStyle(
+                                                    fontFamily: '.SF Pro Text',
+                                                    fontSize: 13,
+                                                    color: CupertinoColors
+                                                        .secondaryLabel
+                                                        .resolveFrom(context),
+                                                  ),
+                                                ),
                                               ],
                                             ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 16),
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                playlist.name,
-                                                style: const TextStyle(
-                                                  fontFamily: '.SF Pro Text',
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.w700,
-                                                  letterSpacing: -0.1,
-                                                ),
-                                                maxLines: 2,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                              const SizedBox(height: 4),
-                                              Text(
-                                                '${playlist.videos.length} canciones',
-                                                style: TextStyle(
-                                                  fontFamily: '.SF Pro Text',
-                                                  fontSize: 13,
-                                                  color: CupertinoColors.secondaryLabel
-                                                      .resolveFrom(context),
-                                                ),
-                                              ),
-                                            ],
+                                          const SizedBox(width: 8),
+                                          Icon(
+                                            CupertinoIcons.chevron_right,
+                                            size: 18,
+                                            color: CupertinoColors.tertiaryLabel
+                                                .resolveFrom(context),
                                           ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Icon(
-                                          CupertinoIcons.chevron_right,
-                                          size: 18,
-                                          color: CupertinoColors.tertiaryLabel.resolveFrom(context),
-                                        ),
-                                    ],
+                                        ],
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
+                            );
+                          },
+                        ),
+                ),
               ],
             );
           },

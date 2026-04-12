@@ -13,6 +13,7 @@ import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -456,36 +457,10 @@ class _HomePageState extends State<HomePage> {
     final playlists = await playlistService.getPlaylists();
     if (!mounted || playlists.isEmpty) return;
 
-    final selectedName = await showCupertinoModalPopup<String>(
+    final selectedName = await showGlassPlaylistPickerSheet(
       context: context,
-      builder: (sheetContext) {
-        return CupertinoActionSheet(
-          title: const Text('Añadir a playlist'),
-          message: Text(
-            track.title,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          actions: playlists
-              .map(
-                (playlist) => CupertinoActionSheetAction(
-                  onPressed: () =>
-                      Navigator.of(sheetContext).pop(playlist.name),
-                  child: Text(
-                    PlaylistService.isFavoritesPlaylistName(playlist.name)
-                        ? 'Favoritos'
-                        : playlist.name,
-                  ),
-                ),
-              )
-              .toList(growable: false),
-          cancelButton: CupertinoActionSheetAction(
-            onPressed: () => Navigator.of(sheetContext).pop(),
-            isDefaultAction: true,
-            child: const Text('Cancelar'),
-          ),
-        );
-      },
+      playlists: playlists,
+      subtitle: track.title,
     );
     if (!mounted || selectedName == null || selectedName.isEmpty) return;
 

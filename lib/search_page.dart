@@ -12,6 +12,7 @@ import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -53,7 +54,8 @@ class SearchPage extends StatefulWidget {
   State<SearchPage> createState() => _SearchPageState();
 }
 
-class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateMixin {
+class _SearchPageState extends State<SearchPage>
+    with SingleTickerProviderStateMixin {
   static const int _minimumSubscribers = 100000;
   static const int _maxChannelsToShow = 2;
   final TextEditingController _textController = TextEditingController();
@@ -151,10 +153,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       setState(() {
         _videos = cached;
         _channels = cachedChannels;
-        _searchState =
-            cached.isEmpty && cachedChannels.isEmpty
-                ? SearchState.noResults
-                : SearchState.success;
+        _searchState = cached.isEmpty && cachedChannels.isEmpty
+            ? SearchState.noResults
+            : SearchState.success;
       });
       return;
     }
@@ -176,10 +177,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
           if (!mounted || epoch != _searchEpoch) return;
           setState(() {
             _channels = channelResult;
-            _searchState =
-                _videos.isEmpty && channelResult.isEmpty
-                    ? SearchState.noResults
-                    : SearchState.success;
+            _searchState = _videos.isEmpty && channelResult.isEmpty
+                ? SearchState.noResults
+                : SearchState.success;
           });
         } catch (_) {
           // Ignoramos: la búsqueda de videos puede seguir funcionando.
@@ -190,9 +190,12 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _videos = searchResult.toList();
-        _channels = _channels.isNotEmpty ? _channels : (cachedChannels ?? const []);
-        _searchState =
-            _videos.isEmpty && _channels.isEmpty ? SearchState.noResults : SearchState.success;
+        _channels = _channels.isNotEmpty
+            ? _channels
+            : (cachedChannels ?? const []);
+        _searchState = _videos.isEmpty && _channels.isEmpty
+            ? SearchState.noResults
+            : SearchState.success;
       });
 
       // Si canales aún no termina, esperamos su resultado final.
@@ -200,10 +203,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _channels = channelResult;
-        _searchState =
-            _videos.isEmpty && channelResult.isEmpty
-                ? SearchState.noResults
-                : SearchState.success;
+        _searchState = _videos.isEmpty && channelResult.isEmpty
+            ? SearchState.noResults
+            : SearchState.success;
       });
     } catch (e) {
       if (mounted) {
@@ -261,11 +263,7 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       // Si falla historial, usamos fallback.
     }
 
-    const fallbackQueries = [
-      'Regional mexicano',
-      'musica en ingles',
-      'rels b',
-    ];
+    const fallbackQueries = ['Regional mexicano', 'musica en ingles', 'rels b'];
     return fallbackQueries[math.Random().nextInt(fallbackQueries.length)];
   }
 
@@ -322,7 +320,8 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     if (!mounted) return;
     if (local != null) {
       final thumb =
-          (local.localThumbnailPath != null && local.localThumbnailPath!.isNotEmpty)
+          (local.localThumbnailPath != null &&
+              local.localThumbnailPath!.isNotEmpty)
           ? local.localThumbnailPath!
           : local.thumbnailUrl;
       await videoManager.playLocalFile(
@@ -356,8 +355,12 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     if (!mounted) return;
     _showIosTopToast(
       context,
-      message: added ? 'Se ha añadido a la cola' : 'Esta canción ya está en cola',
-      icon: added ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.info_circle_fill,
+      message: added
+          ? 'Se ha añadido a la cola'
+          : 'Esta canción ya está en cola',
+      icon: added
+          ? CupertinoIcons.check_mark_circled_solid
+          : CupertinoIcons.info_circle_fill,
     );
   }
 
@@ -380,7 +383,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir el perfil del artista.')),
+        const SnackBar(
+          content: Text('No se pudo abrir el perfil del artista.'),
+        ),
       );
     }
   }
@@ -510,108 +515,10 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     final playlists = await playlistService.getPlaylists();
     if (!mounted || playlists.isEmpty) return;
 
-    final selectedName = await showModalBottomSheet<String>(
+    final selectedName = await showGlassPlaylistPickerSheet(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) {
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(26),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                child: Container(
-                  constraints: BoxConstraints(
-                    maxHeight: MediaQuery.of(sheetContext).size.height * 0.78,
-                  ),
-                  decoration: BoxDecoration(
-                    color: CupertinoColors.systemGrey6
-                        .resolveFrom(sheetContext)
-                        .withValues(alpha: 0.82),
-                    borderRadius: BorderRadius.circular(26),
-                    border: Border.all(
-                      color: CupertinoColors.white.withValues(alpha: 0.24),
-                      width: 0.7,
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(height: 8),
-                      Container(
-                        width: 42,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: CupertinoColors.systemGrey3
-                              .resolveFrom(sheetContext)
-                              .withValues(alpha: 0.75),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                        child: Row(
-                          children: [
-                            Text(
-                              'Añadir a playlist',
-                              style: CupertinoTheme.of(sheetContext)
-                                  .textTheme
-                                  .navTitleTextStyle
-                                  .copyWith(fontWeight: FontWeight.w700),
-                            ),
-                            const Spacer(),
-                            CupertinoButton(
-                              padding: EdgeInsets.zero,
-                              minimumSize: const Size(34, 34),
-                              onPressed: () => Navigator.of(sheetContext).pop(),
-                              child: Icon(
-                                CupertinoIcons.xmark_circle_fill,
-                                size: 24,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(sheetContext),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Flexible(
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
-                          itemCount: playlists.length,
-                          itemBuilder: (context, index) {
-                            final playlist = playlists[index];
-                            final cover = playlist.videos.isNotEmpty
-                                ? playlist.videos.first.thumbnailUrl
-                                : null;
-                            final isFavorites = PlaylistService
-                                .isFavoritesPlaylistName(playlist.name);
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: _GlassPlaylistPickerRow(
-                                name: playlist.name,
-                                songsCount: playlist.videos.length,
-                                coverUrl: cover,
-                                isFavorites: isFavorites,
-                                onTap: () => Navigator.of(sheetContext).pop(
-                                  playlist.name,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
+      playlists: playlists,
+      subtitle: video.title,
     );
     if (!mounted || selectedName == null || selectedName.isEmpty) return;
     await _addVideoToPlaylist(video, selectedName);
@@ -685,19 +592,16 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
 
     // Si ya hay suficientes candidatos, devolvemos rápido.
     if (scoresById.length < 18 && queries.length > phase1Count) {
-      final phase2 = List.generate(
-        queries.length - phase1Count,
-        (offset) {
-          final index = phase1Count + offset;
-          return _collectSearchBatch(
-            searchQuery: queries[index],
-            queryIndex: index,
-            originalQuery: query,
-            videosById: videosById,
-            scoresById: scoresById,
-          );
-        },
-      );
+      final phase2 = List.generate(queries.length - phase1Count, (offset) {
+        final index = phase1Count + offset;
+        return _collectSearchBatch(
+          searchQuery: queries[index],
+          queryIndex: index,
+          originalQuery: query,
+          videosById: videosById,
+          scoresById: scoresById,
+        );
+      });
       await Future.wait(phase2);
     }
 
@@ -801,7 +705,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     return score;
   }
 
-  Future<List<SearchChannelWithSubscribers>> _searchChannelsWithCache(String query) async {
+  Future<List<SearchChannelWithSubscribers>> _searchChannelsWithCache(
+    String query,
+  ) async {
     final cached = await _getCachedChannels(query);
     if (cached != null) return cached;
     final inFlight = _channelSearchInFlight[query];
@@ -811,25 +717,33 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     }
 
     final future = _runYoutubeWithRetry<Object>(() async {
-      final list = await _youtubeExplode.search
-          .searchContent(query, filter: TypeFilters.channel);
+      final list = await _youtubeExplode.search.searchContent(
+        query,
+        filter: TypeFilters.channel,
+      );
       final channels = list.whereType<SearchChannel>().take(8).toList();
       if (channels.isEmpty) return const <SearchChannelWithSubscribers>[];
 
       // Ruta rápida: evita llamadas extras para que el artista aparezca antes.
-      final resolvedByChannelSearch = await _resolveChannelsWithSubscribers(channels);
+      final resolvedByChannelSearch = await _resolveChannelsWithSubscribers(
+        channels,
+      );
       final filtered = _filterChannelsBySubscribers(resolvedByChannelSearch);
       if (filtered.isNotEmpty) {
         return _hydrateTopicChannelPhotos(
           filtered,
           resolvedByChannelSearch,
-          forcedTopicThumbnail: _topThumbnailFromResolved(resolvedByChannelSearch),
+          forcedTopicThumbnail: _topThumbnailFromResolved(
+            resolvedByChannelSearch,
+          ),
         );
       }
 
       // Fallback solo si no hubo suficientes candidatos por canal.
       final videos = await _searchWithCache(query);
-      final resolvedByVideoSearch = await _resolveChannelsFromTopVideos(videos.take(2).toList());
+      final resolvedByVideoSearch = await _resolveChannelsFromTopVideos(
+        videos.take(2).toList(),
+      );
       final merged = _mergeChannelCandidates(
         resolvedByChannelSearch,
         resolvedByVideoSearch,
@@ -852,7 +766,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     }
   }
 
-  Future<List<SearchChannelWithSubscribers>?> _getCachedChannels(String query) async {
+  Future<List<SearchChannelWithSubscribers>?> _getCachedChannels(
+    String query,
+  ) async {
     final cached = _channelSearchCache[query];
     if (cached == null) return null;
     final normalized = await _normalizeChannelResults(cached);
@@ -908,13 +824,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
         _subscriberCountCache[channelId] = details.subscribersCount;
         resolved.add(
           SearchChannelWithSubscribers(
-            channel: SearchChannel(
-              details.id,
-              details.title,
-              '',
-              0,
-              [Thumbnail(Uri.parse(details.logoUrl), 0, 0)],
-            ),
+            channel: SearchChannel(details.id, details.title, '', 0, [
+              Thumbnail(Uri.parse(details.logoUrl), 0, 0),
+            ]),
             subscribersCount: details.subscribersCount,
           ),
         );
@@ -940,7 +852,8 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       final existing = merged[id];
       if (existing == null) {
         merged[id] = item;
-      } else if ((item.subscribersCount ?? 0) > (existing.subscribersCount ?? 0)) {
+      } else if ((item.subscribersCount ?? 0) >
+          (existing.subscribersCount ?? 0)) {
         merged[id] = item;
       }
     }
@@ -959,13 +872,19 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       return _prioritizeTopicFirst(verified).take(_maxChannelsToShow).toList();
     }
 
-    final knownSubscribers = channels.where((item) => item.subscribersCount != null).toList();
+    final knownSubscribers = channels
+        .where((item) => item.subscribersCount != null)
+        .toList();
     if (knownSubscribers.isNotEmpty) {
-      return _prioritizeTopicFirst(knownSubscribers).take(_maxChannelsToShow).toList();
+      return _prioritizeTopicFirst(
+        knownSubscribers,
+      ).take(_maxChannelsToShow).toList();
     }
 
     // Fallback final: si YouTube no devuelve conteo de suscriptores.
-    final fallback = channels.where((item) => item.subscribersCount == null).toList();
+    final fallback = channels
+        .where((item) => item.subscribersCount == null)
+        .toList();
     return _prioritizeTopicFirst(fallback).take(_maxChannelsToShow).toList();
   }
 
@@ -989,11 +908,12 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
 
   Future<List<SearchChannelWithSubscribers>> _hydrateTopicChannelPhotos(
     List<SearchChannelWithSubscribers> selected,
-    List<SearchChannelWithSubscribers> pool,
-    {String? forcedTopicThumbnail}
-  ) async {
+    List<SearchChannelWithSubscribers> pool, {
+    String? forcedTopicThumbnail,
+  }) async {
     if (selected.isEmpty) return selected;
-    final globalFallback = forcedTopicThumbnail ?? _bestArtistThumbnailFromPool(pool);
+    final globalFallback =
+        forcedTopicThumbnail ?? _bestArtistThumbnailFromPool(pool);
     final hydrated = <SearchChannelWithSubscribers>[];
 
     for (final item in selected) {
@@ -1009,10 +929,14 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     return hydrated;
   }
 
-  String? _topThumbnailFromResolved(List<SearchChannelWithSubscribers> channels) {
+  String? _topThumbnailFromResolved(
+    List<SearchChannelWithSubscribers> channels,
+  ) {
     if (channels.isEmpty) return null;
     final sorted = channels.toList()
-      ..sort((a, b) => (b.subscribersCount ?? 0).compareTo(a.subscribersCount ?? 0));
+      ..sort(
+        (a, b) => (b.subscribersCount ?? 0).compareTo(a.subscribersCount ?? 0),
+      );
     for (final item in sorted) {
       final thumb = _thumbnailOf(item);
       if (thumb != null && thumb.isNotEmpty) return thumb;
@@ -1020,9 +944,14 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     return null;
   }
 
-  String? _bestArtistThumbnailFromPool(List<SearchChannelWithSubscribers> pool) {
-    final candidates = pool.where((item) => !_isTopicChannel(item.channel)).toList()
-      ..sort((a, b) => (b.subscribersCount ?? 0).compareTo(a.subscribersCount ?? 0));
+  String? _bestArtistThumbnailFromPool(
+    List<SearchChannelWithSubscribers> pool,
+  ) {
+    final candidates =
+        pool.where((item) => !_isTopicChannel(item.channel)).toList()..sort(
+          (a, b) =>
+              (b.subscribersCount ?? 0).compareTo(a.subscribersCount ?? 0),
+        );
     for (final item in candidates) {
       final thumb = _thumbnailOf(item);
       if (thumb != null && thumb.isNotEmpty) return thumb;
@@ -1031,7 +960,8 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
   }
 
   String? _thumbnailOf(SearchChannelWithSubscribers item) {
-    if (item.thumbnailUrlOverride != null && item.thumbnailUrlOverride!.isNotEmpty) {
+    if (item.thumbnailUrlOverride != null &&
+        item.thumbnailUrlOverride!.isNotEmpty) {
       return item.thumbnailUrlOverride;
     }
     if (item.channel.thumbnails.isEmpty) return null;
@@ -1046,7 +976,8 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     final channelId = channel.id.value;
     final cachedSubscribers = _subscriberCountCache[channelId];
     final cachedLogo = _channelLogoCache[channelId];
-    if (_subscriberCountCache.containsKey(channelId) || _channelLogoCache.containsKey(channelId)) {
+    if (_subscriberCountCache.containsKey(channelId) ||
+        _channelLogoCache.containsKey(channelId)) {
       return SearchChannelWithSubscribers(
         channel: channel,
         subscribersCount: cachedSubscribers,
@@ -1122,7 +1053,8 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
   @override
   Widget build(BuildContext context) {
     final selectedArtist = _selectedArtistView;
-    if (context.read<SearchViewState>().isArtistFullscreen && selectedArtist == null) {
+    if (context.read<SearchViewState>().isArtistFullscreen &&
+        selectedArtist == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         context.read<SearchViewState>().setArtistFullscreen(false);
@@ -1143,12 +1075,10 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
         switchOutCurve: Curves.easeInCubic,
         transitionBuilder: (child, animation) {
           final beginX = _artistTransitionDirection > 0 ? 0.14 : -0.14;
-          final slide = Tween<Offset>(
-            begin: Offset(beginX, 0),
-            end: Offset.zero,
-          ).animate(
-            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-          );
+          final slide =
+              Tween<Offset>(begin: Offset(beginX, 0), end: Offset.zero).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+              );
           return FadeTransition(
             opacity: animation,
             child: SlideTransition(position: slide, child: child),
@@ -1158,9 +1088,12 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
             ? KeyedSubtree(
                 key: const ValueKey('search_home'),
                 child: Scaffold(
-                  backgroundColor: Theme.of(context).brightness == Brightness.dark
+                  backgroundColor:
+                      Theme.of(context).brightness == Brightness.dark
                       ? Colors.black
-                      : CupertinoColors.systemGroupedBackground.resolveFrom(context),
+                      : CupertinoColors.systemGroupedBackground.resolveFrom(
+                          context,
+                        ),
                   body: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16.0),
                     child: Column(
@@ -1249,13 +1182,17 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
             ),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF581A95).withValues(alpha: focused ? 0.34 : 0.14),
+                color: const Color(
+                  0xFF581A95,
+                ).withValues(alpha: focused ? 0.34 : 0.14),
                 blurRadius: focused ? 20 : 10,
                 spreadRadius: focused ? 0.9 : 0,
                 offset: const Offset(0, 2),
               ),
               BoxShadow(
-                color: const Color(0xFFFF2A6D).withValues(alpha: focused ? 0.24 : 0.08),
+                color: const Color(
+                  0xFFFF2A6D,
+                ).withValues(alpha: focused ? 0.24 : 0.08),
                 blurRadius: focused ? 26 : 12,
                 spreadRadius: focused ? 1.2 : 0,
                 offset: const Offset(0, 5),
@@ -1303,7 +1240,10 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
                       minHeight: 42,
                     ),
                     isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                    contentPadding: const EdgeInsets.symmetric(
+                      vertical: 12,
+                      horizontal: 4,
+                    ),
                     border: InputBorder.none,
                   ),
                 ),
@@ -1320,7 +1260,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       case SearchState.loading:
         return const Center(child: CircularProgressIndicator());
       case SearchState.error:
-        return const Center(child: Text('Error al buscar. Inténtalo de nuevo.'));
+        return const Center(
+          child: Text('Error al buscar. Inténtalo de nuevo.'),
+        );
       case SearchState.noResults:
         return const Center(child: Text('No se encontraron videos.'));
       case SearchState.initial:
@@ -1344,9 +1286,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
                 _initialRecommendationQuery == null
                     ? 'Recomendado para ti'
                     : 'Recomendado para ti • $_initialRecommendationQuery',
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
               ),
             ),
             ..._initialRecommendations.map(
@@ -1369,7 +1311,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
           channels: _channels,
           videos: prioritizedVideos,
         );
-        final primaryVideo = prioritizedVideos.isNotEmpty ? prioritizedVideos.first : null;
+        final primaryVideo = prioritizedVideos.isNotEmpty
+            ? prioritizedVideos.first
+            : null;
         final primaryArtistChannelThumb = primaryVideo == null
             ? null
             : _findChannelThumbnailForArtist(
@@ -1378,14 +1322,15 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
               );
         return ListView(
           children: [
-            if (_showArtists && (primaryVideo != null || displayChannels.isNotEmpty)) ...[
+            if (_showArtists &&
+                (primaryVideo != null || displayChannels.isNotEmpty)) ...[
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Text(
                   'Artista principal',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
               if (primaryVideo != null)
@@ -1397,7 +1342,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
               else
                 TopArtistCard(
                   channel: displayChannels.first,
-                  subscriberLabel: _formatSubscribers(displayChannels.first.subscribersCount),
+                  subscriberLabel: _formatSubscribers(
+                    displayChannels.first.subscribersCount,
+                  ),
                   onOpenChannel: () => _openChannel(displayChannels.first),
                 ),
               if (displayChannels.length > 1) ...[
@@ -1407,17 +1354,22 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
                   child: Text(
                     'Canales relacionados',
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w700,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                ...displayChannels
+                    .skip(1)
+                    .take(4)
+                    .map(
+                      (channel) => ChannelCard(
+                        channel: channel,
+                        subscriberLabel: _formatSubscribers(
+                          channel.subscribersCount,
                         ),
-                  ),
-                ),
-                ...displayChannels.skip(1).take(4).map(
-                  (channel) => ChannelCard(
-                    channel: channel,
-                    subscriberLabel: _formatSubscribers(channel.subscribersCount),
-                    onTap: () => _openChannel(channel),
-                  ),
-                ),
+                        onTap: () => _openChannel(channel),
+                      ),
+                    ),
               ],
               const SizedBox(height: 14),
             ],
@@ -1427,22 +1379,24 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
                 child: Text(
                   'Canciones y videos populares',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ],
-            ...prioritizedVideos.take(20).map(
-              (video) => VideoCard(
-                video: video,
-                isDownloaded:
-                    downloadService.getDownloadStatus(video.id.value) ==
-                    DownloadStatus.downloaded,
-                onPlay: () => _playVideoPreferLocal(video),
-                onQueue: () => _queueVideo(video),
-                onMenuTap: () => _showVideoOptionsMenu(video),
-              ),
-            ),
+            ...prioritizedVideos
+                .take(20)
+                .map(
+                  (video) => VideoCard(
+                    video: video,
+                    isDownloaded:
+                        downloadService.getDownloadStatus(video.id.value) ==
+                        DownloadStatus.downloaded,
+                    onPlay: () => _playVideoPreferLocal(video),
+                    onQueue: () => _queueVideo(video),
+                    onMenuTap: () => _showVideoOptionsMenu(video),
+                  ),
+                ),
           ],
         );
     }
@@ -1456,7 +1410,8 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     final primaryArtist = _normalizeArtistNameForMatch(videos.first.author);
     if (primaryArtist.isEmpty) return channels;
 
-    final ranked = <({SearchChannelWithSubscribers item, int index, int score})>[];
+    final ranked =
+        <({SearchChannelWithSubscribers item, int index, int score})>[];
     for (var i = 0; i < channels.length; i++) {
       final item = channels[i];
       final channelName = _normalizeArtistNameForMatch(item.channel.name);
@@ -1499,7 +1454,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     SearchChannelWithSubscribers? best;
     var bestScore = -1;
     for (final channel in channels) {
-      final normalizedChannel = _normalizeArtistNameForMatch(channel.channel.name);
+      final normalizedChannel = _normalizeArtistNameForMatch(
+        channel.channel.name,
+      );
       if (normalizedChannel.isEmpty) continue;
       var score = 0;
       if (normalizedChannel == normalizedArtist) score += 120;
@@ -1511,7 +1468,8 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       }
     }
     if (best == null || bestScore <= 0) return null;
-    if (best.thumbnailUrlOverride != null && best.thumbnailUrlOverride!.isNotEmpty) {
+    if (best.thumbnailUrlOverride != null &&
+        best.thumbnailUrlOverride!.isNotEmpty) {
       return best.thumbnailUrlOverride!;
     }
     if (best.channel.thumbnails.isNotEmpty) {
@@ -1526,7 +1484,9 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
       dedup.putIfAbsent(video.id.value, () => video);
     }
     final ordered = dedup.values.toList()
-      ..sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
+      ..sort(
+        (a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount),
+      );
     return ordered;
   }
 
@@ -1579,8 +1539,8 @@ class _SearchPageState extends State<SearchPage> with SingleTickerProviderStateM
     'lyrics',
     'lyric',
   ];
-
 }
+
 class _SelectedArtistView {
   final String channelId;
   final String channelName;
@@ -1634,7 +1594,10 @@ class ChannelCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 7.0),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12.0,
+                  vertical: 7.0,
+                ),
                 child: Row(
                   children: [
                     ClipRRect(
@@ -1647,11 +1610,16 @@ class ChannelCard extends StatelessWidget {
                           height: 52,
                           fit: BoxFit.cover,
                           alignment: Alignment.center,
-                          errorBuilder: (context, error, stackTrace) => const SizedBox(
-                            width: 52,
-                            height: 52,
-                            child: Icon(Icons.account_circle_outlined, size: 26, color: Colors.grey),
-                          ),
+                          errorBuilder: (context, error, stackTrace) =>
+                              const SizedBox(
+                                width: 52,
+                                height: 52,
+                                child: Icon(
+                                  Icons.account_circle_outlined,
+                                  size: 26,
+                                  color: Colors.grey,
+                                ),
+                              ),
                         ),
                       ),
                     ),
@@ -1664,10 +1632,15 @@ class ChannelCard extends StatelessWidget {
                             channel.channel.name,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                            style: CupertinoTheme.of(context)
+                                .textTheme
+                                .textStyle
+                                .copyWith(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w700,
-                                  color: CupertinoColors.label.resolveFrom(context),
+                                  color: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
                                 ),
                           ),
                           const SizedBox(height: 2),
@@ -1675,9 +1648,13 @@ class ChannelCard extends StatelessWidget {
                             '$subscriberLabel • ${channel.channel.videoCount} videos',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                            style: CupertinoTheme.of(context)
+                                .textTheme
+                                .textStyle
+                                .copyWith(
                                   fontSize: 13,
-                                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                  color: CupertinoColors.secondaryLabel
+                                      .resolveFrom(context),
                                 ),
                           ),
                         ],
@@ -1738,15 +1715,13 @@ class SearchModeButton extends StatelessWidget {
           gradient: const LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              Color(0xFFFF004D),
-              Color(0xFFFF7A00),
-              Color(0xFF7A5CFF),
-            ],
+            colors: [Color(0xFFFF004D), Color(0xFFFF7A00), Color(0xFF7A5CFF)],
           ),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFFFF4D00).withValues(alpha: isActive ? 0.3 : 0.16),
+              color: const Color(
+                0xFFFF4D00,
+              ).withValues(alpha: isActive ? 0.3 : 0.16),
               blurRadius: isActive ? 16 : 10,
               spreadRadius: isActive ? 0.6 : 0.0,
               offset: const Offset(0, 2),
@@ -1762,8 +1737,12 @@ class SearchModeButton extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 10),
               decoration: BoxDecoration(
                 color: (isActive
-                        ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
-                        : CupertinoColors.systemGrey6.resolveFrom(context).withValues(alpha: 0.52)),
+                    ? Theme.of(
+                        context,
+                      ).colorScheme.primary.withValues(alpha: 0.2)
+                    : CupertinoColors.systemGrey6
+                          .resolveFrom(context)
+                          .withValues(alpha: 0.52)),
                 borderRadius: borderRadius,
               ),
               child: Row(
@@ -1779,10 +1758,13 @@ class SearchModeButton extends StatelessWidget {
                   const SizedBox(width: 6),
                   Text(
                     label,
-                    style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                    style: CupertinoTheme.of(context).textTheme.textStyle
+                        .copyWith(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
-                          color: isActive ? Theme.of(context).colorScheme.primary : null,
+                          color: isActive
+                              ? Theme.of(context).colorScheme.primary
+                              : null,
                         ),
                   ),
                 ],
@@ -1850,11 +1832,16 @@ class TopArtistCard extends StatelessWidget {
                             height: 72,
                             fit: BoxFit.cover,
                             alignment: Alignment.center,
-                            errorBuilder: (context, error, stackTrace) => const SizedBox(
-                              width: 72,
-                              height: 72,
-                              child: Icon(Icons.account_circle_outlined, size: 38, color: Colors.grey),
-                            ),
+                            errorBuilder: (context, error, stackTrace) =>
+                                const SizedBox(
+                                  width: 72,
+                                  height: 72,
+                                  child: Icon(
+                                    Icons.account_circle_outlined,
+                                    size: 38,
+                                    color: Colors.grey,
+                                  ),
+                                ),
                           ),
                         ),
                       ),
@@ -1867,10 +1854,15 @@ class TopArtistCard extends StatelessWidget {
                               channel.channel.name,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
                                     fontSize: 26,
                                     fontWeight: FontWeight.w700,
-                                    color: CupertinoColors.label.resolveFrom(context),
+                                    color: CupertinoColors.label.resolveFrom(
+                                      context,
+                                    ),
                                   ),
                             ),
                             const SizedBox(height: 4),
@@ -1878,18 +1870,26 @@ class TopArtistCard extends StatelessWidget {
                               subscriberLabel,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
                                     fontSize: 14,
-                                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                    color: CupertinoColors.secondaryLabel
+                                        .resolveFrom(context),
                                   ),
                             ),
                             Text(
                               '${channel.channel.videoCount} videos',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
                                     fontSize: 13,
-                                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                    color: CupertinoColors.secondaryLabel
+                                        .resolveFrom(context),
                                   ),
                             ),
                           ],
@@ -1933,7 +1933,8 @@ class _TopArtistFromVideoCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final thumb = (channelThumbnailUrl != null && channelThumbnailUrl!.isNotEmpty)
+    final thumb =
+        (channelThumbnailUrl != null && channelThumbnailUrl!.isNotEmpty)
         ? channelThumbnailUrl!
         : bestThumbnailForVideo(video);
     return ClipRRect(
@@ -1973,11 +1974,16 @@ class _TopArtistFromVideoCard extends StatelessWidget {
                         height: 72,
                         fit: BoxFit.cover,
                         alignment: Alignment.center,
-                        errorBuilder: (context, error, stackTrace) => const SizedBox(
-                          width: 72,
-                          height: 72,
-                          child: Icon(Icons.account_circle_outlined, size: 38, color: Colors.grey),
-                        ),
+                        errorBuilder: (context, error, stackTrace) =>
+                            const SizedBox(
+                              width: 72,
+                              height: 72,
+                              child: Icon(
+                                Icons.account_circle_outlined,
+                                size: 38,
+                                color: Colors.grey,
+                              ),
+                            ),
                       ),
                     ),
                   ),
@@ -1990,10 +1996,13 @@ class _TopArtistFromVideoCard extends StatelessWidget {
                           video.author,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
                                 fontSize: 24,
                                 fontWeight: FontWeight.w700,
-                                color: CupertinoColors.label.resolveFrom(context),
+                                color: CupertinoColors.label.resolveFrom(
+                                  context,
+                                ),
                               ),
                         ),
                         const SizedBox(height: 4),
@@ -2001,9 +2010,11 @@ class _TopArtistFromVideoCard extends StatelessWidget {
                           'Del primer resultado',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
                                 fontSize: 13,
-                                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
                               ),
                         ),
                       ],
@@ -2027,12 +2038,11 @@ class _TopArtistFromVideoCard extends StatelessWidget {
 class _ArtistVideosActionButton extends StatefulWidget {
   final VoidCallback onPressed;
 
-  const _ArtistVideosActionButton({
-    required this.onPressed,
-  });
+  const _ArtistVideosActionButton({required this.onPressed});
 
   @override
-  State<_ArtistVideosActionButton> createState() => _ArtistVideosActionButtonState();
+  State<_ArtistVideosActionButton> createState() =>
+      _ArtistVideosActionButtonState();
 }
 
 class _ArtistVideosActionButtonState extends State<_ArtistVideosActionButton>
@@ -2069,7 +2079,9 @@ class _ArtistVideosActionButtonState extends State<_ArtistVideosActionButton>
             decoration: BoxDecoration(
               borderRadius: borderRadius,
               gradient: SweepGradient(
-                transform: GradientRotation(_borderController.value * math.pi * 2),
+                transform: GradientRotation(
+                  _borderController.value * math.pi * 2,
+                ),
                 colors: [
                   const Color(0xFFE79A52).withValues(alpha: 0.82),
                   const Color(0xFFEDB567).withValues(alpha: 0.82),
@@ -2174,7 +2186,9 @@ class VideoCard extends StatelessWidget {
         : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
     final borderColor = isDark
         ? Colors.white.withValues(alpha: 0.12)
-        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.14);
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.14);
     final card = ClipRRect(
       borderRadius: borderRadius,
       child: Material(
@@ -2185,12 +2199,12 @@ class VideoCard extends StatelessWidget {
             decoration: BoxDecoration(
               color: cardColor,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: borderColor,
-                width: 0.6,
-              ),
+              border: Border.all(color: borderColor, width: 0.6),
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12.0,
+              vertical: 6.0,
+            ),
             child: Row(
               children: [
                 SquareThumbnail.network(
@@ -2201,12 +2215,16 @@ class VideoCard extends StatelessWidget {
                   fallback: Container(
                     width: 64,
                     height: 64,
-                    color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                    color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                      context,
+                    ),
                     alignment: Alignment.center,
                     child: Icon(
                       Icons.videocam_off_outlined,
                       size: 24,
-                      color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                      color: CupertinoColors.secondaryLabel.resolveFrom(
+                        context,
+                      ),
                     ),
                   ),
                 ),
@@ -2218,7 +2236,8 @@ class VideoCard extends StatelessWidget {
                     children: [
                       Text(
                         video.title,
-                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                        style: CupertinoTheme.of(context).textTheme.textStyle
+                            .copyWith(
                               fontSize: 16,
                               fontWeight: FontWeight.w700,
                               color: CupertinoColors.label.resolveFrom(context),
@@ -2230,10 +2249,13 @@ class VideoCard extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         video.author,
-                        style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                        style: CupertinoTheme.of(context).textTheme.textStyle
+                            .copyWith(
                               fontSize: 13,
                               fontWeight: FontWeight.w500,
-                              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                              color: CupertinoColors.secondaryLabel.resolveFrom(
+                                context,
+                              ),
                             ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -2246,10 +2268,14 @@ class VideoCard extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(5),
                     decoration: BoxDecoration(
-                      color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                      color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                        context,
+                      ),
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(
-                        color: CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.32),
+                        color: CupertinoColors.separator
+                            .resolveFrom(context)
+                            .withValues(alpha: 0.32),
                         width: 0.5,
                       ),
                     ),
@@ -2283,9 +2309,7 @@ class VideoCard extends StatelessWidget {
         : Dismissible(
             key: ObjectKey(video),
             direction: DismissDirection.startToEnd,
-            dismissThresholds: const {
-              DismissDirection.startToEnd: 0.28,
-            },
+            dismissThresholds: const {DismissDirection.startToEnd: 0.28},
             confirmDismiss: (_) async {
               onQueue?.call();
               return false;
@@ -2332,10 +2356,14 @@ class VideoCard extends StatelessWidget {
               padding: const EdgeInsets.all(1),
               decoration: BoxDecoration(
                 borderRadius: borderRadius,
-                color: CupertinoColors.systemPink.resolveFrom(context).withValues(alpha: 0.34),
+                color: CupertinoColors.systemPink
+                    .resolveFrom(context)
+                    .withValues(alpha: 0.34),
                 boxShadow: [
                   BoxShadow(
-                    color: CupertinoColors.systemPink.resolveFrom(context).withValues(alpha: 0.16),
+                    color: CupertinoColors.systemPink
+                        .resolveFrom(context)
+                        .withValues(alpha: 0.16),
                     blurRadius: 10,
                     spreadRadius: 0,
                   ),
@@ -2417,152 +2445,6 @@ class _GlassSheetActionRow extends StatelessWidget {
   }
 }
 
-class _GlassPlaylistPickerRow extends StatelessWidget {
-  final String name;
-  final int songsCount;
-  final String? coverUrl;
-  final bool isFavorites;
-  final VoidCallback onTap;
-
-  const _GlassPlaylistPickerRow({
-    required this.name,
-    required this.songsCount,
-    required this.coverUrl,
-    required this.isFavorites,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Material(
-          color: Colors.white.withValues(alpha: 0.05),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(16),
-            onTap: onTap,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: CupertinoColors.white.withValues(alpha: 0.18),
-                  width: 0.6,
-                ),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.08),
-                    Colors.white.withValues(alpha: 0.02),
-                  ],
-                ),
-              ),
-              child: Row(
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(10),
-                    child: SizedBox(
-                      width: 52,
-                      height: 52,
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          coverUrl == null || coverUrl!.isEmpty
-                              ? Container(
-                                  color: CupertinoColors.systemGrey4.resolveFrom(context),
-                                  alignment: Alignment.center,
-                                  child: Icon(
-                                    isFavorites
-                                        ? CupertinoIcons.star_fill
-                                        : CupertinoIcons.music_note_list,
-                                    size: 20,
-                                    color: CupertinoColors.white,
-                                  ),
-                                )
-                              : SquareThumbnail.network(
-                                  imageUrl: coverUrl!,
-                                  size: 52,
-                                  borderRadius: 0,
-                                  zoom: 1.24,
-                                  fallback: Container(
-                                    color: CupertinoColors.systemGrey4.resolveFrom(context),
-                                    alignment: Alignment.center,
-                                    child: Icon(
-                                      isFavorites
-                                          ? CupertinoIcons.star_fill
-                                          : CupertinoIcons.music_note_list,
-                                      size: 20,
-                                      color: CupertinoColors.white,
-                                    ),
-                                  ),
-                                ),
-                          if (isFavorites)
-                            Align(
-                              alignment: Alignment.topRight,
-                              child: Container(
-                                margin: const EdgeInsets.all(3),
-                                width: 15,
-                                height: 15,
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withValues(alpha: 0.42),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  CupertinoIcons.star_fill,
-                                  size: 9,
-                                  color: Color(0xFFFFD24A),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontWeight: FontWeight.w700,
-                            fontSize: 15,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          '$songsCount canciones',
-                          style: TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontSize: 12,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Icon(
-                    CupertinoIcons.chevron_right,
-                    size: 17,
-                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 void _showIosTopToast(
   BuildContext context, {
   required String message,
@@ -2598,10 +2480,7 @@ class _IosTopToast extends StatefulWidget {
   final String message;
   final IconData icon;
 
-  const _IosTopToast({
-    required this.message,
-    required this.icon,
-  });
+  const _IosTopToast({required this.message, required this.icon});
 
   @override
   State<_IosTopToast> createState() => _IosTopToastState();
@@ -2854,9 +2733,15 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
       }
     }
 
-    topic.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
-    music.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
-    others.sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
+    topic.sort(
+      (a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount),
+    );
+    music.sort(
+      (a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount),
+    );
+    others.sort(
+      (a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount),
+    );
 
     return [...topic, ...music, ...others];
   }
@@ -2894,7 +2779,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
   }
 
   String get _headerImageUrl {
-    if (widget.channelThumbnailUrl.isNotEmpty) return widget.channelThumbnailUrl;
+    if (widget.channelThumbnailUrl.isNotEmpty) {
+      return widget.channelThumbnailUrl;
+    }
     if (_videos.isNotEmpty) return bestThumbnailForVideo(_videos.first);
     return '';
   }
@@ -2973,7 +2860,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     if (!mounted) return;
     if (local != null) {
       final thumb =
-          (local.localThumbnailPath != null && local.localThumbnailPath!.isNotEmpty)
+          (local.localThumbnailPath != null &&
+              local.localThumbnailPath!.isNotEmpty)
           ? local.localThumbnailPath!
           : local.thumbnailUrl;
       await videoManager.playLocalFile(
@@ -3008,7 +2896,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     _showIosTopToast(
       context,
       message: added ? 'Añadida a la cola' : 'Esta canción ya está en cola',
-      icon: added ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.info_circle_fill,
+      icon: added
+          ? CupertinoIcons.check_mark_circled_solid
+          : CupertinoIcons.info_circle_fill,
     );
   }
 
@@ -3126,108 +3016,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     final playlists = await playlistService.getPlaylists();
     if (!mounted || playlists.isEmpty) return;
 
-    final selectedName = await showModalBottomSheet<String>(
+    final selectedName = await showGlassPlaylistPickerSheet(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) {
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(26),
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                child: Container(
-                  constraints: BoxConstraints(
-                    maxHeight: MediaQuery.of(sheetContext).size.height * 0.78,
-                  ),
-                  decoration: BoxDecoration(
-                    color: CupertinoColors.systemGrey6
-                        .resolveFrom(sheetContext)
-                        .withValues(alpha: 0.82),
-                    borderRadius: BorderRadius.circular(26),
-                    border: Border.all(
-                      color: CupertinoColors.white.withValues(alpha: 0.24),
-                      width: 0.7,
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(height: 8),
-                      Container(
-                        width: 42,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: CupertinoColors.systemGrey3
-                              .resolveFrom(sheetContext)
-                              .withValues(alpha: 0.75),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                        child: Row(
-                          children: [
-                            Text(
-                              'Añadir a playlist',
-                              style: CupertinoTheme.of(sheetContext)
-                                  .textTheme
-                                  .navTitleTextStyle
-                                  .copyWith(fontWeight: FontWeight.w700),
-                            ),
-                            const Spacer(),
-                            CupertinoButton(
-                              padding: EdgeInsets.zero,
-                              minimumSize: const Size(34, 34),
-                              onPressed: () => Navigator.of(sheetContext).pop(),
-                              child: Icon(
-                                CupertinoIcons.xmark_circle_fill,
-                                size: 24,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(sheetContext),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Flexible(
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
-                          itemCount: playlists.length,
-                          itemBuilder: (context, index) {
-                            final playlist = playlists[index];
-                            final cover = playlist.videos.isNotEmpty
-                                ? playlist.videos.first.thumbnailUrl
-                                : null;
-                            final isFavorites = PlaylistService
-                                .isFavoritesPlaylistName(playlist.name);
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 3),
-                              child: _GlassPlaylistPickerRow(
-                                name: playlist.name,
-                                songsCount: playlist.videos.length,
-                                coverUrl: cover,
-                                isFavorites: isFavorites,
-                                onTap: () => Navigator.of(sheetContext).pop(
-                                  playlist.name,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
+      playlists: playlists,
+      subtitle: video.title,
     );
     if (!mounted || selectedName == null || selectedName.isEmpty) return;
     await _addVideoToPlaylist(video, selectedName);
@@ -3287,162 +3079,168 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     final content = _loading
         ? const Center(child: CupertinoActivityIndicator(radius: 14))
         : _error
-            ? const Center(child: Text('No se pudieron cargar los videos del canal.'))
-            : _videos.isEmpty
-                ? const Center(child: Text('No se encontraron videos musicales en este canal.'))
-                : CustomScrollView(
-                    slivers: [
-                      SliverAppBar(
-                        backgroundColor: Colors.black.withValues(alpha: 0.3),
-                        elevation: 0,
-                        pinned: true,
-                        expandedHeight: 320,
-                        leading: widget.embedded
-                            ? IconButton(
-                                icon: const Icon(Icons.arrow_back_ios_new_rounded),
-                                onPressed: widget.onBack,
-                              )
-                            : null,
-                        flexibleSpace: FlexibleSpaceBar(
-                          background: _ArtistHeroHeader(
-                            imageUrl: _headerImageUrl,
-                            artistName: _artistDisplayName,
-                          ),
-                        ),
+        ? const Center(
+            child: Text('No se pudieron cargar los videos del canal.'),
+          )
+        : _videos.isEmpty
+        ? const Center(
+            child: Text('No se encontraron videos musicales en este canal.'),
+          )
+        : CustomScrollView(
+            slivers: [
+              SliverAppBar(
+                backgroundColor: Colors.black.withValues(alpha: 0.3),
+                elevation: 0,
+                pinned: true,
+                expandedHeight: 320,
+                leading: widget.embedded
+                    ? IconButton(
+                        icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                        onPressed: widget.onBack,
+                      )
+                    : null,
+                flexibleSpace: FlexibleSpaceBar(
+                  background: _ArtistHeroHeader(
+                    imageUrl: _headerImageUrl,
+                    artistName: _artistDisplayName,
+                  ),
+                ),
+              ),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
+                  child: Column(
+                    children: [
+                      Transform.translate(
+                        offset: Offset.zero,
+                        child: const _ArtistHeaderListConnector(),
                       ),
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
-                          child: Column(
-                            children: [
-                              Transform.translate(
-                                offset: Offset.zero,
-                                child: const _ArtistHeaderListConnector(),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(18),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                            child: Container(
+                              padding: const EdgeInsets.fromLTRB(
+                                14,
+                                12,
+                                14,
+                                12,
                               ),
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(18),
-                                  child: BackdropFilter(
-                                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                                    child: Container(
-                                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(18),
-                                        border: Border.all(
-                                          color: Colors.white.withValues(alpha: 0.18),
-                                          width: 0.6,
-                                        ),
-                                        gradient: LinearGradient(
-                                          begin: Alignment.topLeft,
-                                          end: Alignment.bottomRight,
-                                          colors: [
-                                            Colors.white.withValues(alpha: 0.085),
-                                            Colors.white.withValues(alpha: 0.02),
-                                          ],
-                                        ),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            'Artista destacado',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .labelMedium
-                                                ?.copyWith(
-                                                  color: CupertinoColors.secondaryLabel
-                                                      .resolveFrom(context),
-                                                  letterSpacing: 0.25,
-                                                ),
-                                          ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            _artistDisplayName,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleLarge
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.w800,
-                                                  color: CupertinoColors.label.resolveFrom(context),
-                                                ),
-                                          ),
-                                          const SizedBox(height: 3),
-                                          Text(
-                                            '${_videos.length} tracks populares',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                  color: CupertinoColors.secondaryLabel
-                                                      .resolveFrom(context),
-                                                ),
-                                          ),
-                                          const SizedBox(height: 12),
-                                          Row(
-                                            children: [
-                                              Expanded(
-                                                child: _ArtistActionPill(
-                                                  icon: CupertinoIcons.play_fill,
-                                                  label: 'Reproducir',
-                                                  isPrimary: true,
-                                                  onPressed: _playTopTrack,
-                                                ),
-                                              ),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: _ArtistActionPill(
-                                                  icon: CupertinoIcons.shuffle,
-                                                  label: 'Aleatorio',
-                                                  onPressed: _playRandomTrack,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 12),
-                                          Text(
-                                            'Populares',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .titleMedium
-                                                ?.copyWith(
-                                                  fontWeight: FontWeight.w700,
-                                                ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.18),
+                                  width: 0.6,
+                                ),
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    Colors.white.withValues(alpha: 0.085),
+                                    Colors.white.withValues(alpha: 0.02),
+                                  ],
                                 ),
                               ),
-                            ],
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Artista destacado',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelMedium
+                                        ?.copyWith(
+                                          color: CupertinoColors.secondaryLabel
+                                              .resolveFrom(context),
+                                          letterSpacing: 0.25,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _artistDisplayName,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleLarge
+                                        ?.copyWith(
+                                          fontWeight: FontWeight.w800,
+                                          color: CupertinoColors.label
+                                              .resolveFrom(context),
+                                        ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    '${_videos.length} tracks populares',
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(
+                                          color: CupertinoColors.secondaryLabel
+                                              .resolveFrom(context),
+                                        ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: _ArtistActionPill(
+                                          icon: CupertinoIcons.play_fill,
+                                          label: 'Reproducir',
+                                          isPrimary: true,
+                                          onPressed: _playTopTrack,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: _ArtistActionPill(
+                                          icon: CupertinoIcons.shuffle,
+                                          label: 'Aleatorio',
+                                          onPressed: _playRandomTrack,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    'Populares',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                      SliverPadding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        sliver: SliverList.builder(
-                          itemCount: _videos.length,
-                          itemBuilder: (context, index) {
-                            final video = _videos[index];
-                            return VideoCard(
-                              video: video,
-                              isDownloaded:
-                                  downloadService.getDownloadStatus(video.id.value) ==
-                                  DownloadStatus.downloaded,
-                              highlightTop: index < 3,
-                              onPlay: () => _playVideoPreferLocal(video),
-                              onQueue: () => _queueVideo(video),
-                              onMenuTap: () => _showVideoOptionsMenu(video),
-                            );
-                          },
-                        ),
-                      ),
-                      const SliverToBoxAdapter(child: SizedBox(height: 24)),
                     ],
-                  );
+                  ),
+                ),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                sliver: SliverList.builder(
+                  itemCount: _videos.length,
+                  itemBuilder: (context, index) {
+                    final video = _videos[index];
+                    return VideoCard(
+                      video: video,
+                      isDownloaded:
+                          downloadService.getDownloadStatus(video.id.value) ==
+                          DownloadStatus.downloaded,
+                      highlightTop: index < 3,
+                      onPlay: () => _playVideoPreferLocal(video),
+                      onQueue: () => _queueVideo(video),
+                      onMenuTap: () => _showVideoOptionsMenu(video),
+                    );
+                  },
+                ),
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: 24)),
+            ],
+          );
 
     final pageBody = Stack(
       fit: StackFit.expand,
@@ -3574,10 +3372,7 @@ class _ArtistHeroHeader extends StatelessWidget {
   final String imageUrl;
   final String artistName;
 
-  const _ArtistHeroHeader({
-    required this.imageUrl,
-    required this.artistName,
-  });
+  const _ArtistHeroHeader({required this.imageUrl, required this.artistName});
 
   @override
   Widget build(BuildContext context) {
@@ -3667,10 +3462,10 @@ class _ArtistHeroHeader extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.headlineLarge?.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.25,
-                    ),
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.25,
+                ),
               ),
             ],
           ),
@@ -3722,11 +3517,7 @@ class _ArtistActionPill extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(
-                  icon,
-                  size: 14,
-                  color: Colors.white,
-                ),
+                Icon(icon, size: 14, color: Colors.white),
                 const SizedBox(width: 6),
                 Text(
                   label,

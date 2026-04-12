@@ -100,9 +100,18 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     _SettingSwitchRow(
                       title: 'Live Lyrics',
                       subtitle:
-                          'Resalta la letra en tiempo real con barrido progresivo',
+                          'Resalta la letra en tiempo real\nEsto podría consumir mas bateria',
                       value: settings.liveLyrics,
                       onChanged: (value) => settings.setLiveLyrics(value),
+                    ),
+                    const _SectionDivider(),
+                    _SettingSwitchRow(
+                      title: 'Carátula animada',
+                      subtitle:
+                          'Activa el efecto de caratula animada en la pantalla de reproducción',
+                      value: settings.animatedCutoutCovers,
+                      onChanged: (value) =>
+                          settings.setAnimatedCutoutCovers(value),
                     ),
                   ],
                 ),
@@ -122,7 +131,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     const _SectionDivider(),
                     _SettingCheckRow(
                       title: 'Crossfade',
-                      subtitle: 'Transición suave estándar',
+                      subtitle: 'Transición suave entre canciones',
                       selected:
                           settings.transitionMode == TransitionMode.crossfade,
                       onTap: () =>
@@ -130,9 +139,9 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     ),
                     const _SectionDivider(),
                     _SettingCheckRow(
-                      title: 'Modo DJ',
+                      title: 'AutoMix',
                       subtitle:
-                          'AutoMix inteligente con mezcla más natural entre canciones',
+                          'Mezcla inteligente y más natural entre canciones\nEsto podría consumir mas bateria',
                       selected: settings.transitionMode == TransitionMode.dj,
                       onTap: () =>
                           settings.setTransitionMode(TransitionMode.dj),
@@ -159,15 +168,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                       onChanged: (value) =>
                           settings.setAllowExplicitContent(value),
                     ),
-                    const _SectionDivider(),
-                    _SettingSwitchRow(
-                      title: 'Carátulas recortadas animadas',
-                      subtitle:
-                          'Activa el efecto de recorte y movimiento en la portada',
-                      value: settings.animatedCutoutCovers,
-                      onChanged: (value) =>
-                          settings.setAnimatedCutoutCovers(value),
-                    ),
+                    
                   ],
                 ),
               ],

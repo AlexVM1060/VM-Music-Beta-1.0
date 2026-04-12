@@ -9,6 +9,8 @@
     FlutterMethodChannel *_bassChannel;
     BOOL _bassBoostEnabled;
     float _bassBoostAmount;
+    BOOL _karaokeEnabled;
+    float _karaokeAmount;
 }
 
 + (void)registerWithRegistrar:(NSObject<FlutterPluginRegistrar>*)registrar {
@@ -26,6 +28,8 @@
     _players = [[NSMutableDictionary alloc] init];
     _bassBoostEnabled = NO;
     _bassBoostAmount = 0.95f;
+    _karaokeEnabled = NO;
+    _karaokeAmount = 1.0f;
     _bassChannel = [FlutterMethodChannel
         methodChannelWithName:@"com.vm.music.beta/ios_bass_boost"
               binaryMessenger:[registrar messenger]];
@@ -49,6 +53,7 @@
         } else {
             AudioPlayer* player = [[AudioPlayer alloc] initWithRegistrar:_registrar playerId:playerId loadConfiguration:loadConfiguration useLazyPreparation:useLazyPreparation];
             [player setBassBoostEnabled:_bassBoostEnabled amount:_bassBoostAmount];
+            [player setKaraokeEnabled:_karaokeEnabled amount:_karaokeAmount];
             [_players setValue:player forKey:playerId];
             result(nil);
         }
@@ -82,6 +87,25 @@
         _bassBoostAmount = amount;
         for (NSString *playerId in _players) {
             [_players[playerId] setBassBoostEnabled:_bassBoostEnabled amount:_bassBoostAmount];
+        }
+        result(@{
+            @"ok": @YES,
+            @"players": @(_players.count),
+        });
+        return;
+    }
+    if ([@"setKaraokeMode" isEqualToString:call.method]) {
+        NSDictionary *request = (NSDictionary *)call.arguments;
+        BOOL enabled = [((NSNumber *)request[@"enabled"]) boolValue];
+        NSNumber *amountNumber = (NSNumber *)request[@"amount"];
+        float amount = amountNumber != (id)[NSNull null] ? [amountNumber floatValue] : _karaokeAmount;
+        if (amount < 0.0f) amount = 0.0f;
+        if (amount > 1.8f) amount = 1.8f;
+
+        _karaokeEnabled = enabled;
+        _karaokeAmount = amount;
+        for (NSString *playerId in _players) {
+            [_players[playerId] setKaraokeEnabled:_karaokeEnabled amount:_karaokeAmount];
         }
         result(@{
             @"ok": @YES,
