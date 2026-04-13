@@ -774,11 +774,23 @@ class _FullPlayer extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      'Cola de reproducción',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Cola de reproducción',
+                            style: Theme.of(context).textTheme.titleLarge
+                                ?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Aleatorio',
+                          onPressed: queue.length > 1
+                              ? manager.shufflePlaybackQueue
+                              : null,
+                          icon: const Icon(CupertinoIcons.shuffle),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -1926,12 +1938,30 @@ class _QueueSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          'Cola de reproducción',
-          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Cola de reproducción',
+                style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            CupertinoButton(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+              minimumSize: const Size(30, 30),
+              onPressed: queue.length > 1 ? manager.shufflePlaybackQueue : null,
+              child: Icon(
+                CupertinoIcons.shuffle,
+                size: 18,
+                color: queue.length > 1
+                    ? CupertinoColors.label.resolveFrom(context)
+                    : CupertinoColors.tertiaryLabel.resolveFrom(context),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 4),
         Text(

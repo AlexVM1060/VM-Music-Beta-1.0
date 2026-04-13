@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -148,7 +149,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               if (index == 0) {
                 return _buildPlaylistCoverHeader(
                   context,
+                  displayVideos: displayVideos,
                   downloadedById: downloadedById,
+                  videoManager: videoManager,
                 );
               }
 
@@ -589,7 +592,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   Widget _buildPlaylistCoverHeader(
     BuildContext context, {
+    required List<VideoHistory> displayVideos,
     required Map<String, DownloadedVideo> downloadedById,
+    required VideoPlayerManager videoManager,
   }) {
     final fallback = CupertinoColors.tertiarySystemFill.resolveFrom(context);
     final coverStroke = CupertinoColors.separator
@@ -741,9 +746,118 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               ],
             ],
           ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _PlaylistActionButton(
+                  icon: CupertinoIcons.play_fill,
+                  label: 'Reproducir',
+                  isPrimary: true,
+                  onPressed: () async {
+                    await _playPlaylistFromHeader(
+                      videoManager: videoManager,
+                      displayVideos: displayVideos,
+                      downloadedById: downloadedById,
+                      shuffle: false,
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _PlaylistActionButton(
+                  icon: CupertinoIcons.shuffle,
+                  label: 'Aleatorio',
+                  onPressed: () async {
+                    await _playPlaylistFromHeader(
+                      videoManager: videoManager,
+                      displayVideos: displayVideos,
+                      downloadedById: downloadedById,
+                      shuffle: true,
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
+  }
+
+  List<PlaybackQueueItem> _buildPlaylistQueueItems({
+    required List<VideoHistory> displayVideos,
+    required Map<String, DownloadedVideo> downloadedById,
+  }) {
+    final items = <PlaybackQueueItem>[];
+    for (final video in displayVideos) {
+      final local = downloadedById[video.videoId];
+      final localPath = local?.filePath.trim() ?? '';
+      final canPlayLocal = localPath.isNotEmpty && File(localPath).existsSync();
+      if (canPlayLocal && local != null) {
+        items.add(
+          PlaybackQueueItem(
+            videoId: local.videoId,
+            title: local.title,
+            thumbnailUrl:
+                (local.localThumbnailPath != null &&
+                    local.localThumbnailPath!.isNotEmpty)
+                ? local.localThumbnailPath!
+                : local.thumbnailUrl,
+            artist: local.channelTitle,
+            isLocal: true,
+            localFilePath: local.filePath,
+            localPlainLyrics: local.plainLyrics,
+            localSyncedLyrics: local.syncedLyrics,
+          ),
+        );
+      } else {
+        items.add(
+          PlaybackQueueItem(
+            videoId: video.videoId,
+            title: video.title,
+            thumbnailUrl: video.thumbnailUrl,
+            artist: video.channelTitle,
+            isLocal: false,
+          ),
+        );
+      }
+    }
+    return items;
+  }
+
+  Future<void> _playPlaylistFromHeader({
+    required VideoPlayerManager videoManager,
+    required List<VideoHistory> displayVideos,
+    required Map<String, DownloadedVideo> downloadedById,
+    required bool shuffle,
+  }) async {
+    if (displayVideos.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Esta playlist no contiene canciones.')),
+      );
+      return;
+    }
+    final queueItems = _buildPlaylistQueueItems(
+      displayVideos: displayVideos,
+      downloadedById: downloadedById,
+    );
+    if (queueItems.isEmpty) return;
+
+    final ordered = List<PlaybackQueueItem>.from(queueItems);
+    if (shuffle) {
+      ordered.shuffle(math.Random());
+    }
+
+    final first = ordered.first;
+    final rest = ordered.skip(1).toList(growable: false);
+    final queueLabel = shuffle
+        ? 'Aleatorio · ${_currentPlaylist.name}'
+        : 'Playlist · ${_currentPlaylist.name}';
+    videoManager.replaceManualPlaybackQueue(rest, queueTitle: queueLabel);
+    await videoManager.playQueueItem(first);
   }
 
   Future<bool> _downloadUsingLargePlayerMethod({
@@ -1106,6 +1220,77 @@ class _DownloadStatusIndicator extends StatelessWidget {
           ? null
           : onPressed,
       child: child,
+    );
+  }
+}
+
+class _PlaylistActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool isPrimary;
+  final VoidCallback onPressed;
+
+  const _PlaylistActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.isPrimary = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final border = CupertinoColors.separator
+        .resolveFrom(context)
+        .withValues(alpha: 0.32);
+    final labelColor = isPrimary
+        ? CupertinoColors.white
+        : CupertinoColors.label.resolveFrom(context);
+
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      minimumSize: const Size(0, 44),
+      onPressed: onPressed,
+      child: Container(
+        height: 42,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: border, width: 0.6),
+          gradient: isPrimary
+              ? const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF1DB954), Color(0xFF0C9C4A)],
+                )
+              : LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    CupertinoColors.systemGrey6
+                        .resolveFrom(context)
+                        .withValues(alpha: 0.88),
+                    CupertinoColors.systemGrey5
+                        .resolveFrom(context)
+                        .withValues(alpha: 0.78),
+                  ],
+                ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 16, color: labelColor),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontFamily: '.SF Pro Text',
+                fontWeight: FontWeight.w700,
+                fontSize: 14,
+                color: labelColor,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
