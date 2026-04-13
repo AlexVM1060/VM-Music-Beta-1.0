@@ -3,13 +3,19 @@ import UIKit
 import Vision
 import CoreImage
 import Speech
+import MediaPlayer
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   private let artworkCutoutChannelName = "com.vm.music.beta/artwork_cutout"
   private let liveLyricsAlignmentChannelName = "com.vm.music.beta/ios_live_lyrics_alignment"
+  private let lockScreenFavoriteChannelName = "com.vm.music.beta/ios_lock_screen_favorite"
+  private let siriPlaybackChannelName = "com.vm.music.beta/siri_playback"
+  private let siriPlaybackPendingKey = "com.vm.music.beta.pending_siri_playback"
   private let ciContext = CIContext(options: nil)
   private var liveLyricsTask: SFSpeechRecognitionTask?
+  private var lockScreenFavoriteChannel: FlutterMethodChannel?
+  private var siriPlaybackChannel: FlutterMethodChannel?
 
   override func application(
     _ application: UIApplication,
@@ -35,8 +41,109 @@ import Speech
       }
     }
 
+    if let registrar = self.registrar(forPlugin: "LockScreenFavoriteChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: lockScreenFavoriteChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      lockScreenFavoriteChannel = channel
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleLockScreenFavorite(call: call, result: result)
+      }
+      configureLockScreenFavoriteCommands()
+    }
+
+    if let registrar = self.registrar(forPlugin: "SiriPlaybackChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: siriPlaybackChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      siriPlaybackChannel = channel
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleSiriPlayback(call: call, result: result)
+      }
+    }
+
     GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  private func configureLockScreenFavoriteCommands() {
+    let commandCenter = MPRemoteCommandCenter.shared()
+
+    commandCenter.likeCommand.isEnabled = true
+    commandCenter.likeCommand.localizedTitle = "Favorito"
+    commandCenter.likeCommand.addTarget { [weak self] _ in
+      self?.notifyLockScreenFavoritePressed(source: "like")
+      return .success
+    }
+
+    if #available(iOS 9.1, *) {
+      commandCenter.bookmarkCommand.isEnabled = true
+      commandCenter.bookmarkCommand.localizedTitle = "Favorito"
+      commandCenter.bookmarkCommand.addTarget { [weak self] _ in
+        self?.notifyLockScreenFavoritePressed(source: "bookmark")
+        return .success
+      }
+    }
+  }
+
+  private func notifyLockScreenFavoritePressed(source: String) {
+    DispatchQueue.main.async { [weak self] in
+      self?.lockScreenFavoriteChannel?.invokeMethod(
+        "onFavoritePressed",
+        arguments: ["source": source]
+      )
+    }
+  }
+
+  private func handleLockScreenFavorite(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard call.method == "setFavoriteState" else {
+      result(FlutterMethodNotImplemented)
+      return
+    }
+    let args = call.arguments as? [String: Any]
+    let enabled = (args?["enabled"] as? Bool) ?? true
+    let isFavorite = (args?["isFavorite"] as? Bool) ?? false
+    let title = ((args?["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+      ? (args?["title"] as? String ?? "Favorito")
+      : "Favorito"
+
+    let commandCenter = MPRemoteCommandCenter.shared()
+    commandCenter.likeCommand.isEnabled = enabled
+    commandCenter.likeCommand.localizedTitle = title
+    commandCenter.likeCommand.isActive = isFavorite
+
+    if #available(iOS 9.1, *) {
+      commandCenter.bookmarkCommand.isEnabled = enabled
+      commandCenter.bookmarkCommand.localizedTitle = title
+      commandCenter.bookmarkCommand.isActive = isFavorite
+    }
+    result(nil)
+  }
+
+  private func handleSiriPlayback(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    if call.method == "consumePendingSiriPlayRequest" {
+      let defaults = UserDefaults.standard
+      let payload = defaults.dictionary(forKey: siriPlaybackPendingKey)
+      defaults.removeObject(forKey: siriPlaybackPendingKey)
+      result(payload)
+      return
+    }
+    result(FlutterMethodNotImplemented)
+  }
+
+  @MainActor
+  static func storePendingSiriPlayback(song: String, artist: String) {
+    let cleanSong = song.trimmingCharacters(in: .whitespacesAndNewlines)
+    let cleanArtist = artist.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !cleanSong.isEmpty else { return }
+    let payload: [String: Any] = [
+      "song": cleanSong,
+      "artist": cleanArtist,
+      "timestampMs": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    UserDefaults.standard.set(payload, forKey: "com.vm.music.beta.pending_siri_playback")
   }
 
   private func handleArtworkCutout(call: FlutterMethodCall, result: @escaping FlutterResult) {
