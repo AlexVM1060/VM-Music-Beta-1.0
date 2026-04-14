@@ -11,6 +11,7 @@ import MediaPlayer
   private let liveLyricsAlignmentChannelName = "com.vm.music.beta/ios_live_lyrics_alignment"
   private let lockScreenFavoriteChannelName = "com.vm.music.beta/ios_lock_screen_favorite"
   private let siriPlaybackChannelName = "com.vm.music.beta/siri_playback"
+  private let appleMusicMigrationChannelName = "com.vm.music.beta/apple_music_migration"
   private let siriPlaybackPendingKey = "com.vm.music.beta.pending_siri_playback"
   private let ciContext = CIContext(options: nil)
   private var liveLyricsTask: SFSpeechRecognitionTask?
@@ -61,6 +62,16 @@ import MediaPlayer
       siriPlaybackChannel = channel
       channel.setMethodCallHandler { [weak self] call, result in
         self?.handleSiriPlayback(call: call, result: result)
+      }
+    }
+
+    if let registrar = self.registrar(forPlugin: "AppleMusicMigrationChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: appleMusicMigrationChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleAppleMusicMigration(call: call, result: result)
       }
     }
 
@@ -131,6 +142,127 @@ import MediaPlayer
       return
     }
     result(FlutterMethodNotImplemented)
+  }
+
+  private func handleAppleMusicMigration(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "getAuthorizationStatus":
+      result(mediaLibraryAuthorizationLabel(status: MPMediaLibrary.authorizationStatus()))
+    case "requestAuthorization":
+      MPMediaLibrary.requestAuthorization { status in
+        DispatchQueue.main.async {
+          result(self.mediaLibraryAuthorizationLabel(status: status))
+        }
+      }
+    case "fetchUserPlaylists":
+      guard MPMediaLibrary.authorizationStatus() == .authorized else {
+        result(
+          FlutterError(
+            code: "not_authorized",
+            message: "Apple Music no está autorizado.",
+            details: nil
+          )
+        )
+        return
+      }
+      result(fetchMediaLibraryPlaylists())
+    case "fetchPlaylistTracks":
+      guard MPMediaLibrary.authorizationStatus() == .authorized else {
+        result(
+          FlutterError(
+            code: "not_authorized",
+            message: "Apple Music no está autorizado.",
+            details: nil
+          )
+        )
+        return
+      }
+      guard let args = call.arguments as? [String: Any],
+            let rawPlaylistId = (args["playlistId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !rawPlaylistId.isEmpty,
+            let playlistId = UInt64(rawPlaylistId) else {
+        result(
+          FlutterError(
+            code: "invalid_args",
+            message: "playlistId es obligatorio.",
+            details: nil
+          )
+        )
+        return
+      }
+      result(fetchTracksForPlaylist(playlistId: playlistId))
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func mediaLibraryAuthorizationLabel(status: MPMediaLibraryAuthorizationStatus) -> String {
+    switch status {
+    case .authorized:
+      return "authorized"
+    case .denied:
+      return "denied"
+    case .restricted:
+      return "restricted"
+    case .notDetermined:
+      return "notDetermined"
+    @unknown default:
+      return "notDetermined"
+    }
+  }
+
+  private func fetchMediaLibraryPlaylists() -> [[String: Any]] {
+    let query = MPMediaQuery.playlists()
+    let collections = query.collections ?? []
+    var output: [[String: Any]] = []
+    output.reserveCapacity(collections.count)
+
+    for collection in collections {
+      guard let playlist = collection as? MPMediaPlaylist else { continue }
+      let name = (playlist.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      if name.isEmpty { continue }
+      output.append([
+        "id": String(playlist.persistentID),
+        "name": name,
+        "trackCount": playlist.count
+      ])
+    }
+
+    output.sort { left, right in
+      let leftName = (left["name"] as? String ?? "").lowercased()
+      let rightName = (right["name"] as? String ?? "").lowercased()
+      return leftName < rightName
+    }
+    return output
+  }
+
+  private func fetchTracksForPlaylist(playlistId: UInt64) -> [[String: Any]] {
+    let query = MPMediaQuery.playlists()
+    let collections = query.collections ?? []
+    guard let playlist = collections
+      .compactMap({ $0 as? MPMediaPlaylist })
+      .first(where: { $0.persistentID == playlistId }) else {
+      return []
+    }
+
+    let items = playlist.items
+    var output: [[String: Any]] = []
+    output.reserveCapacity(items.count)
+
+    for item in items {
+      let title = (item.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      if title.isEmpty { continue }
+      let artist = (item.artist ?? item.albumArtist ?? "Artista desconocido")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let album = (item.albumTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      output.append([
+        "title": title,
+        "artist": artist.isEmpty ? "Artista desconocido" : artist,
+        "album": album
+      ])
+    }
+
+    return output
   }
 
   @MainActor

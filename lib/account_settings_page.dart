@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart' show Theme;
+import 'package:myapp/apple_music_migration_page.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:provider/provider.dart';
 
@@ -175,6 +176,30 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                       value: settings.allowExplicitContent,
                       onChanged: (value) =>
                           settings.setAllowExplicitContent(value),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                _buildSectionTitle(context, 'Integraciones'),
+                const SizedBox(height: 10),
+                _GlassSection(
+                  isDark: isDark,
+                  children: [
+                    _SettingActionRow(
+                      title: 'Migrar desde Apple Music',
+                      subtitle:
+                          'Conecta tu cuenta y elige qué playlists quieres importar',
+                      trailing: const Icon(
+                        CupertinoIcons.chevron_forward,
+                        size: 18,
+                      ),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          CupertinoPageRoute<void>(
+                            builder: (_) => const AppleMusicMigrationPage(),
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),
