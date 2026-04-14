@@ -54,13 +54,27 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
       await _videoPlayerController!.initialize();
 
       if (mounted) {
-        await _manager.play(widget.video.videoId, isLocalVideo: true);
+        await _manager.playLocalFileFromUserSelection(
+          context,
+          id: widget.video.videoId,
+          filePath: widget.video.filePath,
+          title: widget.video.title,
+          thumbnailUrl:
+              (widget.video.localThumbnailPath != null &&
+                  widget.video.localThumbnailPath!.isNotEmpty)
+              ? widget.video.localThumbnailPath!
+              : widget.video.thumbnailUrl,
+          artist: widget.video.channelTitle,
+          localPlainLyrics: widget.video.plainLyrics,
+          localSyncedLyrics: widget.video.syncedLyrics,
+        );
         _manager.setPlayerData(
           videoId: widget.video.videoId,
           controller: _videoPlayerController!,
-          streamUrl: widget.video.filePath, 
+          streamUrl: widget.video.filePath,
           title: widget.video.title,
-          thumbnailUrl: (widget.video.localThumbnailPath != null &&
+          thumbnailUrl:
+              (widget.video.localThumbnailPath != null &&
                   widget.video.localThumbnailPath!.isNotEmpty)
               ? widget.video.localThumbnailPath!
               : widget.video.thumbnailUrl,
@@ -121,16 +135,14 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
     const double minimizedWidth = 250.0;
     const double minimizedHeight = 140.6;
 
-    final playerWidget = _chewieController != null && _chewieController!.videoPlayerController.value.isInitialized
+    final playerWidget =
+        _chewieController != null &&
+            _chewieController!.videoPlayerController.value.isInitialized
         ? Chewie(controller: _chewieController!)
         : const Center(child: CupertinoActivityIndicator());
 
     if (_isLoading && !isMinimized) {
-      return Scaffold(
-        body: Center(
-          child: playerWidget,
-        ),
-      );
+      return Scaffold(body: Center(child: playerWidget));
     }
 
     return AnimatedPositioned(
@@ -143,7 +155,11 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
       child: Draggable(
         feedback: Material(
           elevation: 8.0,
-          child: _buildMinimizedLayout(minimizedWidth, minimizedHeight, playerWidget),
+          child: _buildMinimizedLayout(
+            minimizedWidth,
+            minimizedHeight,
+            playerWidget,
+          ),
         ),
         maxSimultaneousDrags: isMinimized ? 1 : 0,
         onDragEnd: (details) {
@@ -152,20 +168,34 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
           double dy = details.offset.dy;
 
           if (dx < 0) dx = 0;
-          if (dx > size.width - minimizedWidth) dx = size.width - minimizedWidth;
+          if (dx > size.width - minimizedWidth) {
+            dx = size.width - minimizedWidth;
+          }
           if (dy < 0) dy = 0;
-          if (dy > size.height - minimizedHeight) dy = size.height - minimizedHeight;
+          if (dy > size.height - minimizedHeight) {
+            dy = size.height - minimizedHeight;
+          }
 
           setState(() {
             _dragOffset = Offset(dx, dy);
           });
         },
-        child: _buildPlayerContent(isMinimized, minimizedWidth, minimizedHeight, playerWidget),
+        child: _buildPlayerContent(
+          isMinimized,
+          minimizedWidth,
+          minimizedHeight,
+          playerWidget,
+        ),
       ),
     );
   }
 
-  Widget _buildPlayerContent(bool isMinimized, double minWidth, double minHeight, Widget player) {
+  Widget _buildPlayerContent(
+    bool isMinimized,
+    double minWidth,
+    double minHeight,
+    Widget player,
+  ) {
     final screenSize = MediaQuery.of(context).size;
 
     return GestureDetector(
@@ -195,17 +225,18 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
           children: [
             Stack(
               children: [
-                AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: player,
-                ),
+                AspectRatio(aspectRatio: 16 / 9, child: player),
                 Positioned(
                   top: 8,
                   left: 8,
                   child: CupertinoButton(
                     padding: EdgeInsets.zero,
                     onPressed: _manager.minimize,
-                    child: const Icon(CupertinoIcons.chevron_down, color: Colors.white, size: 30),
+                    child: const Icon(
+                      CupertinoIcons.chevron_down,
+                      color: Colors.white,
+                      size: 30,
+                    ),
                   ),
                 ),
               ],
@@ -219,18 +250,22 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
                   Expanded(
                     child: Text(
                       widget.video.title,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   const SizedBox(width: 16),
-                   IconButton(
+                  IconButton(
                     icon: const Icon(Icons.delete, color: Colors.red),
                     tooltip: 'Eliminar descarga',
                     onPressed: () {
-                      downloadService.deleteVideo(widget.video.videoId); // CORREGIDO
-                       _manager.close(); // Cierra el reproductor al borrar
+                      downloadService.deleteVideo(
+                        widget.video.videoId,
+                      ); // CORREGIDO
+                      _manager.close(); // Cierra el reproductor al borrar
                       Navigator.of(context).pop();
                     },
                   ),
@@ -258,16 +293,24 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
             child: CupertinoButton(
               padding: const EdgeInsets.all(4),
               onPressed: () => _manager.close(),
-              child: const Icon(CupertinoIcons.xmark, color: Colors.white, size: 20),
+              child: const Icon(
+                CupertinoIcons.xmark,
+                color: Colors.white,
+                size: 20,
+              ),
             ),
           ),
-            Positioned(
+          Positioned(
             top: 0,
             left: 0,
             child: CupertinoButton(
               padding: const EdgeInsets.all(4),
               onPressed: _manager.maximize,
-              child: const Icon(Icons.open_in_full, color: Colors.white, size: 20),
+              child: const Icon(
+                Icons.open_in_full,
+                color: Colors.white,
+                size: 20,
+              ),
             ),
           ),
         ],

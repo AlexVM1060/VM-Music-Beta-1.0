@@ -55,7 +55,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     try {
       final settings = context.read<AppSettingsService?>();
       final targetHeight = _targetVideoHeightForQuality(settings?.audioQuality);
-      await _manager.play(widget.videoId);
+      await _manager.playFromUserSelection(context, widget.videoId);
       final manifestFuture = _runYoutubeWithRetry(
         () => _ytExplode.videos.streamsClient.getManifest(widget.videoId),
       );

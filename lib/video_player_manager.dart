@@ -5,8 +5,8 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:audio_service/audio_service.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hive/hive.dart';
 import 'package:just_audio/just_audio.dart';
@@ -71,6 +71,22 @@ class _RecommendationSignals {
     required this.coListenArtists,
     required this.genreHints,
     required this.genreTokens,
+  });
+}
+
+class _YouTubeMusicQueueCandidate {
+  final String videoId;
+  final String title;
+  final String artist;
+  final String thumbnailUrl;
+  final bool isExplicit;
+
+  const _YouTubeMusicQueueCandidate({
+    required this.videoId,
+    required this.title,
+    required this.artist,
+    required this.thumbnailUrl,
+    required this.isExplicit,
   });
 }
 
@@ -193,6 +209,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _crossfadePreloadLeadTime = Duration(seconds: 26);
   static const String _youtubeiPlayerEndpoint =
       'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+  static const String _youtubeiMusicNextEndpoint =
+      'https://music.youtube.com/youtubei/v1/next?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
   static const Map<String, String> _youtubeHeaders = {
     'User-Agent':
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
@@ -341,6 +359,194 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (_errorMessage == null) return;
     _errorMessage = null;
     notifyListeners();
+  }
+
+  bool _hasQueuedItems() =>
+      _manualPlaybackQueue.isNotEmpty || _playbackQueue.isNotEmpty;
+
+  bool _isTrackInQueue({required String videoId, required bool isLocal}) {
+    final id = videoId.trim();
+    if (id.isEmpty) return false;
+    final inManual = _manualPlaybackQueue.any(
+      (item) => item.videoId == id && item.isLocal == isLocal,
+    );
+    if (inManual) return true;
+    return _playbackQueue.any(
+      (item) => item.videoId == id && item.isLocal == isLocal,
+    );
+  }
+
+  bool _shouldPromptQueueResetForUserSelection({
+    required String targetVideoId,
+    required bool targetIsLocal,
+  }) {
+    final targetId = targetVideoId.trim();
+    if (targetId.isEmpty) return false;
+    if (!_hasQueuedItems()) return false;
+    final isCurrentTrack =
+        _currentVideoId == targetId && _isLocal == targetIsLocal;
+    if (isCurrentTrack) return false;
+    if (_isTrackInQueue(videoId: targetId, isLocal: targetIsLocal)) {
+      return false;
+    }
+    return true;
+  }
+
+  bool _shouldPreserveQueueForTarget({
+    required String targetVideoId,
+    required bool targetIsLocal,
+  }) {
+    final targetId = targetVideoId.trim();
+    if (targetId.isEmpty || !_hasQueuedItems()) return false;
+    final isCurrentTrack =
+        _currentVideoId == targetId && _isLocal == targetIsLocal;
+    if (isCurrentTrack) return true;
+    return _isTrackInQueue(videoId: targetId, isLocal: targetIsLocal);
+  }
+
+  bool _removeTrackFromQueuesById({
+    required String videoId,
+    required bool isLocal,
+  }) {
+    final id = videoId.trim();
+    if (id.isEmpty) return false;
+    final manualBefore = _manualPlaybackQueue.length;
+    final autoBefore = _playbackQueue.length;
+    _manualPlaybackQueue = _manualPlaybackQueue
+        .where((item) => !(item.videoId == id && item.isLocal == isLocal))
+        .toList(growable: false);
+    _playbackQueue = _playbackQueue
+        .where((item) => !(item.videoId == id && item.isLocal == isLocal))
+        .toList(growable: false);
+    return manualBefore != _manualPlaybackQueue.length ||
+        autoBefore != _playbackQueue.length;
+  }
+
+  void _clearAllPlaybackQueueForUserSelection() {
+    ++_queueEpoch;
+    _manualPlaybackQueue = const [];
+    _playbackQueue = const [];
+    _isQueueLoading = false;
+    _queueTitle = 'Siguiente';
+    _clearPreloadedNextTrack();
+  }
+
+  Future<bool> _askToClearQueueForNewSong(BuildContext context) async {
+    final accepted = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return CupertinoAlertDialog(
+          title: const Text('Se limpiará la cola de reproducción'),
+          content: const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: Text(
+              'La canción seleccionada no está en la cola actual. '
+              '¿Quieres limpiar la cola y generar recomendaciones nuevas?',
+            ),
+          ),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancelar'),
+            ),
+            CupertinoDialogAction(
+              isDestructiveAction: true,
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Limpiar cola'),
+            ),
+          ],
+        );
+      },
+    );
+    return accepted ?? false;
+  }
+
+  Future<bool> _prepareQueueForUserSelection(
+    BuildContext context, {
+    required String targetVideoId,
+    required bool targetIsLocal,
+  }) async {
+    final shouldPrompt = _shouldPromptQueueResetForUserSelection(
+      targetVideoId: targetVideoId,
+      targetIsLocal: targetIsLocal,
+    );
+    if (shouldPrompt) {
+      final accepted = await _askToClearQueueForNewSong(context);
+      if (!accepted) return false;
+      _clearAllPlaybackQueueForUserSelection();
+      notifyListeners();
+      return true;
+    }
+
+    final removed = _removeTrackFromQueuesById(
+      videoId: targetVideoId,
+      isLocal: targetIsLocal,
+    );
+    if (removed) {
+      _clearPreloadedNextTrack();
+      notifyListeners();
+    }
+    return true;
+  }
+
+  Future<void> playFromUserSelection(
+    BuildContext context,
+    String videoId, {
+    String? preferredThumbnailUrl,
+    String? preferredTitle,
+    String? preferredArtist,
+    Duration? preferredDuration,
+  }) async {
+    final preserveQueue = _shouldPreserveQueueForTarget(
+      targetVideoId: videoId,
+      targetIsLocal: false,
+    );
+    final proceed = await _prepareQueueForUserSelection(
+      context,
+      targetVideoId: videoId,
+      targetIsLocal: false,
+    );
+    if (!proceed) return;
+    await play(
+      videoId,
+      preferredThumbnailUrl: preferredThumbnailUrl,
+      preferredTitle: preferredTitle,
+      preferredArtist: preferredArtist,
+      preferredDuration: preferredDuration,
+      preserveExistingQueue: preserveQueue,
+    );
+  }
+
+  Future<void> playLocalFileFromUserSelection(
+    BuildContext context, {
+    required String id,
+    required String filePath,
+    required String title,
+    required String thumbnailUrl,
+    required String artist,
+    String? localPlainLyrics,
+    String? localSyncedLyrics,
+  }) async {
+    final preserveQueue = _shouldPreserveQueueForTarget(
+      targetVideoId: id,
+      targetIsLocal: true,
+    );
+    final proceed = await _prepareQueueForUserSelection(
+      context,
+      targetVideoId: id,
+      targetIsLocal: true,
+    );
+    if (!proceed) return;
+    await playLocalFile(
+      id: id,
+      filePath: filePath,
+      title: title,
+      thumbnailUrl: thumbnailUrl,
+      artist: artist,
+      localPlainLyrics: localPlainLyrics,
+      localSyncedLyrics: localSyncedLyrics,
+      preserveExistingQueue: preserveQueue,
+    );
   }
 
   void _bindSystemMediaControls() {
@@ -768,6 +974,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     Duration? preferredDuration,
     String? preloadedStreamUrl,
     bool isRecoveryAttempt = false,
+    bool preserveExistingQueue = false,
   }) async {
     _rememberCurrentForHistory();
     _isAiStemsLoading = false;
@@ -907,11 +1114,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
-      if (!_autoplayEnabled) {
+      if (!_autoplayEnabled && !preserveExistingQueue) {
         _clearQueueForAutoplayDisabled();
       }
       unawaited(_applyAudioEffects());
-      if (_autoplayEnabled && !isLocalVideo) {
+      if (_autoplayEnabled && !isLocalVideo && !preserveExistingQueue) {
         unawaited(_warmUpAutoplayQueue(videoId));
       }
 
@@ -969,13 +1176,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         if (_autoplayEnabled && video != null && _currentVideoId == videoId) {
-          await _loadOnlineQueue(video, currentVideoId: videoId);
+          if (!preserveExistingQueue || !_hasQueuedItems()) {
+            await _loadOnlineQueue(video, currentVideoId: videoId);
+          }
         } else if (_autoplayEnabled &&
             video == null &&
             _currentVideoId == videoId) {
-          await _loadOnlineQueueFallbackFromCurrentContext(
-            currentVideoId: videoId,
-          );
+          if (!preserveExistingQueue || !_hasQueuedItems()) {
+            await _loadOnlineQueueFallbackFromCurrentContext(
+              currentVideoId: videoId,
+            );
+          }
         }
 
         if (_currentVideoId == videoId) {
@@ -1004,6 +1215,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             preferredDuration: preferredDuration,
             preloadedStreamUrl: preloadedStreamUrl,
             isRecoveryAttempt: true,
+            preserveExistingQueue: preserveExistingQueue,
           );
           return;
         } catch (recoveryError, recoveryStack) {
@@ -1456,7 +1668,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<List<PlaybackQueueItem>> _getRelatedQueueWithRetry(Video video) async {
-    const queueAlgoVersion = 'v13';
+    const queueAlgoVersion = 'ytmusic-next-v3';
     final freshnessBucket = (_sessionPlayedVideoIds.length / 4).floor();
     final key = '$queueAlgoVersion:$freshnessBucket:${video.id.value}';
     final cached = _relatedQueueCache[key];
@@ -1466,140 +1678,35 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (inFlight != null) return inFlight;
 
     final future = () async {
-      final candidates = <Video>[];
-      List<Video>? related;
-
-      try {
-        related = await _runYoutubeWithRetry(
-          () => _ytExplode.videos.getRelatedVideos(video),
-          maxAttempts: 2,
-        );
-      } catch (e, s) {
-        log(
-          'Related videos falló, seguimos con búsqueda',
-          error: e,
-          stackTrace: s,
-        );
-      }
-
-      final firstHopIds = <String>{};
-      final secondHopCoOccurrence = <String, int>{};
-
-      if (related != null && related.isNotEmpty) {
-        firstHopIds.addAll(related.map((item) => item.id.value));
-        final fastSignals = _buildRecommendationSignals(
-          primaryArtist: video.author,
-          currentTitle: video.title,
-          relatedVideos: related,
-        );
-        final fastQueue = _buildSmartQueue(
-          related,
-          currentVideoId: key,
-          currentTitle: video.title,
-          primaryArtist: video.author,
-          relatedArtistHints: const [],
-          signals: fastSignals,
-          firstHopRelatedIds: firstHopIds,
-          secondHopCoOccurrence: const {},
-        );
-        // Fast-path: con related suficiente ya no hacemos más requests.
-        if (fastQueue.length >= 18) return fastQueue;
-        candidates.addAll(related.take(50));
-      }
-
-      final similarArtists = _buildSimilarArtistCandidates(
-        primaryArtist: video.author,
-        relatedVideos: related ?? const [],
+      final queueFromYouTubeMusic = await _fetchQueueFromYoutubeMusicNext(
+        video,
       );
-      final recommendationSignals = _buildRecommendationSignals(
-        primaryArtist: video.author,
-        currentTitle: video.title,
-        relatedVideos: related ?? const [],
+
+      final excludeIds = Set<String>.from(
+        queueFromYouTubeMusic.map((item) => item.videoId),
       );
-      if (related != null && related.isNotEmpty) {
-        final secondHop = await _collectSecondHopRelatedCandidates(
-          currentVideo: video,
-          firstHopRelated: related,
-          signals: recommendationSignals,
+
+      if (queueFromYouTubeMusic.length >= 22 &&
+          !_isQueueArtistMonotone(queueFromYouTubeMusic)) {
+        return queueFromYouTubeMusic.take(35).toList(growable: false);
+      }
+
+      final fallback = await _buildRelatedQueueFromYoutubeFallback(
+        video,
+        excludeIds: excludeIds,
+      );
+      final merged = <PlaybackQueueItem>[...queueFromYouTubeMusic, ...fallback];
+      if (merged.length < 18) {
+        final radioFallback = await _buildYoutubeMusicRadioPlaylistFallback(
+          video,
+          excludeIds: excludeIds,
         );
-        candidates.addAll(secondHop.$1);
-        for (final entry in secondHop.$2.entries) {
-          secondHopCoOccurrence[entry.key] =
-              (secondHopCoOccurrence[entry.key] ?? 0) + entry.value;
-        }
+        merged.addAll(
+          radioFallback.where((item) => excludeIds.add(item.videoId)),
+        );
       }
-      final expandedSimilarArtists = <String>{
-        ...similarArtists.map(_normalizeArtistName),
-        ...recommendationSignals.coListenArtists.map(_normalizeArtistName),
-      }.where((value) => value.isNotEmpty).toList(growable: false);
-
-      // Búsqueda complementaria sin usar el nombre del artista.
-      if (candidates.length < 26) {
-        final batchedSearches = <Future<List<Video>>>[
-          _collectTrendAndCoListenCandidates(
-            signals: recommendationSignals,
-          ),
-        ];
-        final batchResults = await Future.wait(batchedSearches);
-        for (final batch in batchResults) {
-          candidates.addAll(batch);
-        }
-      }
-
-      // Fallback: autogenerados sin buscar por nombre de artista.
-      if (candidates.length < 12) {
-        final autoQueries = <Future<List<Video>>>[];
-        final fallbackTerms = <String>{
-          ...recommendationSignals.genreHints.take(6),
-          ...recommendationSignals.relatedTitleTokens.take(4),
-          'musica',
-          'top hits',
-          'novedades musica',
-          'regional mexicano',
-          'latin pop',
-          'rap',
-          'rock',
-          'reggaeton',
-          'corridos',
-          'electronic',
-          'indie',
-          'dance',
-          'chill',
-        };
-        for (final term in fallbackTerms) {
-          final normalized = _sanitizeSearchQuery(term).toLowerCase();
-          if (normalized.isEmpty) continue;
-          autoQueries.add(
-            _safeSearchVideos(
-              '$normalized provided to youtube by',
-              limit: 14,
-              onlyAutoGenerated: true,
-            ),
-          );
-          autoQueries.add(
-            _safeSearchVideos(
-              '$normalized auto-generated by youtube',
-              limit: 14,
-              onlyAutoGenerated: true,
-            ),
-          );
-        }
-        final autoBatches = await Future.wait(autoQueries.take(28));
-        for (final batch in autoBatches) {
-          candidates.addAll(batch);
-        }
-      }
-
-      return _buildSmartQueue(
-        candidates,
-        currentVideoId: key,
-        currentTitle: video.title,
-        primaryArtist: video.author,
-        relatedArtistHints: expandedSimilarArtists,
-        signals: recommendationSignals,
-        firstHopRelatedIds: firstHopIds,
-        secondHopCoOccurrence: secondHopCoOccurrence,
-      );
+      if (merged.isEmpty) return const <PlaybackQueueItem>[];
+      return _diversifyQueueByArtist(merged).take(35).toList(growable: false);
     }();
 
     _relatedQueueRequests[key] = future;
@@ -1612,6 +1719,993 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       _relatedQueueRequests.remove(key);
     }
+  }
+
+  Future<List<PlaybackQueueItem>> _fetchQueueFromYoutubeMusicNext(
+    Video currentVideo,
+  ) async {
+    const clientProfiles = <Map<String, String>>[
+      {
+        'clientName': 'WEB_REMIX',
+        'clientVersion': '1.20240226.01.00',
+        'headerClientName': '67',
+        'userAgent':
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      },
+      {
+        'clientName': 'WEB',
+        'clientVersion': '2.20240224.11.00',
+        'headerClientName': '1',
+        'userAgent':
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+      },
+    ];
+
+    final selected = <PlaybackQueueItem>[];
+    final seenIds = <String>{};
+    final discoveredPlaylistIds = <String>{};
+
+    for (final profile in clientProfiles) {
+      final firstPayload = await _fetchYoutubeMusicNextPayload(
+        videoId: currentVideo.id.value,
+        clientName: profile['clientName']!,
+        clientVersion: profile['clientVersion']!,
+        headerClientName: profile['headerClientName']!,
+        userAgent: profile['userAgent']!,
+      );
+      if (firstPayload == null) continue;
+
+      final payloads = <Map<String, dynamic>>[firstPayload];
+      discoveredPlaylistIds.addAll(
+        _extractRecommendationPlaylistIds(firstPayload),
+      );
+      var continuation = _extractContinuationToken(firstPayload);
+      var continuationFetches = 0;
+      while (continuation != null &&
+          continuation.isNotEmpty &&
+          continuationFetches < 5 &&
+          payloads.length < 6 &&
+          selected.length < 40) {
+        final continuationPayload = await _fetchYoutubeMusicNextPayload(
+          continuation: continuation,
+          clientName: profile['clientName']!,
+          clientVersion: profile['clientVersion']!,
+          headerClientName: profile['headerClientName']!,
+          userAgent: profile['userAgent']!,
+        );
+        continuationFetches += 1;
+        if (continuationPayload == null) break;
+        payloads.add(continuationPayload);
+        discoveredPlaylistIds.addAll(
+          _extractRecommendationPlaylistIds(continuationPayload),
+        );
+        final nextToken = _extractContinuationToken(continuationPayload);
+        if (nextToken == continuation) break;
+        continuation = nextToken;
+      }
+
+      _appendCandidatesFromPayloads(
+        payloads,
+        currentVideo: currentVideo,
+        selected: selected,
+        seenIds: seenIds,
+      );
+
+      if (selected.length < 35 && discoveredPlaylistIds.isNotEmpty) {
+        await _appendFromNextPlaylistIds(
+          currentVideo: currentVideo,
+          playlistIds: discoveredPlaylistIds,
+          clientName: profile['clientName']!,
+          clientVersion: profile['clientVersion']!,
+          headerClientName: profile['headerClientName']!,
+          userAgent: profile['userAgent']!,
+          selected: selected,
+          seenIds: seenIds,
+        );
+      }
+
+      if (selected.length >= 40) break;
+    }
+
+    if (selected.length < 20) {
+      discoveredPlaylistIds.addAll(<String>[
+        'RDAMVM${currentVideo.id.value}',
+        'RDMM${currentVideo.id.value}',
+      ]);
+      await _appendFromNextPlaylistIds(
+        currentVideo: currentVideo,
+        playlistIds: discoveredPlaylistIds,
+        clientName: 'WEB_REMIX',
+        clientVersion: '1.20240226.01.00',
+        headerClientName: '67',
+        userAgent:
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        selected: selected,
+        seenIds: seenIds,
+      );
+    }
+
+    return _diversifyQueueByArtist(selected);
+  }
+
+  void _appendCandidatesFromPayloads(
+    List<Map<String, dynamic>> payloads, {
+    required Video currentVideo,
+    required List<PlaybackQueueItem> selected,
+    required Set<String> seenIds,
+  }) {
+    for (final payload in payloads) {
+      final extracted = _extractYoutubeMusicQueueCandidates(
+        payload,
+        currentVideo: currentVideo,
+      );
+      _appendYoutubeMusicCandidates(
+        extracted,
+        currentVideo: currentVideo,
+        selected: selected,
+        seenIds: seenIds,
+      );
+      if (selected.length >= 40) return;
+    }
+  }
+
+  void _appendYoutubeMusicCandidates(
+    Iterable<_YouTubeMusicQueueCandidate> candidates, {
+    required Video currentVideo,
+    required List<PlaybackQueueItem> selected,
+    required Set<String> seenIds,
+  }) {
+    for (final candidate in candidates) {
+      final id = candidate.videoId.trim();
+      if (id.isEmpty || id == currentVideo.id.value) continue;
+      if (!seenIds.add(id)) continue;
+      if (_sessionPlayedVideoIds.contains(id)) continue;
+      if (!_settingsService.allowExplicitContent &&
+          (candidate.isExplicit ||
+              _isExplicitText('${candidate.title} ${candidate.artist}'))) {
+        continue;
+      }
+      selected.add(
+        PlaybackQueueItem(
+          videoId: candidate.videoId,
+          title: candidate.title,
+          thumbnailUrl: candidate.thumbnailUrl,
+          artist: candidate.artist,
+          isLocal: false,
+        ),
+      );
+      if (selected.length >= 40) return;
+    }
+  }
+
+  Future<void> _appendFromNextPlaylistIds({
+    required Video currentVideo,
+    required Set<String> playlistIds,
+    required String clientName,
+    required String clientVersion,
+    required String headerClientName,
+    required String userAgent,
+    required List<PlaybackQueueItem> selected,
+    required Set<String> seenIds,
+  }) async {
+    if (playlistIds.isEmpty || selected.length >= 40) return;
+    final ordered = playlistIds.toList(growable: false)
+      ..sort((a, b) {
+        final aPriority = a.startsWith('RDAMVM')
+            ? 0
+            : (a.startsWith('RDMM') ? 1 : 2);
+        final bPriority = b.startsWith('RDAMVM')
+            ? 0
+            : (b.startsWith('RDMM') ? 1 : 2);
+        if (aPriority != bPriority) return aPriority.compareTo(bPriority);
+        return a.length.compareTo(b.length);
+      });
+
+    for (final playlistId in ordered.take(6)) {
+      if (selected.length >= 40) break;
+      final firstPayload = await _fetchYoutubeMusicNextPayload(
+        videoId: currentVideo.id.value,
+        playlistId: playlistId,
+        clientName: clientName,
+        clientVersion: clientVersion,
+        headerClientName: headerClientName,
+        userAgent: userAgent,
+      );
+      if (firstPayload == null) continue;
+
+      final payloads = <Map<String, dynamic>>[firstPayload];
+      var continuation = _extractContinuationToken(firstPayload);
+      var continuationFetches = 0;
+      while (continuation != null &&
+          continuation.isNotEmpty &&
+          continuationFetches < 3 &&
+          payloads.length < 5 &&
+          selected.length < 40) {
+        final continuationPayload = await _fetchYoutubeMusicNextPayload(
+          continuation: continuation,
+          clientName: clientName,
+          clientVersion: clientVersion,
+          headerClientName: headerClientName,
+          userAgent: userAgent,
+        );
+        continuationFetches += 1;
+        if (continuationPayload == null) break;
+        payloads.add(continuationPayload);
+        final nextToken = _extractContinuationToken(continuationPayload);
+        if (nextToken == continuation) break;
+        continuation = nextToken;
+      }
+
+      _appendCandidatesFromPayloads(
+        payloads,
+        currentVideo: currentVideo,
+        selected: selected,
+        seenIds: seenIds,
+      );
+    }
+  }
+
+  Set<String> _extractRecommendationPlaylistIds(dynamic node, {int depth = 0}) {
+    if (depth > 18 || node == null) return const <String>{};
+    final ids = <String>{};
+
+    void maybeAdd(String? raw) {
+      final id = (raw ?? '').trim();
+      if (id.isEmpty) return;
+      if (_looksLikeRecommendationPlaylistId(id)) {
+        ids.add(id);
+      }
+    }
+
+    if (node is Map) {
+      final direct = node['playlistId'];
+      if (direct is String) {
+        maybeAdd(direct);
+      }
+
+      final watchPlaylistEndpoint = node['watchPlaylistEndpoint'];
+      if (watchPlaylistEndpoint is Map) {
+        final endpointId = watchPlaylistEndpoint['playlistId'];
+        if (endpointId is String) {
+          maybeAdd(endpointId);
+        }
+      }
+
+      final watchEndpoint = node['watchEndpoint'];
+      if (watchEndpoint is Map) {
+        final endpointId = watchEndpoint['playlistId'];
+        if (endpointId is String) {
+          maybeAdd(endpointId);
+        }
+        final nestedPlaylistEndpoint = watchEndpoint['watchPlaylistEndpoint'];
+        if (nestedPlaylistEndpoint is Map) {
+          final nestedId = nestedPlaylistEndpoint['playlistId'];
+          if (nestedId is String) {
+            maybeAdd(nestedId);
+          }
+        }
+      }
+
+      for (final value in node.values) {
+        ids.addAll(_extractRecommendationPlaylistIds(value, depth: depth + 1));
+      }
+    } else if (node is List) {
+      for (final value in node) {
+        ids.addAll(_extractRecommendationPlaylistIds(value, depth: depth + 1));
+      }
+    }
+
+    return ids;
+  }
+
+  bool _looksLikeRecommendationPlaylistId(String playlistId) {
+    final value = playlistId.trim();
+    if (value.isEmpty) return false;
+    if (value.startsWith('RDAMVM')) return true;
+    if (value.startsWith('RDMM')) return true;
+    if (value.startsWith('RD')) return true;
+    if (value.startsWith('VLRD')) return true;
+    return false;
+  }
+
+  Future<Map<String, dynamic>?> _fetchYoutubeMusicNextPayload({
+    String? videoId,
+    String? playlistId,
+    String? continuation,
+    required String clientName,
+    required String clientVersion,
+    required String headerClientName,
+    required String userAgent,
+  }) async {
+    final normalizedVideoId = (videoId ?? '').trim();
+    final normalizedPlaylistId = (playlistId ?? '').trim();
+    final normalizedContinuation = (continuation ?? '').trim();
+    final hasVideoId = normalizedVideoId.isNotEmpty;
+    final hasPlaylistId = normalizedPlaylistId.isNotEmpty;
+    final hasContinuation = normalizedContinuation.isNotEmpty;
+    if (!hasVideoId && !hasPlaylistId && !hasContinuation) return null;
+
+    final payload = <String, Object?>{
+      'context': {
+        'client': {
+          'clientName': clientName,
+          'clientVersion': clientVersion,
+          'hl': 'es',
+          'gl': 'US',
+        },
+        'request': {'useSsl': true},
+      },
+      'contentCheckOk': true,
+      'racyCheckOk': true,
+    };
+    if (hasContinuation) {
+      payload['continuation'] = normalizedContinuation;
+    } else {
+      if (hasVideoId) {
+        payload['videoId'] = normalizedVideoId;
+      }
+      if (hasPlaylistId) {
+        payload['playlistId'] = normalizedPlaylistId;
+      }
+      payload['isAudioOnly'] = true;
+      payload['enablePersistentPlaylistPanel'] = true;
+      payload['tunerSettingValue'] = 'AUTOMIX_SETTING_NORMAL';
+    }
+
+    final referer = hasVideoId
+        ? 'https://music.youtube.com/watch?v=$normalizedVideoId'
+        : (hasPlaylistId
+              ? 'https://music.youtube.com/playlist?list=$normalizedPlaylistId'
+              : 'https://music.youtube.com/');
+
+    try {
+      return await _runYoutubeWithRetry(
+        () => _postYoutubeMusicNextRequest(
+          payload: payload,
+          userAgent: userAgent,
+          clientVersion: clientVersion,
+          headerClientName: headerClientName,
+          referer: referer,
+        ),
+        maxAttempts: _isYoutubeSlowModeActive ? 3 : 2,
+      );
+    } catch (e, s) {
+      log('No se pudo consultar YouTube Music next', error: e, stackTrace: s);
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _postYoutubeMusicNextRequest({
+    required Map<String, Object?> payload,
+    required String userAgent,
+    required String clientVersion,
+    required String headerClientName,
+    required String referer,
+  }) async {
+    final client = HttpClient();
+    try {
+      final req = await client.postUrl(Uri.parse(_youtubeiMusicNextEndpoint));
+      req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+      req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      req.headers.set(HttpHeaders.userAgentHeader, userAgent);
+      req.headers.set('Origin', 'https://music.youtube.com');
+      req.headers.set('Referer', referer);
+      req.headers.set('X-Youtube-Client-Name', headerClientName);
+      req.headers.set('X-Youtube-Client-Version', clientVersion);
+      req.add(utf8.encode(jsonEncode(payload)));
+
+      final res = await req.close();
+      if (res.statusCode == 429 || res.statusCode >= 500) {
+        throw HttpException(
+          'YouTube Music next temporalmente no disponible: ${res.statusCode}',
+        );
+      }
+      if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      final body = await utf8.decoder.bind(res).join();
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) {
+        return Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+      }
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  List<_YouTubeMusicQueueCandidate> _extractYoutubeMusicQueueCandidates(
+    Map<String, dynamic> payload, {
+    required Video currentVideo,
+  }) {
+    final candidates = <_YouTubeMusicQueueCandidate>[];
+    final seen = <String>{};
+    final playlistRenderers = <Map<String, dynamic>>[];
+    _collectPlaylistPanelVideoRenderers(payload, playlistRenderers);
+
+    for (final renderer in playlistRenderers) {
+      final videoId = (renderer['videoId'] ?? '').toString().trim();
+      if (videoId.isEmpty || videoId == currentVideo.id.value) continue;
+      if (!seen.add(videoId)) continue;
+
+      final title = _extractYoutubeText(renderer['title']);
+      final artist =
+          _extractYoutubeText(renderer['longBylineText']).trim().isNotEmpty
+          ? _extractYoutubeText(renderer['longBylineText'])
+          : (_extractYoutubeText(renderer['shortBylineText']).trim().isNotEmpty
+                ? _extractYoutubeText(renderer['shortBylineText'])
+                : _extractYoutubeText(renderer['subtitle']));
+      final thumbnail =
+          _extractBestThumbnailFromNode(renderer['thumbnail']) ??
+          _defaultThumbnailForVideoId(videoId);
+      final explicitFromRenderer = _containsExplicitMarker(renderer['badges']);
+
+      candidates.add(
+        _YouTubeMusicQueueCandidate(
+          videoId: videoId,
+          title: title.trim().isEmpty ? currentVideo.title : title.trim(),
+          artist: artist.trim().isEmpty ? 'Artista desconocido' : artist.trim(),
+          thumbnailUrl: thumbnail,
+          isExplicit: explicitFromRenderer || _isExplicitText('$title $artist'),
+        ),
+      );
+    }
+
+    final musicResponsiveRenderers = <Map<String, dynamic>>[];
+    _collectMusicResponsiveListItemRenderers(payload, musicResponsiveRenderers);
+    for (final renderer in musicResponsiveRenderers) {
+      final parsed = _parseMusicResponsiveCandidate(
+        renderer,
+        currentVideoId: currentVideo.id.value,
+      );
+      if (parsed == null) continue;
+      if (!seen.add(parsed.videoId)) continue;
+      candidates.add(parsed);
+    }
+    return candidates;
+  }
+
+  void _collectPlaylistPanelVideoRenderers(
+    dynamic node,
+    List<Map<String, dynamic>> out, {
+    int depth = 0,
+  }) {
+    if (depth > 18) return;
+    if (node is Map) {
+      final renderer = node['playlistPanelVideoRenderer'];
+      if (renderer is Map) {
+        out.add(Map<String, dynamic>.from(renderer.cast<dynamic, dynamic>()));
+      }
+      for (final value in node.values) {
+        _collectPlaylistPanelVideoRenderers(value, out, depth: depth + 1);
+      }
+      return;
+    }
+    if (node is List) {
+      for (final item in node) {
+        _collectPlaylistPanelVideoRenderers(item, out, depth: depth + 1);
+      }
+    }
+  }
+
+  void _collectMusicResponsiveListItemRenderers(
+    dynamic node,
+    List<Map<String, dynamic>> out, {
+    int depth = 0,
+  }) {
+    if (depth > 20) return;
+    if (node is Map) {
+      final renderer = node['musicResponsiveListItemRenderer'];
+      if (renderer is Map) {
+        out.add(Map<String, dynamic>.from(renderer.cast<dynamic, dynamic>()));
+      }
+      for (final value in node.values) {
+        _collectMusicResponsiveListItemRenderers(value, out, depth: depth + 1);
+      }
+      return;
+    }
+    if (node is List) {
+      for (final item in node) {
+        _collectMusicResponsiveListItemRenderers(item, out, depth: depth + 1);
+      }
+    }
+  }
+
+  _YouTubeMusicQueueCandidate? _parseMusicResponsiveCandidate(
+    Map<String, dynamic> renderer, {
+    required String currentVideoId,
+  }) {
+    final videoId = _extractVideoIdFromNode(renderer)?.trim() ?? '';
+    if (videoId.isEmpty || videoId == currentVideoId) return null;
+
+    final flexColumns = renderer['flexColumns'];
+    String title = '';
+    String artist = '';
+    if (flexColumns is List) {
+      final normalizedColumns = flexColumns
+          .whereType<Map>()
+          .map(
+            (entry) =>
+                Map<String, dynamic>.from(entry.cast<dynamic, dynamic>()),
+          )
+          .toList(growable: false);
+      if (normalizedColumns.isNotEmpty) {
+        final firstColumn = normalizedColumns
+            .first['musicResponsiveListItemFlexColumnRenderer'];
+        if (firstColumn is Map) {
+          title = _extractYoutubeText(firstColumn['text']);
+        }
+      }
+      if (normalizedColumns.length > 1) {
+        final secondColumn =
+            normalizedColumns[1]['musicResponsiveListItemFlexColumnRenderer'];
+        if (secondColumn is Map) {
+          artist = _extractYoutubeText(secondColumn['text']);
+        }
+      }
+    }
+
+    if (artist.trim().isNotEmpty && artist.contains('•')) {
+      artist = artist.split('•').first.trim();
+    }
+    final thumbnail =
+        _extractBestThumbnailFromNode(renderer['thumbnail']) ??
+        _defaultThumbnailForVideoId(videoId);
+
+    final fallbackTitle = _extractYoutubeText(renderer['title']);
+    final effectiveTitle = title.trim().isNotEmpty
+        ? title.trim()
+        : (fallbackTitle.trim().isNotEmpty ? fallbackTitle.trim() : '');
+    if (effectiveTitle.isEmpty) return null;
+
+    final effectiveArtist = artist.trim().isNotEmpty
+        ? artist.trim()
+        : _extractYoutubeText(renderer['subtitle']).trim();
+
+    return _YouTubeMusicQueueCandidate(
+      videoId: videoId,
+      title: effectiveTitle,
+      artist: effectiveArtist.isEmpty ? 'Artista desconocido' : effectiveArtist,
+      thumbnailUrl: thumbnail,
+      isExplicit:
+          _containsExplicitMarker(renderer['badges']) ||
+          _isExplicitText('$effectiveTitle $effectiveArtist'),
+    );
+  }
+
+  String? _extractVideoIdFromNode(dynamic node, {int depth = 0}) {
+    if (depth > 12 || node == null) return null;
+    if (node is Map) {
+      final directVideoId = node['videoId'];
+      if (directVideoId is String && directVideoId.trim().isNotEmpty) {
+        return directVideoId.trim();
+      }
+
+      final watchEndpoint = node['watchEndpoint'];
+      if (watchEndpoint is Map) {
+        final endpointId = watchEndpoint['videoId'];
+        if (endpointId is String && endpointId.trim().isNotEmpty) {
+          return endpointId.trim();
+        }
+      }
+
+      for (final value in node.values) {
+        final nested = _extractVideoIdFromNode(value, depth: depth + 1);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+      return null;
+    }
+    if (node is List) {
+      for (final value in node) {
+        final nested = _extractVideoIdFromNode(value, depth: depth + 1);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+    }
+    return null;
+  }
+
+  String _extractYoutubeText(dynamic node) {
+    if (node == null) return '';
+    if (node is String) return node.trim();
+    if (node is Map) {
+      final simpleText = node['simpleText'];
+      if (simpleText is String && simpleText.trim().isNotEmpty) {
+        return simpleText.trim();
+      }
+      final textValue = node['text'];
+      if (textValue is String && textValue.trim().isNotEmpty) {
+        return textValue.trim();
+      }
+      final runs = node['runs'];
+      if (runs is List) {
+        final parts = <String>[];
+        for (final run in runs) {
+          if (run is! Map) continue;
+          final text = run['text'];
+          if (text is String && text.trim().isNotEmpty) {
+            parts.add(text.trim());
+          }
+        }
+        if (parts.isNotEmpty) return parts.join('');
+      }
+    }
+    return '';
+  }
+
+  String? _extractBestThumbnailFromNode(dynamic node) {
+    if (node == null) return null;
+    if (node is Map) {
+      final thumbs = node['thumbnails'];
+      if (thumbs is List) {
+        for (final item in thumbs.reversed) {
+          if (item is! Map) continue;
+          final url = item['url'];
+          if (url is String && url.trim().isNotEmpty) {
+            return url.trim();
+          }
+        }
+      }
+      for (final value in node.values) {
+        final nested = _extractBestThumbnailFromNode(value);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+      return null;
+    }
+    if (node is List) {
+      for (final item in node) {
+        final nested = _extractBestThumbnailFromNode(item);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+    }
+    return null;
+  }
+
+  String? _extractContinuationToken(dynamic node, {int depth = 0}) {
+    if (depth > 18) return null;
+    if (node is Map) {
+      final nextData = node['nextContinuationData'];
+      if (nextData is Map) {
+        final token = nextData['continuation'];
+        if (token is String && token.trim().isNotEmpty) {
+          return token.trim();
+        }
+      }
+      final reloadData = node['reloadContinuationData'];
+      if (reloadData is Map) {
+        final token = reloadData['continuation'];
+        if (token is String && token.trim().isNotEmpty) {
+          return token.trim();
+        }
+      }
+      final continuationCommand = node['continuationCommand'];
+      if (continuationCommand is Map) {
+        final token = continuationCommand['token'];
+        if (token is String && token.trim().isNotEmpty) {
+          return token.trim();
+        }
+      }
+      for (final value in node.values) {
+        final nested = _extractContinuationToken(value, depth: depth + 1);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+      return null;
+    }
+    if (node is List) {
+      for (final item in node) {
+        final nested = _extractContinuationToken(item, depth: depth + 1);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+    }
+    return null;
+  }
+
+  bool _containsExplicitMarker(dynamic node) {
+    final text = _collectYoutubeNodeText(node).toLowerCase();
+    if (text.isEmpty) return false;
+    return text.contains('explicit') ||
+        text.contains('explícito') ||
+        text.contains('explicito');
+  }
+
+  String _collectYoutubeNodeText(dynamic node, {int depth = 0}) {
+    if (depth > 8 || node == null) return '';
+    if (node is String) return node;
+    if (node is Map) {
+      final buffer = StringBuffer();
+      for (final value in node.values) {
+        final chunk = _collectYoutubeNodeText(value, depth: depth + 1);
+        if (chunk.trim().isEmpty) continue;
+        buffer
+          ..write(' ')
+          ..write(chunk);
+      }
+      return buffer.toString();
+    }
+    if (node is List) {
+      final buffer = StringBuffer();
+      for (final value in node) {
+        final chunk = _collectYoutubeNodeText(value, depth: depth + 1);
+        if (chunk.trim().isEmpty) continue;
+        buffer
+          ..write(' ')
+          ..write(chunk);
+      }
+      return buffer.toString();
+    }
+    return '';
+  }
+
+  bool _isExplicitText(String text) {
+    final normalized = text.toLowerCase();
+    return _explicitKeywords.any(normalized.contains);
+  }
+
+  bool _isQueueArtistMonotone(List<PlaybackQueueItem> queue) {
+    if (queue.length < 8) return false;
+    final topSlice = queue.take(12).toList(growable: false);
+    final artistCounts = <String, int>{};
+    for (final item in topSlice) {
+      final key = _normalizeArtistName(item.artist);
+      if (key.isEmpty) continue;
+      artistCounts[key] = (artistCounts[key] ?? 0) + 1;
+    }
+    if (artistCounts.isEmpty) return false;
+    final topCount = artistCounts.values.reduce(math.max);
+    final uniqueArtists = artistCounts.length;
+    return topCount >= 5 || uniqueArtists <= 3;
+  }
+
+  List<PlaybackQueueItem> _diversifyQueueByArtist(
+    List<PlaybackQueueItem> queue,
+  ) {
+    if (queue.length < 3) return queue;
+
+    final groups = <String, List<PlaybackQueueItem>>{};
+    final order = <String>[];
+    for (final item in queue) {
+      var key = _normalizeArtistName(item.artist);
+      if (key.isEmpty) {
+        key = item.artist.toLowerCase().trim();
+      }
+      if (key.isEmpty) {
+        key = 'artist:${item.videoId}';
+      }
+      final existing = groups[key];
+      if (existing == null) {
+        groups[key] = <PlaybackQueueItem>[item];
+        order.add(key);
+      } else {
+        existing.add(item);
+      }
+    }
+
+    final result = <PlaybackQueueItem>[];
+    final frontWindow = math.min(18, queue.length);
+    const maxPerArtistAtFront = 3;
+    final artistFrontCount = <String, int>{};
+
+    while (result.length < queue.length) {
+      var addedSomething = false;
+      for (final key in order) {
+        final bucket = groups[key];
+        if (bucket == null || bucket.isEmpty) continue;
+        if (result.length < frontWindow) {
+          final used = artistFrontCount[key] ?? 0;
+          if (used >= maxPerArtistAtFront) continue;
+          artistFrontCount[key] = used + 1;
+        }
+        result.add(bucket.removeAt(0));
+        addedSomething = true;
+      }
+
+      if (!addedSomething) {
+        for (final key in order) {
+          final bucket = groups[key];
+          if (bucket == null || bucket.isEmpty) continue;
+          result.add(bucket.removeAt(0));
+        }
+      }
+    }
+
+    return result;
+  }
+
+  String _defaultThumbnailForVideoId(String videoId) {
+    return 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
+  }
+
+  Future<List<PlaybackQueueItem>> _buildRelatedQueueFromYoutubeFallback(
+    Video currentVideo, {
+    required Set<String> excludeIds,
+  }) async {
+    final candidates = <Video>[];
+    List<Video>? related;
+
+    try {
+      related = await _runYoutubeWithRetry(
+        () => _ytExplode.videos.getRelatedVideos(currentVideo),
+        maxAttempts: 2,
+      );
+    } catch (e, s) {
+      log('Fallback related videos falló', error: e, stackTrace: s);
+    }
+
+    final firstHopIds = <String>{};
+    final secondHopCoOccurrence = <String, int>{};
+    if (related != null && related.isNotEmpty) {
+      firstHopIds.addAll(related.map((item) => item.id.value));
+      candidates.addAll(related.take(50));
+    }
+
+    final similarArtists = _buildSimilarArtistCandidates(
+      primaryArtist: currentVideo.author,
+      relatedVideos: related ?? const [],
+    );
+    final recommendationSignals = _buildRecommendationSignals(
+      primaryArtist: currentVideo.author,
+      currentTitle: currentVideo.title,
+      relatedVideos: related ?? const [],
+    );
+
+    if (related != null && related.isNotEmpty) {
+      final secondHop = await _collectSecondHopRelatedCandidates(
+        currentVideo: currentVideo,
+        firstHopRelated: related,
+        signals: recommendationSignals,
+      );
+      candidates.addAll(secondHop.$1);
+      for (final entry in secondHop.$2.entries) {
+        secondHopCoOccurrence[entry.key] =
+            (secondHopCoOccurrence[entry.key] ?? 0) + entry.value;
+      }
+    }
+
+    if (candidates.length < 10) {
+      final searchFallback = await _collectCurrentTrackFallbackCandidates(
+        currentVideo,
+      );
+      candidates.addAll(searchFallback);
+    }
+    if (candidates.isEmpty && related != null && related.isNotEmpty) {
+      candidates.addAll(related);
+    }
+    if (candidates.isEmpty) return const <PlaybackQueueItem>[];
+
+    final expandedSimilarArtists = <String>{
+      ...similarArtists.map(_normalizeArtistName),
+      ...recommendationSignals.coListenArtists.map(_normalizeArtistName),
+    }.where((value) => value.isNotEmpty).toList(growable: false);
+
+    final smartQueue = _buildSmartQueue(
+      candidates,
+      currentVideoId: currentVideo.id.value,
+      currentTitle: currentVideo.title,
+      primaryArtist: currentVideo.author,
+      relatedArtistHints: expandedSimilarArtists,
+      signals: recommendationSignals,
+      firstHopRelatedIds: firstHopIds,
+      secondHopCoOccurrence: secondHopCoOccurrence,
+    );
+    final seenIds = Set<String>.from(excludeIds);
+    final filteredSmartQueue = smartQueue
+        .where((item) => seenIds.add(item.videoId))
+        .toList(growable: false);
+
+    if (filteredSmartQueue.length >= 22) {
+      return _diversifyQueueByArtist(
+        filteredSmartQueue,
+      ).take(30).toList(growable: false);
+    }
+
+    final merged = <PlaybackQueueItem>[
+      ...filteredSmartQueue,
+      ..._buildLooseFallbackQueueFromCandidates(
+        candidates,
+        currentVideoId: currentVideo.id.value,
+        seenIds: seenIds,
+      ),
+    ];
+    return _diversifyQueueByArtist(merged).take(30).toList(growable: false);
+  }
+
+  List<PlaybackQueueItem> _buildLooseFallbackQueueFromCandidates(
+    Iterable<Video> source, {
+    required String currentVideoId,
+    required Set<String> seenIds,
+  }) {
+    final sorted = source.toList(
+      growable: false,
+    )..sort((a, b) => b.engagement.viewCount.compareTo(a.engagement.viewCount));
+
+    final queue = <PlaybackQueueItem>[];
+    for (final item in sorted) {
+      final id = item.id.value;
+      if (id == currentVideoId) continue;
+      if (!seenIds.add(id)) continue;
+      if (_sessionPlayedVideoIds.contains(id)) continue;
+      if (!_isLikelyMusicCandidate(item)) continue;
+      if (!_settingsService.allowExplicitContent && _isExplicitTrack(item)) {
+        continue;
+      }
+      queue.add(
+        PlaybackQueueItem(
+          videoId: id,
+          title: item.title,
+          thumbnailUrl: _bestThumbnailUrl(item),
+          artist: item.author,
+          isLocal: false,
+        ),
+      );
+      if (queue.length >= 24) break;
+    }
+    return queue;
+  }
+
+  bool _isLikelyMusicCandidate(Video item) {
+    final text = '${item.title} ${item.author} ${item.description}'
+        .toLowerCase();
+    if (_nonSongKeywords.any(text.contains)) return false;
+    final duration = item.duration;
+    if (duration != null) {
+      final seconds = duration.inSeconds;
+      if (seconds < 55 || seconds > 900) return false;
+    }
+    return true;
+  }
+
+  Future<List<PlaybackQueueItem>> _buildYoutubeMusicRadioPlaylistFallback(
+    Video currentVideo, {
+    required Set<String> excludeIds,
+  }) async {
+    final seenIds = Set<String>.from(excludeIds);
+    final queue = <PlaybackQueueItem>[];
+    final playlistIds = <String>[
+      'RDAMVM${currentVideo.id.value}',
+      'RDMM${currentVideo.id.value}',
+    ];
+
+    for (final playlistId in playlistIds) {
+      List<Video> videos;
+      try {
+        videos = await _runYoutubeWithRetry(
+          () async => _ytExplode.playlists
+              .getVideos(PlaylistId(playlistId))
+              .take(90)
+              .toList(),
+          maxAttempts: 2,
+        );
+      } catch (e, s) {
+        log(
+          'Fallback radio playlist falló: $playlistId',
+          error: e,
+          stackTrace: s,
+        );
+        continue;
+      }
+
+      for (final item in videos) {
+        final id = item.id.value;
+        if (id == currentVideo.id.value) continue;
+        if (!seenIds.add(id)) continue;
+        if (_sessionPlayedVideoIds.contains(id)) continue;
+        if (!_isLikelyMusicCandidate(item)) continue;
+        if (!_settingsService.allowExplicitContent && _isExplicitTrack(item)) {
+          continue;
+        }
+        queue.add(
+          PlaybackQueueItem(
+            videoId: id,
+            title: item.title,
+            thumbnailUrl: _bestThumbnailUrl(item),
+            artist: item.author,
+            isLocal: false,
+          ),
+        );
+        if (queue.length >= 30) break;
+      }
+      if (queue.length >= 30) break;
+    }
+
+    return _diversifyQueueByArtist(queue).take(30).toList(growable: false);
   }
 
   List<PlaybackQueueItem> _buildSmartQueue(
@@ -1640,21 +2734,51 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         )
         .take(10)
         .toSet();
+    final hasStrongSignalContext =
+        signals.coListenArtists.isNotEmpty ||
+        signals.genreTokens.isNotEmpty ||
+        signals.relatedTitleTokens.isNotEmpty ||
+        firstHopRelatedIds.isNotEmpty ||
+        secondHopCoOccurrence.isNotEmpty;
     final filtered = source
         .where((item) => item.id.value != currentVideoId)
         .where((item) => !_sessionPlayedVideoIds.contains(item.id.value))
         .where(_isPureYoutubeMusicAudio)
+        .where((item) {
+          final id = item.id.value;
+          if (firstHopRelatedIds.contains(id)) return true;
+          if (!hasStrongSignalContext) return true;
+          final secondHopCount = secondHopCoOccurrence[id] ?? 0;
+          return _passesRecommendationAnchor(
+            item,
+            signals,
+            secondHopCount: secondHopCount,
+          );
+        })
         .where(
           (item) =>
               _settingsService.allowExplicitContent || !_isExplicitTrack(item),
         )
         .toList();
 
+    bool isStronglyRelated(Video item) {
+      final id = item.id.value;
+      if (firstHopRelatedIds.contains(id)) return true;
+      if ((secondHopCoOccurrence[id] ?? 0) >= 1) return true;
+      if (_hasCoListenAuthorMatch(item.author, signals)) return true;
+      return false;
+    }
+
+    final strongFiltered = filtered
+        .where(isStronglyRelated)
+        .toList(growable: false);
+    final workingSet = strongFiltered.length >= 12 ? strongFiltered : filtered;
+
     final tier0 = <Video>[];
     final tier1 = <Video>[];
     final tier2 = <Video>[];
     final tier3 = <Video>[];
-    for (final item in filtered) {
+    for (final item in workingSet) {
       final tier = _artistPriorityTier(
         author: item.author,
         normalizedPrimary: normalizedPrimary,
@@ -1790,23 +2914,20 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     for (final item in ordered) {
       final id = item.id.value;
       if (!seenIds.add(id)) continue;
-      if (_recentRecommendedVideoIds.contains(id) && output.length < 18) {
-        continue;
-      }
       final tier = _artistPriorityTier(
         author: item.author,
         normalizedPrimary: normalizedPrimary,
         similarArtists: similarArtists,
         discoveryArtists: discoveryArtists,
       );
-      if (tier == 0 && acceptedSimilar >= 10) continue;
-      if (tier == 1 && acceptedPrimary >= 2) continue;
-      if (tier == 2 && acceptedDiscovery >= 10) continue;
-      if (tier == 3 && acceptedExplore >= 7) continue;
+      if (tier == 0 && acceptedSimilar >= 14) continue;
+      if (tier == 1 && acceptedPrimary >= 4) continue;
+      if (tier == 2 && acceptedDiscovery >= 12) continue;
+      if (tier == 3 && acceptedExplore >= 10) continue;
       final normalizedArtist = _normalizeArtistName(item.author);
       if (normalizedArtist.isNotEmpty) {
         final usage = artistUsage[normalizedArtist] ?? 0;
-        final maxUsagePerArtist = tier == 1 ? 1 : 3;
+        final maxUsagePerArtist = tier == 1 ? 2 : 4;
         if (usage >= maxUsagePerArtist) continue;
         artistUsage[normalizedArtist] = usage + 1;
       }
@@ -1876,6 +2997,100 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       if (output.length >= 30) break;
+    }
+
+    if (output.length < 12) {
+      final rescuePool = filtered.toList(growable: false)
+        ..sort((a, b) {
+          final scoreA = _recommendationScore(
+            a,
+            signals,
+            isFirstHop: firstHopRelatedIds.contains(a.id.value),
+            secondHopCount: secondHopCoOccurrence[a.id.value] ?? 0,
+            wasRecentlyRecommended: _recentRecommendedVideoIds.contains(
+              a.id.value,
+            ),
+          );
+          final scoreB = _recommendationScore(
+            b,
+            signals,
+            isFirstHop: firstHopRelatedIds.contains(b.id.value),
+            secondHopCount: secondHopCoOccurrence[b.id.value] ?? 0,
+            wasRecentlyRecommended: _recentRecommendedVideoIds.contains(
+              b.id.value,
+            ),
+          );
+          return scoreB.compareTo(scoreA);
+        });
+
+      for (final item in rescuePool) {
+        if (output.length >= 30) break;
+        final id = item.id.value;
+        if (!seenIds.add(id)) continue;
+
+        final normalizedTitle = _normalizeTitleForQueueDedup(item.title);
+        final normalizedLabel = _normalizeTitleForQueueDedup(
+          '${item.title} ${item.author}',
+        );
+        if (_looksLikeCurrentTrackClone(
+          candidateLabel: normalizedLabel,
+          normalizedCurrentTitle: normalizedCurrentTitle,
+          currentTitleTokens: currentTitleTokens,
+        )) {
+          continue;
+        }
+        if (normalizedTitle.isNotEmpty &&
+            !seenNormalizedTitles.add(normalizedTitle)) {
+          continue;
+        }
+        if (normalizedLabel.isNotEmpty &&
+            !seenNormalizedLabels.add(normalizedLabel)) {
+          continue;
+        }
+
+        output.add(
+          PlaybackQueueItem(
+            videoId: id,
+            title: item.title,
+            thumbnailUrl: _bestThumbnailUrl(item),
+            artist: item.author,
+            isLocal: false,
+          ),
+        );
+      }
+    }
+
+    // Failsafe final: si por filtros estrictos seguimos en vacío,
+    // rellenamos con candidatos mínimos válidos del source actual.
+    if (output.isEmpty) {
+      for (final item in source) {
+        if (output.length >= 20) break;
+        final id = item.id.value;
+        if (id == currentVideoId) continue;
+        if (_sessionPlayedVideoIds.contains(id)) continue;
+        if (!_isPureYoutubeMusicAudio(item)) continue;
+        if (!_settingsService.allowExplicitContent && _isExplicitTrack(item)) {
+          continue;
+        }
+        if (!seenIds.add(id)) continue;
+
+        final normalizedLabel = _normalizeTitleForQueueDedup(
+          '${item.title} ${item.author}',
+        );
+        if (normalizedLabel.isNotEmpty &&
+            !seenNormalizedLabels.add(normalizedLabel)) {
+          continue;
+        }
+        output.add(
+          PlaybackQueueItem(
+            videoId: id,
+            title: item.title,
+            thumbnailUrl: _bestThumbnailUrl(item),
+            artist: item.author,
+            isLocal: false,
+          ),
+        );
+      }
     }
 
     return output;
@@ -1964,12 +3179,69 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return sorted.map((e) => e.key).take(limit).toList();
   }
 
+  bool _passesRecommendationAnchor(
+    Video item,
+    _RecommendationSignals signals, {
+    required int secondHopCount,
+  }) {
+    final noSignals =
+        signals.coListenArtists.isEmpty &&
+        signals.genreTokens.isEmpty &&
+        signals.relatedTitleTokens.isEmpty;
+    if (noSignals) return true;
+    if (secondHopCount >= 1) return true;
+
+    final title = item.title.toLowerCase();
+    final author = item.author.toLowerCase();
+    final description = item.description.toLowerCase();
+    final text = '$title $author $description';
+
+    final hasCoListenAuthor = signals.coListenArtists.take(8).any((artist) {
+      if (artist.length < 3) return false;
+      return author.contains(artist);
+    });
+    if (hasCoListenAuthor) return true;
+
+    var genreHits = 0;
+    for (final token in signals.genreTokens.take(8)) {
+      if (token.length < 3) continue;
+      if (text.contains(token)) genreHits += 1;
+    }
+
+    var relatedTitleHits = 0;
+    for (final token in signals.relatedTitleTokens.take(8)) {
+      if (token.length < 3) continue;
+      if (title.contains(token)) relatedTitleHits += 1;
+    }
+
+    if (genreHits >= 2 && relatedTitleHits >= 1) return true;
+    return false;
+  }
+
+  bool _hasCoListenAuthorMatch(
+    String authorRaw,
+    _RecommendationSignals signals,
+  ) {
+    final normalizedAuthor = _normalizeArtistName(authorRaw);
+    if (normalizedAuthor.isEmpty) return false;
+    for (final artist in signals.coListenArtists.take(10)) {
+      if (artist.length < 3) continue;
+      if (normalizedAuthor.contains(artist) ||
+          artist.contains(normalizedAuthor)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   Future<(List<Video>, Map<String, int>)> _collectSecondHopRelatedCandidates({
     required Video currentVideo,
     required List<Video> firstHopRelated,
     required _RecommendationSignals signals,
   }) async {
-    if (firstHopRelated.isEmpty) return (const <Video>[], const <String, int>{});
+    if (firstHopRelated.isEmpty) {
+      return (const <Video>[], const <String, int>{});
+    }
 
     final seeds = firstHopRelated
         .where(_isPureYoutubeMusicAudio)
@@ -1994,7 +3266,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return score;
     }
 
-    final rankedSeeds = seeds.toList()..sort((a, b) => seedScore(b) - seedScore(a));
+    final rankedSeeds = seeds.toList()
+      ..sort((a, b) => seedScore(b) - seedScore(a));
     final selectedSeeds = rankedSeeds.take(6).toList(growable: false);
 
     Future<(List<Video>, Map<String, int>)> fetchFromSeed(Video seed) async {
@@ -2032,6 +3305,51 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return (merged, mergedCoOccurrence);
   }
 
+  Future<List<Video>> _collectCurrentTrackFallbackCandidates(
+    Video currentVideo,
+  ) async {
+    final queries = <Future<List<Video>>>[];
+    final titleTokens = _extractRecommendationTokens(
+      currentVideo.title,
+      max: 4,
+    );
+    final artist = currentVideo.author.trim();
+
+    if (artist.isNotEmpty) {
+      queries.add(
+        _safeSearchVideos('$artist topic', limit: 24, onlyTopic: true),
+      );
+      queries.add(
+        _safeSearchVideos(
+          '$artist provided to youtube by',
+          limit: 20,
+          onlyAutoGenerated: true,
+        ),
+      );
+    }
+    for (final token in titleTokens) {
+      if (artist.isNotEmpty) {
+        queries.add(
+          _safeSearchVideos('$artist $token topic', limit: 12, onlyTopic: true),
+        );
+      }
+    }
+    if (queries.isEmpty) return const <Video>[];
+
+    final batches = await Future.wait(queries.take(10));
+    final seen = <String>{};
+    final merged = <Video>[];
+    for (final batch in batches) {
+      for (final item in batch) {
+        final id = item.id.value;
+        if (!seen.add(id)) continue;
+        if (!_isPureYoutubeMusicAudio(item)) continue;
+        merged.add(item);
+      }
+    }
+    return merged;
+  }
+
   int _recommendationScore(
     Video item,
     _RecommendationSignals signals, {
@@ -2052,6 +3370,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (isFirstHop) score += 950;
     if (secondHopCount > 0) {
       score += (secondHopCount * 220).clamp(0, 1400);
+    }
+    if (!isFirstHop && secondHopCount == 0) {
+      score -= 260;
     }
     if (wasRecentlyRecommended) {
       score -= 700;
@@ -2112,6 +3433,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final title = item.title.toLowerCase();
     final description = item.description.toLowerCase();
     final text = '$title $author $description';
+    if (_nonSongKeywords.any(text.contains)) return false;
+
+    final duration = item.duration;
+    if (duration != null) {
+      final seconds = duration.inSeconds;
+      if (seconds < 70 || seconds > 660) return false;
+    }
+
     final topic = _isTopicAuthor(author);
     final autoGenerated = _hasAutoGeneratedSignal(item);
     final hasVideoLikeSignal = _videoLikeKeywords.any(text.contains);
@@ -2375,185 +3704,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  Future<List<Video>> _collectTrendAndCoListenCandidates({
-    required _RecommendationSignals signals,
-  }) async {
-    final queries = _buildTrendAndCoListenQueries(
-      signals: signals,
-    );
-    if (queries.isEmpty) return const [];
-
-    final videosById = <String, Video>{};
-    final scoresById = <String, int>{};
-
-    Future<void> collectBatch({
-      required String query,
-      required int queryIndex,
-    }) async {
-      try {
-        final raw = await _runYoutubeWithRetry(
-          () => _ytExplode.search.search(query),
-          maxAttempts: 1,
-        );
-        for (final video in raw.take(36)) {
-          if (!_isPureYoutubeMusicAudio(video)) continue;
-          final id = video.id.value;
-          final score = _trendAndSimilarityScore(
-            video: video,
-            query: query,
-            queryIndex: queryIndex,
-            signals: signals,
-          );
-          final previous = scoresById[id];
-          if (previous == null || score > previous) {
-            scoresById[id] = score;
-            videosById[id] = video;
-          }
-        }
-      } catch (_) {
-        // Best effort.
-      }
-    }
-
-    final phase1Count = queries.length >= 4 ? 4 : queries.length;
-    await Future.wait(
-      List.generate(
-        phase1Count,
-        (index) => collectBatch(query: queries[index], queryIndex: index),
-      ),
-    );
-
-    if (scoresById.length < 20 && queries.length > phase1Count) {
-      await Future.wait(
-        List.generate(queries.length - phase1Count, (offset) {
-          final index = phase1Count + offset;
-          return collectBatch(query: queries[index], queryIndex: index);
-        }),
-      );
-    }
-
-    final ids = scoresById.keys.toList()
-      ..sort((a, b) {
-        final scoreA = scoresById[a] ?? 0;
-        final scoreB = scoresById[b] ?? 0;
-        if (scoreA != scoreB) return scoreB.compareTo(scoreA);
-        final viewsA = videosById[a]?.engagement.viewCount ?? 0;
-        final viewsB = videosById[b]?.engagement.viewCount ?? 0;
-        return viewsB.compareTo(viewsA);
-      });
-
-    return ids.map((id) => videosById[id]!).take(56).toList(growable: false);
-  }
-
-  List<String> _buildTrendAndCoListenQueries({
-    required _RecommendationSignals signals,
-  }) {
-    final seen = <String>{};
-    final queries = <String>[];
-
-    void addQuery(String value) {
-      final sanitized = _sanitizeSearchQuery(value);
-      if (sanitized.isEmpty) return;
-      final key = sanitized.toLowerCase();
-      if (!seen.add(key)) return;
-      queries.add(sanitized);
-    }
-
-    for (final token in signals.relatedTitleTokens.take(5)) {
-      addQuery('$token official audio');
-      addQuery('$token topic');
-    }
-    for (final genre in signals.genreHints.take(6)) {
-      addQuery('$genre topic');
-      addQuery('$genre official audio');
-    }
-    addQuery('musica official audio');
-    addQuery('top hits official audio');
-
-    return queries.take(14).toList(growable: false);
-  }
-
-  List<String> _buildFallbackQueriesWithoutCurrent({
-    required String currentVideoId,
-  }) {
-    final seen = <String>{};
-    final queries = <String>[];
-
-    void addQuery(String value) {
-      final sanitized = _sanitizeSearchQuery(value);
-      if (sanitized.isEmpty) return;
-      final key = sanitized.toLowerCase();
-      if (!seen.add(key)) return;
-      queries.add(sanitized);
-    }
-
-    for (final item in _playbackHistory.reversed) {
-      if (item.videoId == currentVideoId) continue;
-      for (final token in _extractRecommendationTokens(item.title, max: 3)) {
-        addQuery('$token official audio');
-        addQuery('$token topic');
-      }
-      for (final token in _extractRecommendationTokens(item.artist, max: 2)) {
-        addQuery('$token topic');
-      }
-      if (queries.length >= 10) break;
-    }
-
-    for (final genre in _genreKeywordRules.keys.take(12)) {
-      addQuery('$genre official audio');
-      addQuery('$genre topic');
-      if (queries.length >= 18) break;
-    }
-
-    addQuery('musica official audio');
-    addQuery('top hits official audio');
-    addQuery('novedades musica');
-
-    return queries.take(18).toList(growable: false);
-  }
-
-  int _trendAndSimilarityScore({
-    required Video video,
-    required String query,
-    required int queryIndex,
-    required _RecommendationSignals signals,
-  }) {
-    final title = video.title.toLowerCase();
-    final author = video.author.toLowerCase();
-    final description = video.description.toLowerCase();
-    final text = '$title $author $description';
-    final tokens = query
-        .toLowerCase()
-        .split(RegExp(r'\s+'))
-        .where((token) => token.length >= 3)
-        .take(8)
-        .toList(growable: false);
-
-    var score = 0;
-    if (_isTopicAuthor(author)) score += 120;
-    if (_hasAutoGeneratedSignal(video)) score += 100;
-    for (final token in tokens) {
-      if (text.contains(token)) score += 22;
-    }
-    for (final token in signals.relatedTitleTokens.take(6)) {
-      if (text.contains(token)) score += 32;
-    }
-    for (final token in signals.genreTokens.take(6)) {
-      if (text.contains(token)) score += 34;
-    }
-    final hasCoreMatch =
-        signals.relatedTitleTokens.take(4).any(text.contains) ||
-        signals.genreTokens.take(4).any(text.contains);
-    if (!hasCoreMatch) score -= 130;
-    if (queryIndex == 0) score += 26;
-    score -= queryIndex * 4;
-    final views = video.engagement.viewCount;
-    if (views > 0) {
-      score += (views / 350000).floor().clamp(0, 25);
-    }
-    return score;
-  }
-
   List<String> _extractRecommendationTokens(String text, {required int max}) {
     final cleaned = _normalizeTitleForQueueDedup(text);
     if (cleaned.isEmpty) return const [];
@@ -2671,7 +3821,85 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     'explicita',
   ];
 
+  static const List<String> _nonSongKeywords = [
+    'podcast',
+    'episode',
+    'episodio',
+    'ep.',
+    ' ep ',
+    'trailer',
+    'interview',
+    'entrevista',
+    'audiobook',
+    'audiolibro',
+    'season',
+    'temporada',
+    'capitulo',
+    'capítulo',
+    'chapter',
+    'sound effects',
+    'ambience',
+    'ambient sounds',
+    'white noise',
+    'meditation',
+    'sleep sounds',
+    'theme song',
+    'main theme',
+  ];
+
   static const Set<String> _queueTokenStopwords = {
+    'the',
+    'this',
+    'that',
+    'these',
+    'those',
+    'with',
+    'from',
+    'into',
+    'onto',
+    'over',
+    'under',
+    'between',
+    'where',
+    'when',
+    'what',
+    'who',
+    'whom',
+    'why',
+    'how',
+    'you',
+    'your',
+    'yours',
+    'she',
+    'her',
+    'his',
+    'him',
+    'they',
+    'them',
+    'their',
+    'ours',
+    'ourselves',
+    'my',
+    'mine',
+    'our',
+    'its',
+    'it',
+    'are',
+    'was',
+    'were',
+    'been',
+    'being',
+    'have',
+    'has',
+    'had',
+    'and',
+    'for',
+    'but',
+    'not',
+    'all',
+    'any',
+    'out',
+    'off',
     'mix',
     'radio',
     'version',
@@ -2738,6 +3966,25 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Set<String> _historyStopwords = {
     'the',
     'and',
+    'this',
+    'that',
+    'these',
+    'those',
+    'when',
+    'where',
+    'what',
+    'who',
+    'why',
+    'how',
+    'you',
+    'your',
+    'she',
+    'her',
+    'him',
+    'his',
+    'they',
+    'them',
+    'their',
     'with',
     'from',
     'para',
@@ -2803,6 +4050,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required String artist,
     String? localPlainLyrics,
     String? localSyncedLyrics,
+    bool preserveExistingQueue = false,
   }) async {
     _rememberCurrentForHistory();
     _isAiStemsLoading = false;
@@ -2873,8 +4121,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _sessionPlayedVideoIds.add(id);
       _usingHiddenVideo = false;
       if (_autoplayEnabled) {
-        unawaited(_loadLocalQueue(currentVideoId: id));
-      } else {
+        if (!preserveExistingQueue || !_hasQueuedItems()) {
+          unawaited(_loadLocalQueue(currentVideoId: id));
+        }
+      } else if (!preserveExistingQueue) {
         _clearQueueForAutoplayDisabled();
       }
       if (_isLyricsLayout && !hasAppliedLocalLyrics) {
@@ -2919,6 +4169,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         artist: item.artist,
         localPlainLyrics: item.localPlainLyrics,
         localSyncedLyrics: item.localSyncedLyrics,
+        preserveExistingQueue: true,
       );
       return;
     }
@@ -2928,6 +4179,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       preferredTitle: item.title,
       preferredArtist: item.artist,
       preloadedStreamUrl: preloadedStreamUrl,
+      preserveExistingQueue: true,
     );
   }
 
@@ -3773,7 +5025,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     final queueRequestId = ++_queueEpoch;
-    _queueTitle = 'Recomendados';
+    _queueTitle = 'Siguiente';
+    _playbackQueue = const [];
     _isQueueLoading = true;
     notifyListeners();
 
@@ -3806,67 +5059,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (!_autoplayEnabled) return;
 
     final queueRequestId = ++_queueEpoch;
-    _queueTitle = 'Recomendados';
+    _queueTitle = 'Siguiente';
+    _playbackQueue = const [];
     _isQueueLoading = true;
     notifyListeners();
 
     try {
-      final fallbackQueries = _buildFallbackQueriesWithoutCurrent(
-        currentVideoId: currentVideoId,
-      );
-      final batches = await Future.wait(
-        fallbackQueries.map(
-          (query) => _safeSearchVideos(query, limit: 16, onlyTopic: false),
-        ),
-      );
-      final seen = <String>{};
-      final seenLabels = <String>{};
-      final normalizedCurrentTitle = _normalizeTitleForQueueDedup(
-        _trackTitle ?? '',
-      );
-      final currentTitleTokens = normalizedCurrentTitle
-          .split(' ')
-          .where((token) => token.length >= 3)
-          .where((token) => !_queueTokenStopwords.contains(token))
-          .toSet();
-      final queue = <PlaybackQueueItem>[];
-      for (final batch in batches) {
-        for (final video in batch) {
-          final id = video.id.value;
-          if (id == currentVideoId) continue;
-          if (!_isPureYoutubeMusicAudio(video)) continue;
-          if (!_settingsService.allowExplicitContent &&
-              _isExplicitTrack(video)) {
-            continue;
-          }
-          if (_sessionPlayedVideoIds.contains(id)) continue;
-          if (!seen.add(id)) continue;
-          final normalizedLabel = _normalizeTitleForQueueDedup(
-            '${video.title} ${video.author}',
-          );
-          if (_looksLikeCurrentTrackClone(
-            candidateLabel: normalizedLabel,
-            normalizedCurrentTitle: normalizedCurrentTitle,
-            currentTitleTokens: currentTitleTokens,
-          )) {
-            continue;
-          }
-          if (normalizedLabel.isNotEmpty && !seenLabels.add(normalizedLabel)) {
-            continue;
-          }
-          queue.add(
-            PlaybackQueueItem(
-              videoId: id,
-              title: video.title,
-              thumbnailUrl: _bestThumbnailUrl(video),
-              artist: video.author,
-              isLocal: false,
-            ),
-          );
-          if (queue.length >= 30) break;
-        }
-        if (queue.length >= 30) break;
-      }
+      final video = await _getVideoWithRetry(
+        currentVideoId,
+      ).timeout(const Duration(seconds: 10));
+      final queue = await _getRelatedQueueWithRetry(video);
 
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
         return;
@@ -4376,16 +5578,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       unawaited(() async {
         if (next.isLocal) {
-          if (_autoplayEnabled) {
+          if (_autoplayEnabled && !_hasQueuedItems()) {
             await _loadLocalQueue(currentVideoId: next.videoId);
           }
           final hasLyrics =
               (_lyricsText?.trim().isNotEmpty ?? false) ||
               _syncedLyrics.isNotEmpty;
-          if (_isLyricsLayout &&
-              !hasAppliedLocalLyrics &&
-              !hasLyrics &&
-              !_isLyricsLoading) {
+          if (_isLyricsLayout && !hasAppliedLocalLyrics && !hasLyrics) {
             await _loadLyricsForCurrentTrack();
           }
           return;
@@ -4404,10 +5603,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           final hasLyrics =
               (_lyricsText?.trim().isNotEmpty ?? false) ||
               _syncedLyrics.isNotEmpty;
-          if (_isLyricsLayout && !hasLyrics && !_isLyricsLoading) {
+          if (_isLyricsLayout && !hasLyrics) {
             await _loadLyricsForCurrentTrack();
           }
-          if (_autoplayEnabled) {
+          if (_autoplayEnabled && !_hasQueuedItems()) {
             await _loadOnlineQueue(video, currentVideoId: next.videoId);
           }
         } catch (_) {
@@ -4814,6 +6013,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _loadLyricsForCurrentTrack() async {
+    final requestVideoId = (_currentVideoId ?? '').trim();
     final title = _trackTitle?.trim();
     final artist = _trackArtist?.trim();
     if (title == null || title.isEmpty) {
@@ -4851,12 +6051,31 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     }
 
-    final result = await _lyricsService.fetchLyrics(
-      title: title,
-      artist: artist ?? '',
-    );
+    LyricsResult? result;
+    try {
+      result = await _lyricsService.fetchLyrics(
+        title: title,
+        artist: artist ?? '',
+      );
+    } catch (e, s) {
+      if (requestId != _lyricsEpoch) return;
+      if ((_currentVideoId ?? '').trim() != requestVideoId) return;
+      _isLyricsLoading = false;
+      if (hadCachedPlain) {
+        _lyricsError = null;
+      } else {
+        _lyricsText = null;
+        _syncedLyrics = const [];
+        _lyricsError =
+            'No se pudo cargar la letra por un error temporal. Intenta de nuevo.';
+      }
+      notifyListeners();
+      log('Error cargando letra', error: e, stackTrace: s);
+      return;
+    }
 
     if (requestId != _lyricsEpoch) return;
+    if ((_currentVideoId ?? '').trim() != requestVideoId) return;
     _isLyricsLoading = false;
 
     if (result == null || result.plainLyrics.trim().isEmpty) {

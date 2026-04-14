@@ -283,7 +283,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                     local.localThumbnailPath!.isNotEmpty)
                                 ? local.localThumbnailPath!
                                 : local.thumbnailUrl;
-                            await videoManager.playLocalFile(
+                            await videoManager.playLocalFileFromUserSelection(
+                              context,
                               id: local.videoId,
                               filePath: local.filePath,
                               title: local.title,
@@ -295,7 +296,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                             return;
                           }
 
-                          await videoManager.play(
+                          await videoManager.playFromUserSelection(
+                            context,
                             video.videoId,
                             preferredThumbnailUrl: video.thumbnailUrl,
                             preferredTitle: video.title,

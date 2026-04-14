@@ -26,13 +26,18 @@ class _HistoryPageState extends State<HistoryPage> {
 
   void _loadHistory() {
     setState(() {
-      _historyFuture = Provider.of<HistoryService>(context, listen: false).getHistory();
+      _historyFuture = Provider.of<HistoryService>(
+        context,
+        listen: false,
+      ).getHistory();
     });
   }
 
   Future<void> _refreshHistory() async {
-    final refreshed =
-        await Provider.of<HistoryService>(context, listen: false).getHistory();
+    final refreshed = await Provider.of<HistoryService>(
+      context,
+      listen: false,
+    ).getHistory();
     if (!mounted) return;
     setState(() {
       _historyFuture = Future.value(refreshed);
@@ -127,15 +132,21 @@ class _HistoryCard extends StatelessWidget {
         : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
     final cardBorder = isDark
         ? Colors.white.withValues(alpha: 0.12)
-        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.12);
     final card = ClipRRect(
       borderRadius: BorderRadius.circular(14),
       child: Material(
         color: cardColor,
         surfaceTintColor: Colors.transparent,
         child: InkWell(
-          onTap: () {
-            Provider.of<VideoPlayerManager>(context, listen: false).play(
+          onTap: () async {
+            await Provider.of<VideoPlayerManager>(
+              context,
+              listen: false,
+            ).playFromUserSelection(
+              context,
               video.videoId,
               preferredThumbnailUrl: video.thumbnailUrl,
               preferredTitle: video.title,
@@ -146,56 +157,60 @@ class _HistoryCard extends StatelessWidget {
           child: Container(
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: cardBorder,
-                width: 0.5,
-              ),
+              border: Border.all(color: cardBorder, width: 0.5),
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
+            padding: const EdgeInsets.symmetric(
+              horizontal: 12.0,
+              vertical: 5.0,
+            ),
             child: Row(
               children: [
-                  SquareThumbnail.network(
-                    imageUrl: video.thumbnailUrl,
-                    size: 64,
-                    borderRadius: 10,
-                    fallback: Container(
-                      width: 64,
-                      height: 64,
-                      color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
-                      alignment: Alignment.center,
-                      child: const Icon(CupertinoIcons.music_note),
+                SquareThumbnail.network(
+                  imageUrl: video.thumbnailUrl,
+                  size: 64,
+                  borderRadius: 10,
+                  fallback: Container(
+                    width: 64,
+                    height: 64,
+                    color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                      context,
                     ),
+                    alignment: Alignment.center,
+                    child: const Icon(CupertinoIcons.music_note),
                   ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          video.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.1,
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        video.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: '.SF Pro Text',
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.1,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        video.channelTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: '.SF Pro Text',
+                          fontSize: 13,
+                          color: CupertinoColors.secondaryLabel.resolveFrom(
+                            context,
                           ),
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          video.channelTitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontSize: 13,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
+                ),
               ],
             ),
           ),
@@ -208,11 +223,12 @@ class _HistoryCard extends StatelessWidget {
       child: Dismissible(
         key: ObjectKey(video),
         direction: DismissDirection.startToEnd,
-        dismissThresholds: const {
-          DismissDirection.startToEnd: 0.28,
-        },
+        dismissThresholds: const {DismissDirection.startToEnd: 0.28},
         confirmDismiss: (_) async {
-          final manager = Provider.of<VideoPlayerManager>(context, listen: false);
+          final manager = Provider.of<VideoPlayerManager>(
+            context,
+            listen: false,
+          );
           final added = manager.addOnlineTrackToPlaybackQueue(
             videoId: video.videoId,
             title: video.title,
@@ -222,8 +238,12 @@ class _HistoryCard extends StatelessWidget {
           if (context.mounted) {
             _showQueueIosToast(
               context,
-              message: added ? 'Se ha añadido a la cola' : 'Esta canción ya está en cola',
-              icon: added ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.info_circle_fill,
+              message: added
+                  ? 'Se ha añadido a la cola'
+                  : 'Esta canción ya está en cola',
+              icon: added
+                  ? CupertinoIcons.check_mark_circled_solid
+                  : CupertinoIcons.info_circle_fill,
             );
           }
           return false;
@@ -288,7 +308,11 @@ class _GlassActionButton extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 16, color: CupertinoColors.systemPink.resolveFrom(context)),
+          Icon(
+            icon,
+            size: 16,
+            color: CupertinoColors.systemPink.resolveFrom(context),
+          ),
           const SizedBox(width: 6),
           Text(
             label,
@@ -339,10 +363,7 @@ class _QueueIosToast extends StatefulWidget {
   final String message;
   final IconData icon;
 
-  const _QueueIosToast({
-    required this.message,
-    required this.icon,
-  });
+  const _QueueIosToast({required this.message, required this.icon});
 
   @override
   State<_QueueIosToast> createState() => _QueueIosToastState();
@@ -419,7 +440,11 @@ class _QueueIosToastState extends State<_QueueIosToast>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(widget.icon, size: 18, color: CupertinoColors.systemPink.resolveFrom(context)),
+                Icon(
+                  widget.icon,
+                  size: 18,
+                  color: CupertinoColors.systemPink.resolveFrom(context),
+                ),
                 const SizedBox(width: 8),
                 Text(
                   widget.message,

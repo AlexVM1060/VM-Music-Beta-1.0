@@ -1,5 +1,6 @@
 import 'dart:developer' as developer;
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
@@ -21,6 +22,412 @@ enum SearchState { initial, loading, success, error, noResults }
 
 String _bestQualityThumbnail(Video video) {
   return bestThumbnailForVideo(video);
+}
+
+const String _youtubeiMusicNextEndpointForAlbum =
+    'https://music.youtube.com/youtubei/v1/next?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+
+class _ResolvedAlbumRef {
+  final String playlistId;
+  final String title;
+  final String artist;
+
+  const _ResolvedAlbumRef({
+    required this.playlistId,
+    required this.title,
+    required this.artist,
+  });
+}
+
+Future<Map<String, dynamic>?> _fetchYoutubeMusicNextPayloadForAlbum(
+  String videoId,
+) async {
+  final normalizedVideoId = videoId.trim();
+  if (normalizedVideoId.isEmpty) return null;
+  final client = HttpClient();
+  try {
+    final req = await client.postUrl(
+      Uri.parse(_youtubeiMusicNextEndpointForAlbum),
+    );
+    req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+    req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+    req.headers.set(
+      HttpHeaders.userAgentHeader,
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    );
+    req.headers.set('Origin', 'https://music.youtube.com');
+    req.headers.set(
+      'Referer',
+      'https://music.youtube.com/watch?v=$normalizedVideoId',
+    );
+    req.headers.set('X-Youtube-Client-Name', '67');
+    req.headers.set('X-Youtube-Client-Version', '1.20240226.01.00');
+    req.add(
+      utf8.encode(
+        jsonEncode(<String, Object?>{
+          'videoId': normalizedVideoId,
+          'isAudioOnly': true,
+          'enablePersistentPlaylistPanel': true,
+          'context': {
+            'client': {
+              'clientName': 'WEB_REMIX',
+              'clientVersion': '1.20240226.01.00',
+              'hl': 'es',
+              'gl': 'US',
+            },
+            'request': {'useSsl': true},
+          },
+          'contentCheckOk': true,
+          'racyCheckOk': true,
+        }),
+      ),
+    );
+
+    final res = await req.close();
+    if (res.statusCode < 200 || res.statusCode >= 300) return null;
+    final body = await utf8.decoder.bind(res).join();
+    final decoded = jsonDecode(body);
+    if (decoded is Map<String, dynamic>) return decoded;
+    if (decoded is Map) {
+      return Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+    }
+    return null;
+  } catch (_) {
+    return null;
+  } finally {
+    client.close(force: true);
+  }
+}
+
+Set<String> _extractPlaylistIdsFromNode(dynamic node, {int depth = 0}) {
+  if (depth > 18 || node == null) return const <String>{};
+  final ids = <String>{};
+
+  void maybeAdd(dynamic value) {
+    if (value is! String) return;
+    final id = value.trim();
+    if (id.isEmpty) return;
+    ids.add(id);
+    // En browse endpoints de YouTube Music es común ver "VL<playlistId>".
+    if (id.startsWith('VL') && id.length > 2) {
+      ids.add(id.substring(2));
+    }
+  }
+
+  if (node is Map) {
+    maybeAdd(node['playlistId']);
+    maybeAdd(node['browseId']);
+    final watchEndpoint = node['watchEndpoint'];
+    if (watchEndpoint is Map) {
+      maybeAdd(watchEndpoint['playlistId']);
+      final nestedWatchPlaylist = watchEndpoint['watchPlaylistEndpoint'];
+      if (nestedWatchPlaylist is Map) {
+        maybeAdd(nestedWatchPlaylist['playlistId']);
+      }
+    }
+    final watchPlaylistEndpoint = node['watchPlaylistEndpoint'];
+    if (watchPlaylistEndpoint is Map) {
+      maybeAdd(watchPlaylistEndpoint['playlistId']);
+    }
+    final browseEndpoint = node['browseEndpoint'];
+    if (browseEndpoint is Map) {
+      maybeAdd(browseEndpoint['browseId']);
+    }
+    for (final value in node.values) {
+      ids.addAll(_extractPlaylistIdsFromNode(value, depth: depth + 1));
+    }
+    return ids;
+  }
+  if (node is List) {
+    for (final value in node) {
+      ids.addAll(_extractPlaylistIdsFromNode(value, depth: depth + 1));
+    }
+  }
+  return ids;
+}
+
+bool _isAlbumLikePlaylistId(String playlistId) {
+  final id = playlistId.trim();
+  if (id.isEmpty) return false;
+  if (id.startsWith('RD') ||
+      id.startsWith('UU') ||
+      id.startsWith('LL') ||
+      id.startsWith('FL') ||
+      id.startsWith('WL')) {
+    return false;
+  }
+  return id.startsWith('OLAK') || id.startsWith('VL') || id.startsWith('PL');
+}
+
+String? _pickBestAlbumPlaylistId(Iterable<String> candidates) {
+  final filtered = candidates.where(_isAlbumLikePlaylistId).toList();
+  if (filtered.isEmpty) return null;
+  filtered.sort((a, b) {
+    int priority(String value) {
+      if (value.startsWith('OLAK')) return 0;
+      if (value.startsWith('VL')) return 1;
+      return 2;
+    }
+
+    final p = priority(a).compareTo(priority(b));
+    if (p != 0) return p;
+    return a.length.compareTo(b.length);
+  });
+  return filtered.first;
+}
+
+bool _isLikelyPlayablePlaylistId(String playlistId) {
+  final id = playlistId.trim();
+  if (id.isEmpty) return false;
+  if (id.startsWith('MPLYt_') || id.startsWith('MPTRt_')) {
+    return false;
+  }
+  return RegExp(r'^[0-9A-Za-z_-]{2,}$').hasMatch(id);
+}
+
+String? _pickBestPlayablePlaylistId(Iterable<String> candidates) {
+  final filtered = candidates
+      .map((id) => id.trim())
+      .where(_isLikelyPlayablePlaylistId)
+      .toSet()
+      .toList();
+  if (filtered.isEmpty) return null;
+  filtered.sort((a, b) {
+    int priority(String value) {
+      if (value.startsWith('OLAK')) return 0;
+      if (value.startsWith('PL')) return 1;
+      if (value.startsWith('VL')) return 2;
+      if (value.startsWith('RDAMVM')) return 3;
+      if (value.startsWith('RD')) return 4;
+      return 5;
+    }
+
+    final p = priority(a).compareTo(priority(b));
+    if (p != 0) return p;
+    return a.length.compareTo(b.length);
+  });
+  return filtered.first;
+}
+
+String _normalizeAlbumSearchText(String text) {
+  return text
+      .toLowerCase()
+      .replaceAll('á', 'a')
+      .replaceAll('é', 'e')
+      .replaceAll('í', 'i')
+      .replaceAll('ó', 'o')
+      .replaceAll('ú', 'u')
+      .replaceAll('ü', 'u')
+      .replaceAll('ñ', 'n')
+      .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+}
+
+const Set<String> _albumSearchIgnoredTokens = <String>{
+  'official',
+  'audio',
+  'video',
+  'music',
+  'lyrics',
+  'lyric',
+  'provided',
+  'youtube',
+  'topic',
+  'full',
+  'version',
+  'remastered',
+  'remaster',
+  'deluxe',
+  'edition',
+  'song',
+  'track',
+};
+
+List<String> _tokenizeForAlbumSearch(String text) {
+  final normalized = _normalizeAlbumSearchText(text);
+  if (normalized.isEmpty) return const <String>[];
+  final tokens = <String>[];
+  for (final token in normalized.split(' ')) {
+    if (token.length < 3) continue;
+    if (_albumSearchIgnoredTokens.contains(token)) continue;
+    tokens.add(token);
+    if (tokens.length >= 10) break;
+  }
+  return tokens;
+}
+
+int _scoreAlbumPlaylistCandidate({
+  required SearchPlaylist playlist,
+  required Video video,
+}) {
+  final playlistId = playlist.id.value.trim();
+  final playlistTitle = _normalizeAlbumSearchText(playlist.title);
+  final artistTokens = _tokenizeForAlbumSearch(video.author);
+  final titleTokens = _tokenizeForAlbumSearch(video.title);
+  var score = 0;
+
+  if (playlistId.startsWith('OLAK')) {
+    score += 80;
+  } else if (playlistId.startsWith('PL')) {
+    score += 55;
+  } else if (playlistId.startsWith('VL')) {
+    score += 45;
+  } else if (playlistId.startsWith('RDAMVM')) {
+    score += 8;
+  } else if (playlistId.startsWith('RD')) {
+    score -= 25;
+  } else {
+    score += 12;
+  }
+
+  if (playlistTitle.contains('album')) score += 35;
+  if (playlistTitle.contains('ep')) score += 8;
+  if (playlistTitle.contains('mix') || playlistTitle.contains('radio')) {
+    score -= 40;
+  }
+
+  for (final token in artistTokens.take(3)) {
+    if (playlistTitle.contains(token)) score += 22;
+  }
+  for (final token in titleTokens.take(6)) {
+    if (playlistTitle.contains(token)) score += 8;
+  }
+
+  final videos = playlist.videoCount;
+  if (videos >= 5 && videos <= 40) {
+    score += 18;
+  } else if (videos >= 2 && videos <= 80) {
+    score += 8;
+  } else if (videos <= 1) {
+    score -= 20;
+  }
+  return score;
+}
+
+Future<_ResolvedAlbumRef?> _resolveAlbumFromSearchFallback(
+  YoutubeExplode youtubeExplode,
+  Video video,
+) async {
+  final compactTitle = video.title.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final compactArtist = video.author.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (compactTitle.isEmpty && compactArtist.isEmpty) return null;
+
+  final queries =
+      <String>{
+            '$compactTitle $compactArtist album',
+            '$compactTitle $compactArtist full album',
+            '$compactArtist $compactTitle album',
+            '$compactArtist album',
+          }
+          .map((q) => q.replaceAll(RegExp(r'\s+'), ' ').trim())
+          .where((q) => q.isNotEmpty)
+          .toList();
+
+  final seenIds = <String>{};
+  final playlists = <SearchPlaylist>[];
+
+  for (final query in queries) {
+    try {
+      final results = await youtubeExplode.search.searchContent(
+        query,
+        filter: TypeFilters.playlist,
+      );
+      for (final item in results.whereType<SearchPlaylist>().take(10)) {
+        final id = item.id.value.trim();
+        if (id.isEmpty || !seenIds.add(id)) continue;
+        playlists.add(item);
+      }
+    } catch (_) {
+      // Ignoramos un query fallido y continuamos con los siguientes.
+    }
+    if (playlists.length >= 24) break;
+  }
+
+  if (playlists.isEmpty) return null;
+  final scored =
+      playlists
+          .map(
+            (playlist) => (
+              playlist: playlist,
+              score: _scoreAlbumPlaylistCandidate(
+                playlist: playlist,
+                video: video,
+              ),
+            ),
+          )
+          .toList()
+        ..sort((a, b) => b.score.compareTo(a.score));
+
+  final best = scored.first;
+  if (best.score < 35) return null;
+  final resolvedTitle = best.playlist.title.trim();
+  return _ResolvedAlbumRef(
+    playlistId: best.playlist.id.value,
+    title: resolvedTitle.isNotEmpty ? resolvedTitle : 'Álbum',
+    artist: compactArtist.isNotEmpty ? compactArtist : video.author,
+  );
+}
+
+String _extractYouTubeText(dynamic node) {
+  if (node == null) return '';
+  if (node is String) return node.trim();
+  if (node is Map) {
+    final simpleText = node['simpleText'];
+    if (simpleText is String && simpleText.trim().isNotEmpty) {
+      return simpleText.trim();
+    }
+    final textValue = node['text'];
+    if (textValue is String && textValue.trim().isNotEmpty) {
+      return textValue.trim();
+    }
+    final runs = node['runs'];
+    if (runs is List) {
+      final parts = <String>[];
+      for (final run in runs) {
+        if (run is! Map) continue;
+        final text = run['text'];
+        if (text is String && text.trim().isNotEmpty) {
+          parts.add(text.trim());
+        }
+      }
+      if (parts.isNotEmpty) return parts.join('');
+    }
+  }
+  return '';
+}
+
+String? _extractAlbumTitleFromNextPayload(dynamic node, {int depth = 0}) {
+  if (depth > 18 || node == null) return null;
+  if (node is Map) {
+    final header = node['musicDetailHeaderRenderer'];
+    if (header is Map) {
+      final title = _extractYouTubeText(header['title']).trim();
+      if (title.isNotEmpty) return title;
+    }
+    final title = _extractYouTubeText(node['title']).trim();
+    final subtitle = _extractYouTubeText(node['subtitle']).trim();
+    final pageType =
+        (((node['browseEndpointContextSupportedConfigs']
+                        as Map?)?['browseEndpointContextMusicConfig']
+                    as Map?)?['pageType'] ??
+                '')
+            .toString();
+    if (title.isNotEmpty &&
+        (pageType.contains('ALBUM') || subtitle.contains('Album'))) {
+      return title;
+    }
+    for (final value in node.values) {
+      final nested = _extractAlbumTitleFromNextPayload(value, depth: depth + 1);
+      if (nested != null && nested.isNotEmpty) return nested;
+    }
+  } else if (node is List) {
+    for (final value in node) {
+      final nested = _extractAlbumTitleFromNextPayload(value, depth: depth + 1);
+      if (nested != null && nested.isNotEmpty) return nested;
+    }
+  }
+  return null;
 }
 
 class SearchChannelWithSubscribers {
@@ -297,7 +704,8 @@ class _SearchPageState extends State<SearchPage>
     try {
       final manager = Provider.of<VideoPlayerManager>(context, listen: false);
       manager.registerSearchThumbnail(videoId, thumbnailUrl);
-      await manager.play(
+      await manager.playFromUserSelection(
+        context,
         videoId,
         preferredThumbnailUrl: thumbnailUrl,
         preferredTitle: title,
@@ -324,7 +732,8 @@ class _SearchPageState extends State<SearchPage>
               local.localThumbnailPath!.isNotEmpty)
           ? local.localThumbnailPath!
           : local.thumbnailUrl;
-      await videoManager.playLocalFile(
+      await videoManager.playLocalFileFromUserSelection(
+        context,
         id: local.videoId,
         filePath: local.filePath,
         title: local.title,
@@ -386,6 +795,71 @@ class _SearchPageState extends State<SearchPage>
         const SnackBar(
           content: Text('No se pudo abrir el perfil del artista.'),
         ),
+      );
+    }
+  }
+
+  Future<_ResolvedAlbumRef?> _resolveAlbumFromVideo(Video video) async {
+    final payload = await _runYoutubeWithRetry(
+      () => _fetchYoutubeMusicNextPayloadForAlbum(video.id.value),
+      maxAttempts: 1,
+    );
+    if (payload == null) {
+      return _resolveAlbumFromSearchFallback(_youtubeExplode, video);
+    }
+    final ids = _extractPlaylistIdsFromNode(payload);
+    final playlistId = _pickBestAlbumPlaylistId(ids);
+    final extractedTitle = _extractAlbumTitleFromNextPayload(payload)?.trim();
+    final title = (extractedTitle != null && extractedTitle.isNotEmpty)
+        ? extractedTitle
+        : 'Álbum';
+    if (playlistId != null && playlistId.isNotEmpty) {
+      return _ResolvedAlbumRef(
+        playlistId: playlistId,
+        title: title,
+        artist: video.author,
+      );
+    }
+    final bySearch = await _resolveAlbumFromSearchFallback(
+      _youtubeExplode,
+      video,
+    );
+    if (bySearch != null) return bySearch;
+    final fallbackPlayable = _pickBestPlayablePlaylistId(ids);
+    if (fallbackPlayable == null || fallbackPlayable.isEmpty) return null;
+    return _ResolvedAlbumRef(
+      playlistId: fallbackPlayable,
+      title: title,
+      artist: video.author,
+    );
+  }
+
+  Future<void> _openAlbumFromVideo(Video video) async {
+    try {
+      final album = await _resolveAlbumFromVideo(video);
+      if (!mounted) return;
+      if (album == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No se pudo identificar el álbum de esta canción.'),
+          ),
+        );
+        return;
+      }
+      await Navigator.of(context).push(
+        CupertinoPageRoute<void>(
+          builder: (_) => AlbumTracksPage(
+            playlistId: album.playlistId,
+            albumTitle: album.title,
+            artistName: album.artist,
+            seedThumbnailUrl: _bestQualityThumbnail(video),
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir el álbum.')),
       );
     }
   }
@@ -483,6 +957,13 @@ class _SearchPageState extends State<SearchPage>
                               onTap: () =>
                                   Navigator.of(sheetContext).pop('artist'),
                             ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.rectangle_stack_fill,
+                              label: 'Ir al álbum',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('album'),
+                            ),
                           ],
                         ),
                       ),
@@ -507,6 +988,10 @@ class _SearchPageState extends State<SearchPage>
     }
     if (action == 'artist') {
       await _openArtistFromVideo(video);
+      return;
+    }
+    if (action == 'album') {
+      await _openAlbumFromVideo(video);
     }
   }
 
@@ -2838,7 +3323,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     try {
       final manager = Provider.of<VideoPlayerManager>(context, listen: false);
       manager.registerSearchThumbnail(videoId, thumbnailUrl);
-      await manager.play(
+      await manager.playFromUserSelection(
+        context,
         videoId,
         preferredThumbnailUrl: thumbnailUrl,
         preferredTitle: title,
@@ -2864,7 +3350,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
               local.localThumbnailPath!.isNotEmpty)
           ? local.localThumbnailPath!
           : local.thumbnailUrl;
-      await videoManager.playLocalFile(
+      await videoManager.playLocalFileFromUserSelection(
+        context,
         id: local.videoId,
         filePath: local.filePath,
         title: local.title,
@@ -2900,6 +3387,68 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
           ? CupertinoIcons.check_mark_circled_solid
           : CupertinoIcons.info_circle_fill,
     );
+  }
+
+  Future<_ResolvedAlbumRef?> _resolveAlbumFromVideo(Video video) async {
+    final payload = await _runYoutubeWithRetry(
+      () => _fetchYoutubeMusicNextPayloadForAlbum(video.id.value),
+      maxAttempts: 1,
+    );
+    if (payload == null) {
+      return _resolveAlbumFromSearchFallback(_yt, video);
+    }
+    final ids = _extractPlaylistIdsFromNode(payload);
+    final playlistId = _pickBestAlbumPlaylistId(ids);
+    final extractedTitle = _extractAlbumTitleFromNextPayload(payload)?.trim();
+    final title = (extractedTitle != null && extractedTitle.isNotEmpty)
+        ? extractedTitle
+        : 'Álbum';
+    if (playlistId != null && playlistId.isNotEmpty) {
+      return _ResolvedAlbumRef(
+        playlistId: playlistId,
+        title: title,
+        artist: video.author,
+      );
+    }
+    final bySearch = await _resolveAlbumFromSearchFallback(_yt, video);
+    if (bySearch != null) return bySearch;
+    final fallbackPlayable = _pickBestPlayablePlaylistId(ids);
+    if (fallbackPlayable == null || fallbackPlayable.isEmpty) return null;
+    return _ResolvedAlbumRef(
+      playlistId: fallbackPlayable,
+      title: title,
+      artist: video.author,
+    );
+  }
+
+  Future<void> _openAlbumFromVideo(Video video) async {
+    try {
+      final album = await _resolveAlbumFromVideo(video);
+      if (!mounted) return;
+      if (album == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No se pudo identificar el álbum de esta canción.'),
+          ),
+        );
+        return;
+      }
+      await Navigator.of(context).push(
+        CupertinoPageRoute<void>(
+          builder: (_) => AlbumTracksPage(
+            playlistId: album.playlistId,
+            albumTitle: album.title,
+            artistName: album.artist,
+            seedThumbnailUrl: _bestQualityThumbnail(video),
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir el álbum.')),
+      );
+    }
   }
 
   Future<void> _showVideoOptionsMenu(Video video) async {
@@ -2988,6 +3537,13 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
                               onTap: () =>
                                   Navigator.of(sheetContext).pop('playlist'),
                             ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.rectangle_stack_fill,
+                              label: 'Ir al álbum',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('album'),
+                            ),
                           ],
                         ),
                       ),
@@ -3008,6 +3564,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     }
     if (action == 'playlist') {
       await _showPlaylistPicker(video);
+      return;
+    }
+    if (action == 'album') {
+      await _openAlbumFromVideo(video);
     }
   }
 
@@ -3345,6 +3905,617 @@ class _AnimatedArtistBackground extends StatelessWidget {
   }
 }
 
+class AlbumTracksPage extends StatefulWidget {
+  final String playlistId;
+  final String albumTitle;
+  final String artistName;
+  final String seedThumbnailUrl;
+
+  const AlbumTracksPage({
+    super.key,
+    required this.playlistId,
+    required this.albumTitle,
+    required this.artistName,
+    required this.seedThumbnailUrl,
+  });
+
+  @override
+  State<AlbumTracksPage> createState() => _AlbumTracksPageState();
+}
+
+class _AlbumTracksPageState extends State<AlbumTracksPage>
+    with SingleTickerProviderStateMixin {
+  final YoutubeExplode _yt = YoutubeExplode();
+  bool _loading = true;
+  bool _error = false;
+  String _resolvedTitle = '';
+  String _resolvedArtist = '';
+  String _coverUrl = '';
+  List<Video> _tracks = const [];
+  late final AnimationController _bgMotionController;
+  Color _bgColorA = const Color(0xFF3A2A44);
+  Color _bgColorB = const Color(0xFF1B2E4A);
+  Color _bgColorC = const Color(0xFF1F3D33);
+
+  @override
+  void initState() {
+    super.initState();
+    _resolvedTitle = widget.albumTitle;
+    _resolvedArtist = widget.artistName;
+    _coverUrl = widget.seedThumbnailUrl;
+    _bgMotionController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 26),
+    )..repeat(reverse: true);
+    unawaited(_seedBackgroundPalette());
+    unawaited(_loadAlbumTracks());
+  }
+
+  @override
+  void dispose() {
+    _bgMotionController.dispose();
+    _yt.close();
+    super.dispose();
+  }
+
+  Future<T> _runYoutubeWithRetry<T>(
+    Future<T> Function() action, {
+    int maxAttempts = 2,
+  }) async {
+    Object? lastError;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await action();
+      } on RequestLimitExceededException {
+        rethrow;
+      } on SocketException catch (e) {
+        lastError = e;
+      } on HttpException catch (e) {
+        lastError = e;
+      } catch (e) {
+        lastError = e;
+      }
+      if (attempt < maxAttempts) {
+        await Future<void>.delayed(Duration(seconds: attempt));
+      }
+    }
+    throw lastError ?? Exception('Error de red');
+  }
+
+  Future<void> _loadAlbumTracks() async {
+    setState(() {
+      _loading = true;
+      _error = false;
+    });
+    try {
+      final playlistId = PlaylistId(widget.playlistId);
+      final playlistFuture = _runYoutubeWithRetry(
+        () => _yt.playlists.get(playlistId),
+        maxAttempts: 1,
+      );
+      final videosFuture = _runYoutubeWithRetry(
+        () => _yt.playlists.getVideos(playlistId).take(120).toList(),
+        maxAttempts: 1,
+      );
+
+      final playlist = await playlistFuture;
+      final videos = await videosFuture;
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = false;
+        _tracks = videos;
+        _resolvedTitle = playlist.title.trim().isNotEmpty
+            ? playlist.title.trim()
+            : _resolvedTitle;
+        _resolvedArtist = playlist.author.trim().isNotEmpty
+            ? playlist.author.trim()
+            : _resolvedArtist;
+        if (playlist.thumbnails.highResUrl.isNotEmpty) {
+          _coverUrl = playlist.thumbnails.highResUrl;
+        } else if (playlist.thumbnails.mediumResUrl.isNotEmpty) {
+          _coverUrl = playlist.thumbnails.mediumResUrl;
+        } else if (playlist.thumbnails.lowResUrl.isNotEmpty) {
+          _coverUrl = playlist.thumbnails.lowResUrl;
+        }
+      });
+      unawaited(_seedBackgroundPalette());
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = true;
+      });
+    }
+  }
+
+  Future<void> _seedBackgroundPalette() async {
+    final imageUrl = _coverUrl.isNotEmpty ? _coverUrl : widget.seedThumbnailUrl;
+    if (imageUrl.isEmpty) return;
+    try {
+      final scheme = await ColorScheme.fromImageProvider(
+        provider: NetworkImage(imageUrl),
+        brightness: Brightness.dark,
+      );
+      if (!mounted) return;
+      setState(() {
+        _bgColorA = scheme.primary.withValues(alpha: 0.72);
+        _bgColorB = scheme.secondary.withValues(alpha: 0.66);
+        _bgColorC = scheme.tertiary.withValues(alpha: 0.62);
+      });
+    } catch (_) {
+      // Si falla extracción de color, mantenemos colores por defecto.
+    }
+  }
+
+  Future<void> _playVideoPreferLocal(Video video) async {
+    final downloadService = context.read<DownloadService>();
+    final manager = context.read<VideoPlayerManager>();
+    final local = await downloadService.getDownloadedVideoById(video.id.value);
+    if (!mounted) return;
+    if (local != null) {
+      final thumb =
+          (local.localThumbnailPath != null &&
+              local.localThumbnailPath!.isNotEmpty)
+          ? local.localThumbnailPath!
+          : local.thumbnailUrl;
+      await manager.playLocalFileFromUserSelection(
+        context,
+        id: local.videoId,
+        filePath: local.filePath,
+        title: local.title,
+        thumbnailUrl: thumb,
+        artist: local.channelTitle,
+        localPlainLyrics: local.plainLyrics,
+        localSyncedLyrics: local.syncedLyrics,
+      );
+      return;
+    }
+    manager.registerSearchThumbnail(
+      video.id.value,
+      _bestQualityThumbnail(video),
+    );
+    await manager.playFromUserSelection(
+      context,
+      video.id.value,
+      preferredThumbnailUrl: _bestQualityThumbnail(video),
+      preferredTitle: video.title,
+      preferredArtist: video.author,
+    );
+  }
+
+  void _queueVideo(Video video) {
+    final manager = context.read<VideoPlayerManager>();
+    final added = manager.addOnlineTrackToPlaybackQueue(
+      videoId: video.id.value,
+      title: video.title,
+      thumbnailUrl: _bestQualityThumbnail(video),
+      artist: video.author,
+    );
+    if (!mounted) return;
+    _showIosTopToast(
+      context,
+      message: added ? 'Añadida a la cola' : 'Esta canción ya está en cola',
+      icon: added
+          ? CupertinoIcons.check_mark_circled_solid
+          : CupertinoIcons.info_circle_fill,
+    );
+  }
+
+  Future<void> _showTrackOptionsMenu(Video video) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.systemGrey6
+                        .resolveFrom(sheetContext)
+                        .withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: CupertinoColors.white.withValues(alpha: 0.24),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(sheetContext)
+                              .withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                video.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: CupertinoTheme.of(sheetContext)
+                                    .textTheme
+                                    .navTitleTextStyle
+                                    .copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minimumSize: const Size(34, 34),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                              child: Icon(
+                                CupertinoIcons.xmark_circle_fill,
+                                size: 24,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(sheetContext),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
+                        child: Column(
+                          children: [
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.star_fill,
+                              label: 'Añadir a Favoritos',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('favorites'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.music_note_list,
+                              label: 'Añadir a playlist',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('playlist'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (!mounted || action == null) return;
+    if (action == 'favorites') {
+      await _addVideoToPlaylist(video, PlaylistService.favoritesPlaylistName);
+      return;
+    }
+    if (action == 'playlist') {
+      await _showPlaylistPicker(video);
+      return;
+    }
+  }
+
+  Future<void> _showPlaylistPicker(Video video) async {
+    final playlistService = context.read<PlaylistService>();
+    final playlists = await playlistService.getPlaylists();
+    if (!mounted || playlists.isEmpty) return;
+
+    final selectedName = await showGlassPlaylistPickerSheet(
+      context: context,
+      playlists: playlists,
+      subtitle: video.title,
+    );
+    if (!mounted || selectedName == null || selectedName.isEmpty) return;
+    await _addVideoToPlaylist(video, selectedName);
+  }
+
+  Future<void> _addVideoToPlaylist(Video video, String playlistName) async {
+    final playlistService = context.read<PlaylistService>();
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    final track = VideoHistory(
+      videoId: video.id.value,
+      title: video.title,
+      thumbnailUrl: _bestQualityThumbnail(video),
+      channelTitle: video.author,
+      watchedAt: DateTime.now(),
+    );
+    await playlistService.addVideoToPlaylist(playlistName, track);
+    await downloadService.autoDownloadIfEnabledUsingClone(
+      playlistName,
+      track,
+      videoManager: videoManager,
+    );
+    if (!mounted) return;
+    final label = PlaylistService.isFavoritesPlaylistName(playlistName)
+        ? 'Añadida a Favoritos'
+        : 'Añadida a $playlistName';
+    _showIosTopToast(
+      context,
+      message: label,
+      icon: PlaylistService.isFavoritesPlaylistName(playlistName)
+          ? CupertinoIcons.star_fill
+          : CupertinoIcons.check_mark_circled_solid,
+    );
+  }
+
+  Future<void> _playTopTrack() async {
+    if (_tracks.isEmpty) return;
+    await _playVideoPreferLocal(_tracks.first);
+  }
+
+  Future<void> _playRandomTrack() async {
+    if (_tracks.isEmpty) return;
+    final randomIndex = math.Random().nextInt(_tracks.length);
+    await _playVideoPreferLocal(_tracks[randomIndex]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final downloadService = context.watch<DownloadService>();
+    final content = _loading
+        ? const Center(child: CupertinoActivityIndicator(radius: 14))
+        : _error
+        ? Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 22),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                  child: Container(
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.18),
+                        width: 0.6,
+                      ),
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Colors.white.withValues(alpha: 0.09),
+                          Colors.white.withValues(alpha: 0.025),
+                        ],
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'No se pudo cargar este álbum.',
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 10),
+                        _ArtistActionPill(
+                          icon: CupertinoIcons.arrow_clockwise,
+                          label: 'Reintentar',
+                          isPrimary: true,
+                          onPressed: _loadAlbumTracks,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          )
+        : _tracks.isEmpty
+        ? const Center(
+            child: Text('Este álbum no tiene canciones disponibles.'),
+          )
+        : CustomScrollView(
+            slivers: [
+              SliverAppBar(
+                backgroundColor: Colors.black.withValues(alpha: 0.30),
+                elevation: 0,
+                pinned: true,
+                expandedHeight: 320,
+                leading: IconButton(
+                  icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                  onPressed: () => Navigator.of(context).maybePop(),
+                ),
+                flexibleSpace: FlexibleSpaceBar(
+                  background: _AlbumHeroHeader(
+                    imageUrl: _coverUrl,
+                    albumTitle: _resolvedTitle.isNotEmpty
+                        ? _resolvedTitle
+                        : 'Álbum',
+                    artistName: _resolvedArtist,
+                  ),
+                ),
+              ),
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(0, 0, 0, 10),
+                  child: Column(
+                    children: [
+                      Transform.translate(
+                        offset: Offset.zero,
+                        child: const _ArtistHeaderListConnector(),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(18),
+                          child: BackdropFilter(
+                            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                            child: Container(
+                              padding: const EdgeInsets.fromLTRB(
+                                14,
+                                12,
+                                14,
+                                12,
+                              ),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.18),
+                                  width: 0.6,
+                                ),
+                                gradient: LinearGradient(
+                                  begin: Alignment.topLeft,
+                                  end: Alignment.bottomRight,
+                                  colors: [
+                                    Colors.white.withValues(alpha: 0.085),
+                                    Colors.white.withValues(alpha: 0.02),
+                                  ],
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Álbum',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelMedium
+                                        ?.copyWith(
+                                          color: CupertinoColors.secondaryLabel
+                                              .resolveFrom(context),
+                                          letterSpacing: 0.25,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    _resolvedTitle.isNotEmpty
+                                        ? _resolvedTitle
+                                        : 'Álbum',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleLarge
+                                        ?.copyWith(
+                                          fontWeight: FontWeight.w800,
+                                          color: CupertinoColors.label
+                                              .resolveFrom(context),
+                                        ),
+                                  ),
+                                  if (_resolvedArtist.isNotEmpty) ...[
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      _resolvedArtist,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(
+                                            color: CupertinoColors
+                                                .secondaryLabel
+                                                .resolveFrom(context),
+                                          ),
+                                    ),
+                                  ],
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    '${_tracks.length} canciones',
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(
+                                          color: CupertinoColors.secondaryLabel
+                                              .resolveFrom(context),
+                                        ),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: _ArtistActionPill(
+                                          icon: CupertinoIcons.play_fill,
+                                          label: 'Reproducir',
+                                          isPrimary: true,
+                                          onPressed: _playTopTrack,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: _ArtistActionPill(
+                                          icon: CupertinoIcons.shuffle,
+                                          label: 'Aleatorio',
+                                          onPressed: _playRandomTrack,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text(
+                                    'Canciones',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleMedium
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              SliverPadding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                sliver: SliverList.builder(
+                  itemCount: _tracks.length,
+                  itemBuilder: (context, index) {
+                    final video = _tracks[index];
+                    return VideoCard(
+                      video: video,
+                      isDownloaded:
+                          downloadService.getDownloadStatus(video.id.value) ==
+                          DownloadStatus.downloaded,
+                      highlightTop: index < 3,
+                      onPlay: () => _playVideoPreferLocal(video),
+                      onQueue: () => _queueVideo(video),
+                      onMenuTap: () => _showTrackOptionsMenu(video),
+                    );
+                  },
+                ),
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: 24)),
+            ],
+          );
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          _AnimatedArtistBackground(
+            animation: _bgMotionController,
+            colorA: _bgColorA,
+            colorB: _bgColorB,
+            colorC: _bgColorC,
+          ),
+          Positioned.fill(child: content),
+        ],
+      ),
+    );
+  }
+}
+
 class _BlurBlob extends StatelessWidget {
   final Color color;
 
@@ -3364,6 +4535,130 @@ class _BlurBlob extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AlbumHeroHeader extends StatelessWidget {
+  final String imageUrl;
+  final String albumTitle;
+  final String artistName;
+
+  const _AlbumHeroHeader({
+    required this.imageUrl,
+    required this.albumTitle,
+    required this.artistName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Container(color: Colors.black),
+        Positioned.fill(
+          child: imageUrl.isEmpty
+              ? Container(
+                  color: Colors.black,
+                  alignment: Alignment.center,
+                  child: const Icon(
+                    CupertinoIcons.music_albums_fill,
+                    size: 78,
+                    color: Colors.white54,
+                  ),
+                )
+              : Transform.scale(
+                  scale: 1.02,
+                  child: Image.network(
+                    imageUrl,
+                    fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                    filterQuality: FilterQuality.high,
+                    errorBuilder: (context, error, stackTrace) => Container(
+                      color: Colors.black,
+                      alignment: Alignment.center,
+                      child: const Icon(
+                        CupertinoIcons.music_albums_fill,
+                        size: 78,
+                        color: Colors.white54,
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  stops: [0.40, 0.74, 1.0],
+                  colors: [
+                    Color.fromARGB(0, 0, 0, 0),
+                    Color.fromARGB(25, 0, 0, 0),
+                    Color.fromARGB(95, 0, 0, 0),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          left: 16,
+          right: 16,
+          bottom: 24,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.34),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.24),
+                    width: 0.55,
+                  ),
+                ),
+                child: const Text(
+                  'ÁLBUM',
+                  style: TextStyle(
+                    fontFamily: '.SF Pro Text',
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                albumTitle,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.headlineLarge?.copyWith(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.25,
+                ),
+              ),
+              if (artistName.trim().isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  artistName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Colors.white.withValues(alpha: 0.82),
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

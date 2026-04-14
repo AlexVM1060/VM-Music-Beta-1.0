@@ -16,7 +16,9 @@ class DownloadsPage extends StatelessWidget {
     final manager = context.read<VideoPlayerManager>();
 
     return Scaffold(
-      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(context),
+      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
+        context,
+      ),
       body: FutureBuilder<List<DownloadedVideo>>(
         future: downloadService.getDownloadedVideos(),
         builder: (context, snapshot) {
@@ -25,9 +27,7 @@ class DownloadsPage extends StatelessWidget {
           }
 
           if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            return const Center(
-              child: Text('Aún no has descargado música.'),
-            );
+            return const Center(child: Text('Aún no has descargado música.'));
           }
 
           final songs = snapshot.data!;
@@ -50,11 +50,13 @@ class DownloadsPage extends StatelessWidget {
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(14),
                     child: Material(
-                      color: CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context),
+                      color: CupertinoColors.secondarySystemGroupedBackground
+                          .resolveFrom(context),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(14),
-                        onTap: () {
-                          manager.playLocalFile(
+                        onTap: () async {
+                          await manager.playLocalFileFromUserSelection(
+                            context,
                             id: song.videoId,
                             filePath: song.filePath,
                             title: song.title,
@@ -70,70 +72,83 @@ class DownloadsPage extends StatelessWidget {
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                              color: CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12),
+                              color: CupertinoColors.separator
+                                  .resolveFrom(context)
+                                  .withValues(alpha: 0.12),
                               width: 0.5,
                             ),
                           ),
-                          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 5.0),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12.0,
+                            vertical: 5.0,
+                          ),
                           child: Row(
                             children: [
-                                hasLocalThumb
-                                    ? SquareThumbnail.file(
-                                        filePath: localThumbPath,
-                                        size: 64,
-                                        borderRadius: 10,
-                                        fallback: Container(
-                                          width: 64,
-                                          height: 64,
-                                          color: CupertinoColors.tertiarySystemFill.resolveFrom(
-                                            context,
+                              hasLocalThumb
+                                  ? SquareThumbnail.file(
+                                      filePath: localThumbPath,
+                                      size: 64,
+                                      borderRadius: 10,
+                                      fallback: Container(
+                                        width: 64,
+                                        height: 64,
+                                        color: CupertinoColors
+                                            .tertiarySystemFill
+                                            .resolveFrom(context),
+                                        alignment: Alignment.center,
+                                        child: const Icon(
+                                          CupertinoIcons.music_note,
+                                        ),
+                                      ),
+                                    )
+                                  : SquareThumbnail.network(
+                                      imageUrl: song.thumbnailUrl,
+                                      size: 64,
+                                      borderRadius: 10,
+                                      fallback: Container(
+                                        width: 64,
+                                        height: 64,
+                                        color: CupertinoColors
+                                            .tertiarySystemFill
+                                            .resolveFrom(context),
+                                        alignment: Alignment.center,
+                                        child: const Icon(
+                                          CupertinoIcons.music_note,
+                                        ),
+                                      ),
+                                    ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      song.title,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium
+                                          ?.copyWith(
+                                            fontWeight: FontWeight.bold,
                                           ),
-                                          alignment: Alignment.center,
-                                          child: const Icon(CupertinoIcons.music_note),
-                                        ),
-                                      )
-                                    : SquareThumbnail.network(
-                                        imageUrl: song.thumbnailUrl,
-                                        size: 64,
-                                        borderRadius: 10,
-                                        fallback: Container(
-                                          width: 64,
-                                          height: 64,
-                                          color: CupertinoColors.tertiarySystemFill.resolveFrom(
-                                            context,
-                                          ),
-                                          alignment: Alignment.center,
-                                          child: const Icon(CupertinoIcons.music_note),
-                                        ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      song.channelTitle,
+                                      style: TextStyle(
+                                        color: CupertinoColors.secondaryLabel
+                                            .resolveFrom(context),
+                                        fontSize: 12,
+                                        fontFamily: '.SF Pro Text',
                                       ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        song.title,
-                                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        song.channelTitle,
-                                        style: TextStyle(
-                                          color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                                          fontSize: 12,
-                                          fontFamily: '.SF Pro Text',
-                                        ),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ],
-                                  ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
                                 ),
-                                const SizedBox(width: 8),
+                              ),
+                              const SizedBox(width: 8),
                               IconButton(
                                 icon: const Icon(
                                   CupertinoIcons.delete,
@@ -141,11 +156,15 @@ class DownloadsPage extends StatelessWidget {
                                 ),
                                 tooltip: 'Eliminar descarga',
                                 onPressed: () async {
-                                  await downloadService.deleteVideo(song.videoId);
+                                  await downloadService.deleteVideo(
+                                    song.videoId,
+                                  );
                                   if (!context.mounted) return;
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
-                                      content: Text('Canción eliminada de descargas.'),
+                                      content: Text(
+                                        'Canción eliminada de descargas.',
+                                      ),
                                     ),
                                   );
                                 },

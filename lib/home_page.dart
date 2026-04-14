@@ -380,7 +380,8 @@ class _HomePageState extends State<HomePage> {
     final downloadService = context.read<DownloadService>();
 
     if (track.isLocal && track.localFilePath != null) {
-      await manager.playLocalFile(
+      await manager.playLocalFileFromUserSelection(
+        context,
         id: track.videoId,
         filePath: track.localFilePath!,
         title: track.title,
@@ -400,7 +401,8 @@ class _HomePageState extends State<HomePage> {
               local.localThumbnailPath!.isNotEmpty)
           ? local.localThumbnailPath!
           : local.thumbnailUrl;
-      await manager.playLocalFile(
+      await manager.playLocalFileFromUserSelection(
+        context,
         id: local.videoId,
         filePath: local.filePath,
         title: local.title,
@@ -412,7 +414,8 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    await manager.play(
+    await manager.playFromUserSelection(
+      context,
       track.videoId,
       preferredThumbnailUrl: track.thumbnailUrl,
       preferredTitle: track.title,
