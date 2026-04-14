@@ -18,6 +18,7 @@ import 'package:myapp/services/ios_live_lyrics_alignment_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/artwork_subject_cutout_service.dart';
+import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
@@ -2831,9 +2832,11 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     if (currentIndex < 0) return;
     final now = DateTime.now();
     final sameIndex = currentIndex == _lastSyncedIndex;
-    if (sameIndex &&
-        now.difference(_lastFollowScrollAt) <
-            const Duration(milliseconds: 650)) {
+    final canResolveTargetNow = _canResolveLyricTarget(currentIndex);
+    final minFollowGap = canResolveTargetNow
+        ? const Duration(milliseconds: 650)
+        : const Duration(milliseconds: 180);
+    if (sameIndex && now.difference(_lastFollowScrollAt) < minFollowGap) {
       return;
     }
     _lastSyncedIndex = currentIndex;
@@ -2843,20 +2846,50 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       if (!_syncedScrollController.hasClients) return;
       final targetKey = _syncedLineKeys[currentIndex];
       final targetContext = targetKey?.currentContext;
-      if (targetContext == null) return;
-      final targetRenderObject = targetContext.findRenderObject();
-      if (targetRenderObject == null) return;
-      try {
-        _syncedScrollController.position.ensureVisible(
-          targetRenderObject,
-          alignment: 0.35,
-          duration: const Duration(milliseconds: 420),
-          curve: Curves.easeInOutCubicEmphasized,
-        );
-      } catch (_) {
-        // Best effort: si la lista cambia de frame, el siguiente tick vuelve a intentar.
+      final targetRenderObject = targetContext?.findRenderObject();
+      if (targetRenderObject != null) {
+        try {
+          _syncedScrollController.position.ensureVisible(
+            targetRenderObject,
+            alignment: 0.35,
+            duration: const Duration(milliseconds: 420),
+            curve: Curves.easeInOutCubicEmphasized,
+          );
+          return;
+        } catch (_) {
+          // Intentamos fallback por offset aproximado.
+        }
       }
+      _scrollTowardsCurrentLyricFallback(currentIndex);
     });
+  }
+
+  bool _canResolveLyricTarget(int index) {
+    final key = _syncedLineKeys[index];
+    final ctx = key?.currentContext;
+    if (ctx == null) return false;
+    return ctx.findRenderObject() != null;
+  }
+
+  void _scrollTowardsCurrentLyricFallback(int currentIndex) {
+    if (!_syncedScrollController.hasClients) return;
+    final position = _syncedScrollController.position;
+    if (!position.hasContentDimensions) return;
+
+    const estimatedLineExtent = 44.0;
+    const desiredAlignment = 0.35;
+    final viewport = position.viewportDimension;
+    final estimatedOffset =
+        (currentIndex * estimatedLineExtent) - (viewport * desiredAlignment);
+    final targetOffset = estimatedOffset.clamp(0.0, position.maxScrollExtent);
+    final currentOffset = _syncedScrollController.offset;
+    if ((targetOffset - currentOffset).abs() < 6) return;
+
+    _syncedScrollController.animateTo(
+      targetOffset,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
   }
 
   Future<void> _syncIosWordAlignment({
@@ -3872,20 +3905,27 @@ class _ArtworkImageState extends State<_ArtworkImage>
   }
 
   Future<void> _resolveArtworkColor() async {
+    final settings = context.read<AppSettingsService?>();
+    final dataSaverMode = settings?.dataSaverMode ?? false;
     final raw = widget.url?.trim();
-    if (raw == null || raw.isEmpty || raw == _lastPaletteUrl) return;
-    _lastPaletteUrl = raw;
+    final resolved = raw == null || raw.isEmpty
+        ? raw
+        : optimizeYoutubeThumbnailUrl(raw, preferLowResolution: dataSaverMode);
+    if (resolved == null || resolved.isEmpty || resolved == _lastPaletteUrl) {
+      return;
+    }
+    _lastPaletteUrl = resolved;
 
     try {
-      final ImageProvider provider = raw.startsWith('/')
-          ? FileImage(File(raw))
-          : NetworkImage(raw);
+      final ImageProvider provider = resolved.startsWith('/')
+          ? FileImage(File(resolved))
+          : NetworkImage(resolved);
       final palette = await PaletteGenerator.fromImageProvider(
         provider,
         size: const Size(96, 96),
         maximumColorCount: 16,
       );
-      if (!mounted || _lastPaletteUrl != raw) return;
+      if (!mounted || _lastPaletteUrl != resolved) return;
 
       final color =
           palette.vibrantColor?.color ??
@@ -3916,10 +3956,14 @@ class _ArtworkImageState extends State<_ArtworkImage>
       return;
     }
     final raw = widget.url?.trim();
+    final dataSaverMode = settings?.dataSaverMode ?? false;
+    final resolved = raw == null || raw.isEmpty
+        ? raw
+        : optimizeYoutubeThumbnailUrl(raw, preferLowResolution: dataSaverMode);
     if (kDebugMode) {
-      debugPrint('[cutout] resolve start url=$raw');
+      debugPrint('[cutout] resolve start url=$resolved');
     }
-    if (raw == null || raw.isEmpty) {
+    if (resolved == null || resolved.isEmpty) {
       if (mounted && _subjectCutoutBytes != null) {
         setState(() {
           _subjectCutoutBytes = null;
@@ -3931,18 +3975,18 @@ class _ArtworkImageState extends State<_ArtworkImage>
       }
       return;
     }
-    if (raw == _lastSubjectUrl) return;
-    _lastSubjectUrl = raw;
+    if (resolved == _lastSubjectUrl) return;
+    _lastSubjectUrl = resolved;
 
     try {
-      final bytes = await _loadImageBytes(raw);
+      final bytes = await _loadImageBytes(resolved);
       if (kDebugMode) {
         debugPrint(
-          '[cutout] source bytes loaded url=$raw bytes=${bytes?.length ?? 0}',
+          '[cutout] source bytes loaded url=$resolved bytes=${bytes?.length ?? 0}',
         );
       }
       if (!mounted ||
-          _lastSubjectUrl != raw ||
+          _lastSubjectUrl != resolved ||
           bytes == null ||
           bytes.isEmpty) {
         if (kDebugMode) {
@@ -3954,26 +3998,26 @@ class _ArtworkImageState extends State<_ArtworkImage>
       }
 
       final cutout = await ArtworkSubjectCutoutService.buildCutout(
-        cacheKey: 'v11:$raw:native-validated',
+        cacheKey: 'v11:$resolved:native-validated',
         sourceBytes: bytes,
         viewportZoom: 1.0,
       );
-      if (!mounted || _lastSubjectUrl != raw) return;
+      if (!mounted || _lastSubjectUrl != resolved) return;
       setState(() {
         _subjectCutoutBytes = cutout;
       });
       if (kDebugMode) {
         debugPrint(
-          '[cutout] resolve done url=$raw outBytes=${cutout?.length ?? 0}',
+          '[cutout] resolve done url=$resolved outBytes=${cutout?.length ?? 0}',
         );
       }
     } catch (_) {
-      if (!mounted || _lastSubjectUrl != raw) return;
+      if (!mounted || _lastSubjectUrl != resolved) return;
       setState(() {
         _subjectCutoutBytes = null;
       });
       if (kDebugMode) {
-        debugPrint('[cutout] resolve failed url=$raw');
+        debugPrint('[cutout] resolve failed url=$resolved');
       }
     }
   }
@@ -4035,7 +4079,12 @@ class _ArtworkImageState extends State<_ArtworkImage>
   }
 
   Widget _buildArtworkImage(BuildContext context) {
-    final raw = widget.url!;
+    final dataSaverMode =
+        context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
+    final raw = optimizeYoutubeThumbnailUrl(
+      widget.url!,
+      preferLowResolution: dataSaverMode,
+    );
     final looksLikeLocalPath = raw.startsWith('/');
     if (looksLikeLocalPath) {
       return Transform.scale(

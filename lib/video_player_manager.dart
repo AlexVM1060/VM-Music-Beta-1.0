@@ -845,7 +845,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final best = results.first;
     await play(
       best.id.value,
-      preferredThumbnailUrl: bestThumbnailForVideo(best),
+      preferredThumbnailUrl: bestThumbnailForVideo(
+        best,
+        preferLowResolution: _settingsService.dataSaverMode,
+      ),
       preferredTitle: best.title,
       preferredArtist: best.author,
     );
@@ -1004,11 +1007,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         ? preferredArtist.trim()
         : null;
     _trackDuration = preferredDuration ?? Duration.zero;
-    final effectivePreferredThumbnail =
+    final dataSaverMode = _settingsService.dataSaverMode;
+    final rawPreferredThumbnail =
         (preferredThumbnailUrl != null &&
             preferredThumbnailUrl.trim().isNotEmpty)
         ? preferredThumbnailUrl.trim()
         : _searchThumbnailOverrides[videoId];
+    final effectivePreferredThumbnail =
+        rawPreferredThumbnail != null && rawPreferredThumbnail.isNotEmpty
+        ? optimizeYoutubeThumbnailUrl(
+            rawPreferredThumbnail,
+            preferLowResolution: dataSaverMode,
+          )
+        : null;
     if (effectivePreferredThumbnail != null &&
         effectivePreferredThumbnail.isNotEmpty) {
       _searchThumbnailOverrides[videoId] = effectivePreferredThumbnail;
@@ -1025,11 +1036,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     try {
       final shouldFetchVideoMetadata =
-          _autoplayEnabled ||
           _trackTitle == null ||
           _trackArtist == null ||
           _trackThumbnailUrl == null ||
-          _trackDuration == Duration.zero;
+          _trackDuration == Duration.zero ||
+          _autoplayEnabled;
       Future<StreamManifest>? manifestFuture;
       final Future<Video>? videoFuture = shouldFetchVideoMetadata
           ? _getVideoWithRetry(videoId)
@@ -1147,7 +1158,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
               (effectivePreferredThumbnail != null &&
                   effectivePreferredThumbnail.isNotEmpty)
               ? effectivePreferredThumbnail
-              : bestThumbnailForVideo(video);
+              : bestThumbnailForVideo(
+                  video,
+                  preferLowResolution: dataSaverMode,
+                );
           _trackArtist = video.author;
           _trackDuration = video.duration ?? Duration.zero;
           _syncSystemNowPlaying();
@@ -2333,14 +2347,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   String? _extractBestThumbnailFromNode(dynamic node) {
     if (node == null) return null;
+    final preferLowResolution = _settingsService.dataSaverMode;
     if (node is Map) {
       final thumbs = node['thumbnails'];
       if (thumbs is List) {
-        for (final item in thumbs.reversed) {
+        final ordered = preferLowResolution
+            ? thumbs
+            : thumbs.reversed.toList(growable: false);
+        for (final item in ordered) {
           if (item is! Map) continue;
           final url = item['url'];
           if (url is String && url.trim().isNotEmpty) {
-            return url.trim();
+            return optimizeYoutubeThumbnailUrl(
+              url.trim(),
+              preferLowResolution: preferLowResolution,
+            );
           }
         }
       }
@@ -2510,7 +2531,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   String _defaultThumbnailForVideoId(String videoId) {
-    return 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg';
+    final qualitySuffix = _settingsService.dataSaverMode
+        ? 'mqdefault'
+        : 'hqdefault';
+    return 'https://i.ytimg.com/vi/$videoId/$qualitySuffix.jpg';
   }
 
   Future<List<PlaybackQueueItem>> _buildRelatedQueueFromYoutubeFallback(
@@ -3466,7 +3490,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   String _bestThumbnailUrl(Video video) {
-    return bestThumbnailForVideo(video);
+    return bestThumbnailForVideo(
+      video,
+      preferLowResolution: _settingsService.dataSaverMode,
+    );
   }
 
   String _normalizeTitleForQueueDedup(String title) {
@@ -4621,13 +4648,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   int? _targetBitrateForCurrentQuality() {
-    return switch (_settingsService.audioQuality) {
+    final preferredBitrate = switch (_settingsService.audioQuality) {
       AudioQualityPreference.automatic => Platform.isIOS ? 160000 : 128000,
       AudioQualityPreference.low => 96000,
       AudioQualityPreference.normal => 160000,
       AudioQualityPreference.high => 320000,
       AudioQualityPreference.veryHigh => null,
     };
+    if (!_settingsService.dataSaverMode) return preferredBitrate;
+    if (preferredBitrate == null) return 128000;
+    return math.min(preferredBitrate, 128000);
   }
 
   void toggleLyricsLayout() {
@@ -4903,13 +4933,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   int? _targetVideoHeightForCurrentQuality() {
-    return switch (_settingsService.audioQuality) {
+    final preferredHeight = switch (_settingsService.audioQuality) {
       AudioQualityPreference.low => 240,
       AudioQualityPreference.normal => 420,
       AudioQualityPreference.high => 720,
       AudioQualityPreference.veryHigh => null,
       AudioQualityPreference.automatic => 420,
     };
+    if (!_settingsService.dataSaverMode) return preferredHeight;
+    if (preferredHeight == null) return 360;
+    return math.min(preferredHeight, 360);
   }
 
   Future<void> _resetEngines() async {
@@ -5595,7 +5628,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           if (_currentVideoId != next.videoId) return;
           _trackTitle = video.title;
           _trackArtist = video.author;
-          _trackThumbnailUrl = bestThumbnailForVideo(video);
+          _trackThumbnailUrl = bestThumbnailForVideo(
+            video,
+            preferLowResolution: _settingsService.dataSaverMode,
+          );
           _trackDuration = video.duration ?? Duration.zero;
           _syncSystemNowPlaying();
           _syncSystemPlaybackState(force: true);

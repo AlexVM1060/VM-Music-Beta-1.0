@@ -151,6 +151,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   context,
                   displayVideos: displayVideos,
                   downloadedById: downloadedById,
+                  downloadService: downloadService,
                   videoManager: videoManager,
                 );
               }
@@ -273,8 +274,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       child: InkWell(
                         borderRadius: BorderRadius.circular(14),
                         onTap: () async {
-                          final local = await downloadService
-                              .getDownloadedVideoById(video.videoId);
+                          final local = await _resolveLocalVideoForPlayback(
+                            downloadService: downloadService,
+                            videoId: video.videoId,
+                            cached: downloadedVideo,
+                          );
                           if (!context.mounted) return;
 
                           if (local != null) {
@@ -596,6 +600,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     BuildContext context, {
     required List<VideoHistory> displayVideos,
     required Map<String, DownloadedVideo> downloadedById,
+    required DownloadService downloadService,
     required VideoPlayerManager videoManager,
   }) {
     final fallback = CupertinoColors.tertiarySystemFill.resolveFrom(context);
@@ -758,6 +763,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   isPrimary: true,
                   onPressed: () async {
                     await _playPlaylistFromHeader(
+                      downloadService: downloadService,
                       videoManager: videoManager,
                       displayVideos: displayVideos,
                       downloadedById: downloadedById,
@@ -773,6 +779,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   label: 'Aleatorio',
                   onPressed: () async {
                     await _playPlaylistFromHeader(
+                      downloadService: downloadService,
                       videoManager: videoManager,
                       displayVideos: displayVideos,
                       downloadedById: downloadedById,
@@ -788,13 +795,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     );
   }
 
-  List<PlaybackQueueItem> _buildPlaylistQueueItems({
+  Future<List<PlaybackQueueItem>> _buildPlaylistQueueItems({
+    required DownloadService downloadService,
     required List<VideoHistory> displayVideos,
     required Map<String, DownloadedVideo> downloadedById,
-  }) {
+  }) async {
     final items = <PlaybackQueueItem>[];
     for (final video in displayVideos) {
-      final local = downloadedById[video.videoId];
+      final local = await _resolveLocalVideoForPlayback(
+        downloadService: downloadService,
+        videoId: video.videoId,
+        cached: downloadedById[video.videoId],
+      );
       final localPath = local?.filePath.trim() ?? '';
       final canPlayLocal = localPath.isNotEmpty && File(localPath).existsSync();
       if (canPlayLocal && local != null) {
@@ -830,6 +842,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   Future<void> _playPlaylistFromHeader({
+    required DownloadService downloadService,
     required VideoPlayerManager videoManager,
     required List<VideoHistory> displayVideos,
     required Map<String, DownloadedVideo> downloadedById,
@@ -842,7 +855,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       );
       return;
     }
-    final queueItems = _buildPlaylistQueueItems(
+    final queueItems = await _buildPlaylistQueueItems(
+      downloadService: downloadService,
       displayVideos: displayVideos,
       downloadedById: downloadedById,
     );
@@ -875,6 +889,20 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     } catch (_) {
       return false;
     }
+  }
+
+  Future<DownloadedVideo?> _resolveLocalVideoForPlayback({
+    required DownloadService downloadService,
+    required String videoId,
+    required DownloadedVideo? cached,
+  }) async {
+    if (cached != null) {
+      final cachedPath = cached.filePath.trim();
+      if (cachedPath.isNotEmpty && File(cachedPath).existsSync()) {
+        return cached;
+      }
+    }
+    return downloadService.resolvePlayableDownloadedVideo(videoId);
   }
 
   Future<void> _showEditPlaylistDialog({

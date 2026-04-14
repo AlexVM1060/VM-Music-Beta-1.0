@@ -163,12 +163,19 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     ),
                     const _SectionDivider(),
                     _SettingSwitchRow(
+                      title: 'Modo ahorro de datos',
+                      subtitle:
+                          'Reduce resolución de video y carátulas, y limita cargas en segundo plano de YouTube',
+                      value: settings.dataSaverMode,
+                      onChanged: (value) => settings.setDataSaverMode(value),
+                    ),
+                    const _SectionDivider(),
+                    _SettingSwitchRow(
                       title: 'Permitir contenido explícito',
                       value: settings.allowExplicitContent,
                       onChanged: (value) =>
                           settings.setAllowExplicitContent(value),
                     ),
-                    
                   ],
                 ),
               ],

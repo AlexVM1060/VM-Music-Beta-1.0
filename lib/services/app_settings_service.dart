@@ -15,6 +15,7 @@ class AppSettingsService extends ChangeNotifier {
   static const String _explicitContentKey = 'explicit_content';
   static const String _animatedCutoutCoversKey = 'animated_cutout_covers';
   static const String _liveLyricsKey = 'live_lyrics';
+  static const String _dataSaverModeKey = 'data_saver_mode';
 
   late final Box _box;
   bool _initialized = false;
@@ -27,6 +28,7 @@ class AppSettingsService extends ChangeNotifier {
   bool _allowExplicitContent = true;
   bool _animatedCutoutCovers = true;
   bool _liveLyrics = true;
+  bool _dataSaverMode = false;
 
   bool get initialized => _initialized;
   AudioQualityPreference get audioQuality => _audioQuality;
@@ -43,6 +45,7 @@ class AppSettingsService extends ChangeNotifier {
   bool get allowExplicitContent => _allowExplicitContent;
   bool get animatedCutoutCovers => _animatedCutoutCovers;
   bool get liveLyrics => _liveLyrics;
+  bool get dataSaverMode => _dataSaverMode;
 
   Future<void> init() async {
     if (_initialized) return;
@@ -68,6 +71,7 @@ class AppSettingsService extends ChangeNotifier {
     _animatedCutoutCovers =
         _box.get(_animatedCutoutCoversKey, defaultValue: true) == true;
     _liveLyrics = _box.get(_liveLyricsKey, defaultValue: true) == true;
+    _dataSaverMode = _box.get(_dataSaverModeKey, defaultValue: false) == true;
     _initialized = true;
   }
 
@@ -149,6 +153,13 @@ class AppSettingsService extends ChangeNotifier {
     if (_liveLyrics == value) return;
     _liveLyrics = value;
     await _box.put(_liveLyricsKey, value);
+    notifyListeners();
+  }
+
+  Future<void> setDataSaverMode(bool value) async {
+    if (_dataSaverMode == value) return;
+    _dataSaverMode = value;
+    await _box.put(_dataSaverModeKey, value);
     notifyListeners();
   }
 }

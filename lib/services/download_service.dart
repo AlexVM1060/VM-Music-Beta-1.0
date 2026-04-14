@@ -584,6 +584,25 @@ class DownloadService with ChangeNotifier {
 
     final file = File(downloaded.filePath);
     if (!await file.exists()) {
+      final recoveredPath = await _findRecoveredDownloadPath(videoId);
+      if (recoveredPath != null && recoveredPath.isNotEmpty) {
+        final repaired = DownloadedVideo(
+          videoId: downloaded.videoId,
+          title: downloaded.title,
+          thumbnailUrl: downloaded.thumbnailUrl,
+          channelTitle: downloaded.channelTitle,
+          filePath: recoveredPath,
+          plainLyrics: downloaded.plainLyrics,
+          syncedLyrics: downloaded.syncedLyrics,
+          localThumbnailPath: downloaded.localThumbnailPath,
+        );
+        await box.put(videoId, repaired);
+        _downloadStatus[videoId] = DownloadStatus.downloaded;
+        _downloadErrors.remove(videoId);
+        notifyListeners();
+        return repaired;
+      }
+
       await box.delete(videoId);
       _downloadStatus.remove(videoId);
       _downloadErrors.remove(videoId);
@@ -591,6 +610,33 @@ class DownloadService with ChangeNotifier {
       return null;
     }
     return downloaded;
+  }
+
+  Future<DownloadedVideo?> resolvePlayableDownloadedVideo(
+    String videoId,
+  ) async {
+    return getDownloadedVideoById(videoId);
+  }
+
+  Future<String?> _findRecoveredDownloadPath(String videoId) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      const extensions = ['m4a', 'mp4', 'webm', 'mp3', 'aac', 'ogg'];
+      for (final ext in extensions) {
+        final candidate = File('${appDir.path}/$videoId.$ext');
+        if (await candidate.exists()) {
+          return candidate.path;
+        }
+      }
+
+      final extensionless = File('${appDir.path}/$videoId');
+      if (await extensionless.exists()) {
+        return extensionless.path;
+      }
+    } catch (_) {
+      // Best effort de recuperación local.
+    }
+    return null;
   }
 
   Future<bool> isVideoDownloaded(String videoId) async {

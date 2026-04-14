@@ -1,7 +1,9 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
+import 'package:provider/provider.dart';
 
 class SquareThumbnail extends StatelessWidget {
   final double size;
@@ -31,6 +33,8 @@ class SquareThumbnail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final preferLowResolution =
+        context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
     final hasFile = filePath != null && filePath!.isNotEmpty;
     final hasUrl = imageUrl != null && imageUrl!.isNotEmpty;
 
@@ -47,8 +51,12 @@ class SquareThumbnail extends StatelessWidget {
       );
     } else if (hasUrl) {
       image = _NetworkThumbnailWithFallback(
-        urls: buildThumbnailCandidates(thumbnailUrl: imageUrl),
+        urls: buildThumbnailCandidates(
+          thumbnailUrl: imageUrl,
+          preferLowResolution: preferLowResolution,
+        ),
         size: size,
+        preferLowResolution: preferLowResolution,
         fallback: fallback,
       );
     } else {
@@ -60,10 +68,7 @@ class SquareThumbnail extends StatelessWidget {
       child: SizedBox(
         width: size,
         height: size,
-        child: Transform.scale(
-          scale: zoom,
-          child: image,
-        ),
+        child: Transform.scale(scale: zoom, child: image),
       ),
     );
   }
@@ -72,19 +77,23 @@ class SquareThumbnail extends StatelessWidget {
 class _NetworkThumbnailWithFallback extends StatefulWidget {
   final List<String> urls;
   final double size;
+  final bool preferLowResolution;
   final Widget fallback;
 
   const _NetworkThumbnailWithFallback({
     required this.urls,
     required this.size,
+    required this.preferLowResolution,
     required this.fallback,
   });
 
   @override
-  State<_NetworkThumbnailWithFallback> createState() => _NetworkThumbnailWithFallbackState();
+  State<_NetworkThumbnailWithFallback> createState() =>
+      _NetworkThumbnailWithFallbackState();
 }
 
-class _NetworkThumbnailWithFallbackState extends State<_NetworkThumbnailWithFallback> {
+class _NetworkThumbnailWithFallbackState
+    extends State<_NetworkThumbnailWithFallback> {
   int _index = 0;
 
   @override
@@ -107,7 +116,9 @@ class _NetworkThumbnailWithFallbackState extends State<_NetworkThumbnailWithFall
       height: widget.size,
       fit: BoxFit.cover,
       alignment: Alignment.center,
-      filterQuality: FilterQuality.high,
+      filterQuality: widget.preferLowResolution
+          ? FilterQuality.medium
+          : FilterQuality.high,
       errorBuilder: (context, error, stackTrace) {
         if (_index < widget.urls.length - 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {

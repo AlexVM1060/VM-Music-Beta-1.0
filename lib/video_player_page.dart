@@ -54,7 +54,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
     try {
       final settings = context.read<AppSettingsService?>();
-      final targetHeight = _targetVideoHeightForQuality(settings?.audioQuality);
+      final dataSaverMode = settings?.dataSaverMode ?? false;
+      final targetHeight = _targetVideoHeightForQuality(
+        settings?.audioQuality,
+        dataSaverMode: dataSaverMode,
+      );
       await _manager.playFromUserSelection(context, widget.videoId);
       final manifestFuture = _runYoutubeWithRetry(
         () => _ytExplode.videos.streamsClient.getManifest(widget.videoId),
@@ -172,12 +176,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       await _videoPlayerController!.seekTo(startAt);
 
       if (mounted) {
+        final dataSaverMode =
+            context.read<AppSettingsService?>()?.dataSaverMode ?? false;
         _manager.setPlayerData(
           videoId: widget.videoId,
           controller: _videoPlayerController!,
           streamUrl: streamInfo.url.toString(),
           title: _videoTitle,
-          thumbnailUrl: _bestQualityThumbnail(_video!),
+          thumbnailUrl: _bestQualityThumbnail(
+            _video!,
+            preferLowResolution: dataSaverMode,
+          ),
           channelTitle: _video!.author,
           duration: _video!.duration, // Se pasa la duración del video
         );
@@ -281,8 +290,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     // Eliminado: funcionalidad de videos relacionados
   }
 
-  int? _targetVideoHeightForQuality(AudioQualityPreference? quality) {
-    return switch (quality) {
+  int? _targetVideoHeightForQuality(
+    AudioQualityPreference? quality, {
+    required bool dataSaverMode,
+  }) {
+    final preferredHeight = switch (quality) {
       AudioQualityPreference.low => 240,
       AudioQualityPreference.normal => 420,
       AudioQualityPreference.high => 720,
@@ -290,6 +302,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       AudioQualityPreference.automatic => 420,
       null => 420,
     };
+    if (!dataSaverMode) return preferredHeight;
+    if (preferredHeight == null) return 360;
+    return preferredHeight <= 360 ? preferredHeight : 360;
   }
 
   @override
@@ -316,6 +331,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   @override
   Widget build(BuildContext context) {
     final isMinimized = _manager.isMinimized;
+    final dataSaverMode =
+        context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
 
     const double minimizedWidth = 250.0;
     const double minimizedHeight = 140.6;
@@ -370,6 +387,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           minimizedWidth,
           minimizedHeight,
           playerWidget,
+          dataSaverMode,
         ),
       ),
     );
@@ -380,6 +398,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     double minWidth,
     double minHeight,
     Widget player,
+    bool dataSaverMode,
   ) {
     final screenSize = MediaQuery.of(context).size;
 
@@ -394,13 +413,19 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           elevation: 4.0,
           child: isMinimized
               ? _buildMinimizedLayout(minWidth, minHeight, player)
-              : _buildMaximizedLayout(player),
+              : _buildMaximizedLayout(
+                  player,
+                  preferLowResolution: dataSaverMode,
+                ),
         ),
       ),
     );
   }
 
-  Widget _buildMaximizedLayout(Widget player) {
+  Widget _buildMaximizedLayout(
+    Widget player, {
+    required bool preferLowResolution,
+  }) {
     final playlistService = Provider.of<PlaylistService>(
       context,
       listen: false,
@@ -427,7 +452,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                       child: Transform.scale(
                         scale: 1.06,
                         child: Image.network(
-                          _bestQualityThumbnail(_video!),
+                          _bestQualityThumbnail(
+                            _video!,
+                            preferLowResolution: preferLowResolution,
+                          ),
                           width: 260,
                           height: 260,
                           fit: BoxFit.cover,
@@ -478,7 +506,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                         final videoHistory = VideoHistory(
                           videoId: _video!.id.value,
                           title: _video!.title,
-                          thumbnailUrl: _bestQualityThumbnail(_video!),
+                          thumbnailUrl: _bestQualityThumbnail(
+                            _video!,
+                            preferLowResolution: preferLowResolution,
+                          ),
                           channelTitle: _video!.author,
                           watchedAt: DateTime.now(),
                         );
@@ -605,6 +636,8 @@ class DownloadButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final preferLowResolution =
+        context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
     final downloadService = context.watch<DownloadService>();
     final status = downloadService.getDownloadStatus(videoId);
 
@@ -631,7 +664,10 @@ class DownloadButton extends StatelessWidget {
             downloadService.downloadVideo(
               videoId,
               video!.title,
-              _bestQualityThumbnail(video!),
+              _bestQualityThumbnail(
+                video!,
+                preferLowResolution: preferLowResolution,
+              ),
               video!.author,
             );
           },
@@ -640,6 +676,6 @@ class DownloadButton extends StatelessWidget {
   }
 }
 
-String _bestQualityThumbnail(Video video) {
-  return bestThumbnailForVideo(video);
+String _bestQualityThumbnail(Video video, {bool preferLowResolution = false}) {
+  return bestThumbnailForVideo(video, preferLowResolution: preferLowResolution);
 }

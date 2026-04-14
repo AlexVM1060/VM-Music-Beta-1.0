@@ -1,35 +1,57 @@
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
-String bestThumbnailForVideo(Video video) {
+String bestThumbnailForVideo(Video video, {bool preferLowResolution = false}) {
   final fallback = video.thumbnails.highResUrl.isNotEmpty
       ? video.thumbnails.highResUrl
-      : video.thumbnails.mediumResUrl;
+      : (video.thumbnails.mediumResUrl.isNotEmpty
+            ? video.thumbnails.mediumResUrl
+            : video.thumbnails.lowResUrl);
   final candidates = buildThumbnailCandidates(
     videoId: video.id.value,
     thumbnailUrl: fallback,
+    preferLowResolution: preferLowResolution,
   );
-  return candidates.isNotEmpty ? candidates.first : fallback;
+  if (candidates.isNotEmpty) return candidates.first;
+  return optimizeYoutubeThumbnailUrl(
+    fallback,
+    preferLowResolution: preferLowResolution,
+  );
 }
 
 List<String> buildThumbnailCandidates({
   String? videoId,
   String? thumbnailUrl,
+  bool preferLowResolution = false,
 }) {
   final id = (videoId != null && videoId.trim().isNotEmpty)
       ? videoId.trim()
       : extractYoutubeVideoIdFromThumbnailUrl(thumbnailUrl);
   final urls = <String>[];
   if (id != null && id.isNotEmpty) {
-    urls.addAll([
-      'https://i.ytimg.com/vi/$id/maxresdefault.jpg',
-      'https://i.ytimg.com/vi/$id/sddefault.jpg',
-      'https://i.ytimg.com/vi/$id/hqdefault.jpg',
-      'https://i.ytimg.com/vi/$id/mqdefault.jpg',
-      'https://i.ytimg.com/vi/$id/default.jpg',
-    ]);
+    if (preferLowResolution) {
+      urls.addAll([
+        'https://i.ytimg.com/vi/$id/mqdefault.jpg',
+        'https://i.ytimg.com/vi/$id/hqdefault.jpg',
+        'https://i.ytimg.com/vi/$id/default.jpg',
+      ]);
+    } else {
+      urls.addAll([
+        'https://i.ytimg.com/vi/$id/maxresdefault.jpg',
+        'https://i.ytimg.com/vi/$id/sddefault.jpg',
+        'https://i.ytimg.com/vi/$id/hqdefault.jpg',
+        'https://i.ytimg.com/vi/$id/mqdefault.jpg',
+        'https://i.ytimg.com/vi/$id/default.jpg',
+      ]);
+    }
   }
   if (thumbnailUrl != null && thumbnailUrl.trim().isNotEmpty) {
-    urls.add(thumbnailUrl.trim());
+    final normalized = thumbnailUrl.trim();
+    if (preferLowResolution) {
+      urls.add(
+        optimizeYoutubeThumbnailUrl(normalized, preferLowResolution: true),
+      );
+    }
+    urls.add(normalized);
   }
 
   final deduped = <String>[];
@@ -38,6 +60,17 @@ List<String> buildThumbnailCandidates({
     if (seen.add(url)) deduped.add(url);
   }
   return deduped;
+}
+
+String optimizeYoutubeThumbnailUrl(
+  String url, {
+  bool preferLowResolution = false,
+}) {
+  final trimmed = url.trim();
+  if (trimmed.isEmpty || !preferLowResolution) return trimmed;
+  final id = extractYoutubeVideoIdFromThumbnailUrl(trimmed);
+  if (id == null || id.isEmpty) return trimmed;
+  return 'https://i.ytimg.com/vi/$id/mqdefault.jpg';
 }
 
 String? extractYoutubeVideoIdFromThumbnailUrl(String? url) {
