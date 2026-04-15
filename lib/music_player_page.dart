@@ -415,10 +415,12 @@ class _FullPlayerState extends State<_FullPlayer> {
   @override
   Widget build(BuildContext context) {
     final downloadService = context.watch<DownloadService>();
+    final settings = context.watch<AppSettingsService?>();
     final playlistService = context.read<PlaylistService>();
     final videoId = manager.currentVideoId;
     final canDownload = videoId != null && !manager.isLocal;
     final canAddToPlaylist = videoId != null;
+    final animatedCoverEnabled = settings?.animatedCutoutCovers ?? true;
 
     return SizedBox.expand(
       child: Material(
@@ -484,6 +486,16 @@ class _FullPlayerState extends State<_FullPlayer> {
                 Expanded(
                   child: LayoutBuilder(
                     builder: (context, constraints) {
+                      final screenWidth = MediaQuery.sizeOf(context).width;
+                      final maxArtworkWidth = math.max(220.0, screenWidth - 48);
+                      final halfViewportSize = constraints.maxHeight * 0.5;
+                      final animatedArtworkSize = math
+                          .min(halfViewportSize, maxArtworkWidth)
+                          .clamp(220.0, 560.0)
+                          .toDouble();
+                      final defaultArtworkSize = animatedCoverEnabled
+                          ? animatedArtworkSize
+                          : 310.0;
                       return NotificationListener<ScrollNotification>(
                         onNotification: _handleContentScrollNotification,
                         child: SingleChildScrollView(
@@ -589,6 +601,7 @@ class _FullPlayerState extends State<_FullPlayer> {
                                               'default_now_playing_hero',
                                             ),
                                             manager: manager,
+                                            artworkSize: defaultArtworkSize,
                                             onArtistTap: () =>
                                                 _openArtistProfile(context),
                                             canAddToPlaylist: canAddToPlaylist,
@@ -1195,6 +1208,7 @@ class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>
 
 class _DefaultNowPlayingHero extends StatelessWidget {
   final VideoPlayerManager manager;
+  final double artworkSize;
   final VoidCallback onArtistTap;
   final bool canAddToPlaylist;
   final VoidCallback onAddToPlaylist;
@@ -1203,6 +1217,7 @@ class _DefaultNowPlayingHero extends StatelessWidget {
   const _DefaultNowPlayingHero({
     super.key,
     required this.manager,
+    required this.artworkSize,
     required this.onArtistTap,
     required this.canAddToPlaylist,
     required this.onAddToPlaylist,
@@ -1239,7 +1254,7 @@ class _DefaultNowPlayingHero extends StatelessWidget {
             child: _ArtworkImage(
               key: ValueKey('hero-artwork-${manager.trackThumbnailUrl ?? ''}'),
               url: manager.trackThumbnailUrl,
-              size: 310,
+              size: artworkSize,
               animated: true,
               isPlaying: manager.isPlaying,
               motionEnergy: motionEnergy,
@@ -4113,7 +4128,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
   AnimationController? _motionController;
   AnimationController? _pulseController;
   // 0 desactiva por completo la capa de sujeto; 1.0 mantiene tamaño natural.
-  static const double _subjectSizeMultiplier = 1.0;
+  static const double _subjectSizeMultiplier = 0.0;
   static const int _maxArtworkCacheEntries = 120;
   static final AiCoverAnimationService _aiCoverAnimationService =
       AiCoverAnimationService();
@@ -4149,7 +4164,15 @@ class _ArtworkImageState extends State<_ArtworkImage>
   bool _isResolvingAiCover = false;
   DateTime _lastAiCoverAttemptAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const Duration _aiCoverRetryDelay = Duration(seconds: 12);
-  VideoPlayerController? _aiVideoController;
+  VideoPlayerController? _aiVideoControllerA;
+  VideoPlayerController? _aiVideoControllerB;
+  VideoPlayerController? _aiActiveVideoController;
+  VideoPlayerController? _aiStandbyVideoController;
+  AnimationController? _aiLoopBlendController;
+  Timer? _aiLoopSwapTimer;
+  int _aiLoopToken = 0;
+  static const Duration _aiLoopCrossfadeDuration = Duration(milliseconds: 280);
+  static const Duration _aiLoopSwapLeadTime = Duration(milliseconds: 360);
   String? _aiVideoSource;
   bool _aiVideoReady = false;
 
@@ -4181,7 +4204,8 @@ class _ArtworkImageState extends State<_ArtworkImage>
         _lastAiCoverSource = null;
         _aiVideoReady = false;
         _aiVideoSource = null;
-        unawaited(_disposeAiVideoController());
+        _aiLoopToken++;
+        unawaited(_disposeAiVideoControllers());
         _lastPaletteUrl = null;
         _lastSubjectUrl = null;
         _lastSubjectProfileUrl = null;
@@ -4201,7 +4225,8 @@ class _ArtworkImageState extends State<_ArtworkImage>
     } else if (oldWidget.animated && !widget.animated) {
       _aiVideoReady = false;
       _aiVideoSource = null;
-      unawaited(_disposeAiVideoController());
+      _aiLoopToken++;
+      unawaited(_disposeAiVideoControllers());
     }
   }
 
@@ -4209,7 +4234,10 @@ class _ArtworkImageState extends State<_ArtworkImage>
   void dispose() {
     _motionController?.dispose();
     _pulseController?.dispose();
-    unawaited(_disposeAiVideoController());
+    _aiLoopToken++;
+    _aiLoopSwapTimer?.cancel();
+    _aiLoopBlendController?.dispose();
+    unawaited(_disposeAiVideoControllers());
     super.dispose();
   }
 
@@ -4236,12 +4264,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
         !hasAiAnimatedCandidate;
     final enableObjectMotion =
         widget.animated && hasImage && animatedCutoutEnabled;
-    final showAiGeneratingOverlay =
-        widget.animated &&
-        hasImage &&
-        _isResolvingAiCover &&
-        (_aiAnimatedCoverUrl == null || _aiAnimatedCoverUrl!.trim().isEmpty) &&
-        !_aiVideoReady;
 
     if (!widget.animated) {
       return _buildStaticArtworkFrame(
@@ -4263,8 +4285,8 @@ class _ArtworkImageState extends State<_ArtworkImage>
     }
 
     final artworkChild = hasImage
-        ? (isAiVideoSource && _aiVideoReady && _aiVideoController != null
-              ? _buildAnimatedVideoCover(_aiVideoController!)
+        ? (isAiVideoSource && _aiVideoReady && _aiActiveVideoController != null
+              ? _buildAnimatedVideoCover()
               : _buildArtworkImage(
                   context,
                   imageSource: isAiVideoSource
@@ -4444,14 +4466,26 @@ class _ArtworkImageState extends State<_ArtworkImage>
           final objectGain = (widget.isPlaying ? 1.0 : 0.44) * energy;
           final focusAreaRatio = focusObjectLayer?.areaRatio ?? 0.0;
           final areaBoost = (1.0 - focusAreaRatio).clamp(0.22, 1.0);
-          final objectPulseScale =
-              1.0 +
-              (math.sin(turn * 2.1 + phaseA) * 0.09 * objectGain * areaBoost) +
-              ((pulseController.value - 0.5) * 0.18 * areaBoost);
+          final objectDepthScale = (1.01 + ((1.0 - focusAreaRatio) * 0.06))
+              .clamp(1.0, 1.08);
           final objectDriftX =
-              math.sin(turn * 1.34 + phaseB) * widget.size * 0.008 * objectGain;
+              ((math.sin(turn * 1.34 + phaseB) * 0.008) +
+                  (math.sin(turn * 2.38 + phaseA) * 0.004)) *
+              widget.size *
+              objectGain *
+              areaBoost;
           final objectDriftY =
-              math.cos(turn * 1.18 + phaseA) * widget.size * 0.006 * objectGain;
+              ((math.cos(turn * 1.18 + phaseA) * 0.006) +
+                  (math.cos(turn * 2.04 + phaseB) * 0.003)) *
+              widget.size *
+              objectGain *
+              areaBoost;
+          final objectRotX =
+              math.sin(turn * 1.22 + phaseA) * 0.034 * objectGain * areaBoost;
+          final objectRotY =
+              math.cos(turn * 1.51 + phaseB) * 0.031 * objectGain * areaBoost;
+          final objectRotZ =
+              math.sin(turn * 0.82 + phaseB) * 0.020 * objectGain * areaBoost;
 
           return Stack(
             clipBehavior: Clip.none,
@@ -4587,82 +4621,19 @@ class _ArtworkImageState extends State<_ArtworkImage>
                         alignment: focusObjectLayer.alignment,
                         transform: Matrix4.identity()
                           ..setEntry(3, 2, 0.0016)
-                          ..rotateZ(
-                            math.sin(turn * 1.3 + phaseA) * 0.02 * objectGain,
-                          ),
+                          ..rotateX(objectRotX)
+                          ..rotateY(objectRotY)
+                          ..rotateZ(objectRotZ),
                         child: Transform.translate(
                           offset: Offset(objectDriftX, objectDriftY),
                           child: Transform.scale(
                             alignment: focusObjectLayer.alignment,
-                            scale: objectPulseScale.clamp(0.90, 1.36),
+                            scale: objectDepthScale,
                             child: Image.memory(
                               focusObjectLayer.bytes,
                               fit: BoxFit.contain,
                               filterQuality: FilterQuality.high,
                               gaplessPlayback: true,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              if (showAiGeneratingOverlay)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(
-                          widget.borderRadius,
-                        ),
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          colors: [
-                            Colors.black.withValues(alpha: 0.06),
-                            Colors.black.withValues(alpha: 0.22),
-                          ],
-                        ),
-                      ),
-                      child: Align(
-                        alignment: Alignment.bottomCenter,
-                        child: Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              color: Colors.black.withValues(alpha: 0.46),
-                              borderRadius: BorderRadius.circular(999),
-                              border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.22),
-                                width: 0.6,
-                              ),
-                            ),
-                            child: const Padding(
-                              padding: EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  SizedBox(
-                                    width: 12,
-                                    height: 12,
-                                    child: CupertinoActivityIndicator(
-                                      radius: 6,
-                                    ),
-                                  ),
-                                  SizedBox(width: 8),
-                                  Text(
-                                    'Generando animacion IA...',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
                             ),
                           ),
                         ),
@@ -4810,58 +4781,184 @@ class _ArtworkImageState extends State<_ArtworkImage>
             source == aiUrl &&
             (source.startsWith('http://') || source.startsWith('https://')));
     if (!shouldTryAsVideo) {
-      if (_aiVideoController != null ||
+      if (_aiActiveVideoController != null ||
           _aiVideoReady ||
           _aiVideoSource != null) {
+        _aiLoopToken++;
         _aiVideoReady = false;
         _aiVideoSource = null;
-        unawaited(_disposeAiVideoController());
+        unawaited(_disposeAiVideoControllers());
       }
       return;
     }
-    if (source == _aiVideoSource) return;
+    if (source == _aiVideoSource && _aiVideoReady) return;
     _aiVideoSource = source;
     _aiVideoReady = false;
+    _aiLoopToken++;
     unawaited(_prepareAiVideoController(source));
   }
 
   Future<void> _prepareAiVideoController(String source) async {
-    await _disposeAiVideoController();
+    final token = _aiLoopToken;
+    await _disposeAiVideoControllers();
+    _ensureAiLoopBlendController();
+    _aiLoopBlendController?.value = 0;
+    final controllerA = VideoPlayerController.networkUrl(Uri.parse(source));
+    final controllerB = VideoPlayerController.networkUrl(Uri.parse(source));
+    _aiVideoControllerA = controllerA;
+    _aiVideoControllerB = controllerB;
+    try {
+      await controllerA.initialize();
+      await controllerB.initialize();
+      await controllerA.setLooping(false);
+      await controllerB.setLooping(false);
+      await controllerA.setVolume(0);
+      await controllerB.setVolume(0);
+      await controllerB.seekTo(Duration.zero);
+      await controllerB.pause();
+      await controllerA.play();
+
+      if (!mounted || _aiVideoSource != source || token != _aiLoopToken) {
+        await _disposeVideoControllerSafe(controllerA);
+        await _disposeVideoControllerSafe(controllerB);
+        return;
+      }
+
+      _aiActiveVideoController = controllerA;
+      _aiStandbyVideoController = controllerB;
+      setState(() {
+        _aiVideoReady = true;
+      });
+      _scheduleAiLoopSwap(source: source, token: token);
+    } catch (_) {
+      await _disposeVideoControllerSafe(controllerA);
+      await _disposeVideoControllerSafe(controllerB);
+      if (!mounted || _aiVideoSource != source || token != _aiLoopToken) return;
+      await _prepareSingleAiVideoController(source, token: token);
+    }
+  }
+
+  Future<void> _prepareSingleAiVideoController(
+    String source, {
+    required int token,
+  }) async {
     final controller = VideoPlayerController.networkUrl(Uri.parse(source));
-    _aiVideoController = controller;
+    _aiVideoControllerA = controller;
     try {
       await controller.initialize();
       await controller.setLooping(true);
       await controller.setVolume(0);
       await controller.play();
-      if (!mounted || _aiVideoSource != source) {
-        await controller.dispose();
-        if (identical(_aiVideoController, controller)) {
-          _aiVideoController = null;
-        }
+      if (!mounted || _aiVideoSource != source || token != _aiLoopToken) {
+        await _disposeVideoControllerSafe(controller);
         return;
       }
+      _aiActiveVideoController = controller;
+      _aiStandbyVideoController = null;
       setState(() {
         _aiVideoReady = true;
       });
     } catch (_) {
-      if (identical(_aiVideoController, controller)) {
-        _aiVideoController = null;
-      }
-      try {
-        await controller.dispose();
-      } catch (_) {}
-      if (!mounted || _aiVideoSource != source) return;
+      await _disposeVideoControllerSafe(controller);
+      if (!mounted || _aiVideoSource != source || token != _aiLoopToken) return;
       setState(() {
         _aiVideoReady = false;
       });
     }
   }
 
-  Future<void> _disposeAiVideoController() async {
-    final controller = _aiVideoController;
-    _aiVideoController = null;
-    if (controller == null) return;
+  void _ensureAiLoopBlendController() {
+    if (_aiLoopBlendController != null) return;
+    _aiLoopBlendController =
+        AnimationController(
+          vsync: this,
+          duration: _aiLoopCrossfadeDuration,
+          value: 0,
+        )..addListener(() {
+          if (!mounted) return;
+          setState(() {});
+        });
+  }
+
+  void _scheduleAiLoopSwap({required String source, required int token}) {
+    _aiLoopSwapTimer?.cancel();
+    final active = _aiActiveVideoController;
+    if (active == null || !active.value.isInitialized) return;
+    final duration = active.value.duration;
+    if (duration <= Duration.zero) return;
+    var delay = duration - _aiLoopSwapLeadTime;
+    if (delay < const Duration(milliseconds: 180)) {
+      delay = Duration(
+        milliseconds: math.max(120, duration.inMilliseconds ~/ 2),
+      );
+    }
+    _aiLoopSwapTimer = Timer(
+      delay,
+      () => unawaited(_performAiLoopSwap(source: source, token: token)),
+    );
+  }
+
+  Future<void> _performAiLoopSwap({
+    required String source,
+    required int token,
+  }) async {
+    if (!mounted || token != _aiLoopToken || _aiVideoSource != source) return;
+    final active = _aiActiveVideoController;
+    final standby = _aiStandbyVideoController;
+    final blend = _aiLoopBlendController;
+    if (active == null || standby == null || blend == null) return;
+
+    try {
+      await standby.seekTo(Duration.zero);
+      await standby.setVolume(0);
+      await standby.play();
+      if (!mounted || token != _aiLoopToken || _aiVideoSource != source) return;
+
+      blend
+        ..stop()
+        ..value = 0;
+      await blend.forward();
+      if (!mounted || token != _aiLoopToken || _aiVideoSource != source) return;
+
+      await active.pause();
+      await active.seekTo(Duration.zero);
+      _aiActiveVideoController = standby;
+      _aiStandbyVideoController = active;
+      blend.value = 0;
+      _scheduleAiLoopSwap(source: source, token: token);
+    } catch (_) {
+      // Si falla el crossfade, mantenemos loop normal del activo.
+      try {
+        await active.setLooping(true);
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _disposeAiVideoControllers() async {
+    _aiLoopSwapTimer?.cancel();
+    _aiLoopSwapTimer = null;
+    _aiLoopBlendController?.stop();
+    _aiLoopBlendController?.value = 0;
+
+    final controllers = <VideoPlayerController>{
+      if (_aiVideoControllerA != null) _aiVideoControllerA!,
+      if (_aiVideoControllerB != null) _aiVideoControllerB!,
+      if (_aiActiveVideoController != null) _aiActiveVideoController!,
+      if (_aiStandbyVideoController != null) _aiStandbyVideoController!,
+    };
+    _aiVideoControllerA = null;
+    _aiVideoControllerB = null;
+    _aiActiveVideoController = null;
+    _aiStandbyVideoController = null;
+
+    for (final controller in controllers) {
+      await _disposeVideoControllerSafe(controller);
+    }
+  }
+
+  Future<void> _disposeVideoControllerSafe(
+    VideoPlayerController controller,
+  ) async {
     try {
       await controller.pause();
     } catch (_) {}
@@ -4870,20 +4967,45 @@ class _ArtworkImageState extends State<_ArtworkImage>
     } catch (_) {}
   }
 
-  Widget _buildAnimatedVideoCover(VideoPlayerController controller) {
-    final value = controller.value;
-    if (!value.isInitialized) {
+  Widget _buildAnimatedVideoCover() {
+    final active = _aiActiveVideoController;
+    if (active == null || !active.value.isInitialized) {
       return const SizedBox.expand();
     }
+    final standby = _aiStandbyVideoController;
+    final blend = (_aiLoopBlendController?.value ?? 0.0).clamp(0.0, 1.0);
+    final showStandby =
+        standby != null && standby.value.isInitialized && blend > 0.001;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        _buildVideoCoverLayer(
+          active,
+          opacity: showStandby ? (1.0 - blend) : 1.0,
+        ),
+        if (showStandby) _buildVideoCoverLayer(standby, opacity: blend),
+      ],
+    );
+  }
+
+  Widget _buildVideoCoverLayer(
+    VideoPlayerController controller, {
+    required double opacity,
+  }) {
+    final value = controller.value;
+    if (!value.isInitialized) return const SizedBox.expand();
     final videoAspect = value.aspectRatio > 0 ? value.aspectRatio : 1.0;
-    return SizedBox.expand(
-      child: FittedBox(
-        fit: BoxFit.cover,
-        clipBehavior: Clip.hardEdge,
-        child: SizedBox(
-          width: widget.size * videoAspect,
-          height: widget.size,
-          child: VideoPlayer(controller),
+    return Opacity(
+      opacity: opacity.clamp(0.0, 1.0),
+      child: SizedBox.expand(
+        child: FittedBox(
+          fit: BoxFit.cover,
+          clipBehavior: Clip.hardEdge,
+          child: SizedBox(
+            width: widget.size * videoAspect,
+            height: widget.size,
+            child: VideoPlayer(controller),
+          ),
         ),
       ),
     );
