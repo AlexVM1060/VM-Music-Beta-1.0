@@ -8,11 +8,13 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image/image.dart' as img;
 import 'package:myapp/app_tab_state.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/models/playlist.dart' as app_models;
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/app_settings_service.dart';
+import 'package:myapp/services/ai_cover_animation_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/ios_live_lyrics_alignment_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
@@ -24,6 +26,7 @@ import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:provider/provider.dart';
+import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 class MusicPlayerPage extends StatefulWidget {
@@ -336,10 +339,78 @@ class _MiniPlayerState extends State<_MiniPlayer> {
   }
 }
 
-class _FullPlayer extends StatelessWidget {
+class _FullPlayer extends StatefulWidget {
   final VideoPlayerManager manager;
 
   const _FullPlayer({super.key, required this.manager});
+
+  @override
+  State<_FullPlayer> createState() => _FullPlayerState();
+}
+
+class _FullPlayerState extends State<_FullPlayer> {
+  static const double _pullToMinimizeThreshold = 76;
+  final ScrollController _contentScrollController = ScrollController();
+  double _pullDownAccumulated = 0;
+  bool _didTriggerMinimizeInGesture = false;
+
+  VideoPlayerManager get manager => widget.manager;
+
+  @override
+  void dispose() {
+    _contentScrollController.dispose();
+    super.dispose();
+  }
+
+  bool _isAtTop(ScrollMetrics metrics) {
+    return metrics.pixels <= (metrics.minScrollExtent + 0.5);
+  }
+
+  void _accumulatePullToMinimize(double pullDelta) {
+    if (pullDelta <= 0 || _didTriggerMinimizeInGesture) return;
+    _pullDownAccumulated += pullDelta;
+    if (_pullDownAccumulated < _pullToMinimizeThreshold) return;
+    _didTriggerMinimizeInGesture = true;
+    _pullDownAccumulated = 0;
+    unawaited(HapticFeedback.mediumImpact());
+    manager.minimize();
+  }
+
+  bool _handleContentScrollNotification(ScrollNotification notification) {
+    if (notification is ScrollStartNotification) {
+      _pullDownAccumulated = 0;
+      _didTriggerMinimizeInGesture = false;
+      return false;
+    }
+
+    if (notification is ScrollUpdateNotification) {
+      final dragDy = notification.dragDetails?.delta.dy;
+      if (dragDy == null) return false;
+      if (_isAtTop(notification.metrics) && dragDy > 0) {
+        _accumulatePullToMinimize(dragDy);
+      } else if (dragDy < 0) {
+        _pullDownAccumulated = 0;
+      }
+      return false;
+    }
+
+    if (notification is OverscrollNotification) {
+      final dragDy = notification.dragDetails?.delta.dy;
+      if (dragDy == null) return false;
+      if (_isAtTop(notification.metrics) && dragDy > 0) {
+        _accumulatePullToMinimize(dragDy);
+      } else if (dragDy < 0) {
+        _pullDownAccumulated = 0;
+      }
+      return false;
+    }
+
+    if (notification is ScrollEndNotification) {
+      _pullDownAccumulated = 0;
+      _didTriggerMinimizeInGesture = false;
+    }
+    return false;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -349,89 +420,77 @@ class _FullPlayer extends StatelessWidget {
     final canDownload = videoId != null && !manager.isLocal;
     final canAddToPlaylist = videoId != null;
 
-    var dragAccumulated = 0.0;
     return SizedBox.expand(
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onVerticalDragUpdate: (details) {
-          if (details.delta.dy <= 0) return;
-          dragAccumulated += details.delta.dy;
-          if (dragAccumulated >= 72) {
-            manager.minimize();
-            dragAccumulated = 0;
-          }
-        },
-        onVerticalDragEnd: (details) {
-          final velocity = details.primaryVelocity ?? 0;
-          if (velocity > 720) {
-            manager.minimize();
-          }
-          dragAccumulated = 0;
-        },
-        child: Material(
-          color: Colors.transparent,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Theme.of(context).colorScheme.primaryContainer,
-                  Theme.of(context).colorScheme.surface,
-                  Theme.of(context).colorScheme.surface,
-                ],
-              ),
+      child: Material(
+        color: Colors.transparent,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Theme.of(context).colorScheme.primaryContainer,
+                Theme.of(context).colorScheme.surface,
+                Theme.of(context).colorScheme.surface,
+              ],
             ),
-            child: SafeArea(
-              child: Column(
-                children: [
-                  Center(
-                    child: Container(
-                      width: 36,
-                      height: 4,
-                      margin: const EdgeInsets.only(top: 2, bottom: 6),
-                      decoration: BoxDecoration(
-                        color: CupertinoColors.systemGrey3
-                            .resolveFrom(context)
-                            .withValues(alpha: 0.7),
-                        borderRadius: BorderRadius.circular(999),
+          ),
+          child: SafeArea(
+            child: Column(
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    margin: const EdgeInsets.only(top: 2, bottom: 6),
+                    decoration: BoxDecoration(
+                      color: CupertinoColors.systemGrey3
+                          .resolveFrom(context)
+                          .withValues(alpha: 0.7),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    children: [
+                      _TopGlassIconButton(
+                        icon: CupertinoIcons.chevron_down,
+                        onPressed: manager.minimize,
                       ),
-                    ),
+                      const Spacer(),
+                      _TopGlassIconButton(
+                        icon: CupertinoIcons.list_bullet,
+                        onPressed: () => _showQueueSheet(context),
+                      ),
+                      if (canDownload)
+                        _DownloadButton(
+                          videoId: videoId,
+                          title: manager.trackTitle ?? 'Sin título',
+                          thumbnailUrl: manager.trackThumbnailUrl ?? '',
+                          channelTitle: manager.trackArtist ?? '',
+                          sourceUrl: manager.currentStreamUrl,
+                          isVideoSource: manager.isUsingVideoFallback,
+                          downloadService: downloadService,
+                        ),
+                      _TopGlassIconButton(
+                        icon: CupertinoIcons.xmark,
+                        onPressed: manager.close,
+                      ),
+                    ],
                   ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      children: [
-                        _TopGlassIconButton(
-                          icon: CupertinoIcons.chevron_down,
-                          onPressed: manager.minimize,
-                        ),
-                        const Spacer(),
-                        _TopGlassIconButton(
-                          icon: CupertinoIcons.list_bullet,
-                          onPressed: () => _showQueueSheet(context),
-                        ),
-                        if (canDownload)
-                          _DownloadButton(
-                            videoId: videoId,
-                            title: manager.trackTitle ?? 'Sin título',
-                            thumbnailUrl: manager.trackThumbnailUrl ?? '',
-                            channelTitle: manager.trackArtist ?? '',
-                            sourceUrl: manager.currentStreamUrl,
-                            isVideoSource: manager.isUsingVideoFallback,
-                            downloadService: downloadService,
+                ),
+                Expanded(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return NotificationListener<ScrollNotification>(
+                        onNotification: _handleContentScrollNotification,
+                        child: SingleChildScrollView(
+                          controller: _contentScrollController,
+                          physics: const ClampingScrollPhysics(
+                            parent: AlwaysScrollableScrollPhysics(),
                           ),
-                        _TopGlassIconButton(
-                          icon: CupertinoIcons.xmark,
-                          onPressed: manager.close,
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        return SingleChildScrollView(
                           clipBehavior: Clip.none,
                           padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
                           child: ConstrainedBox(
@@ -609,12 +668,12 @@ class _FullPlayer extends StatelessWidget {
                               ],
                             ),
                           ),
-                        );
-                      },
-                    ),
+                        ),
+                      );
+                    },
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
         ),
@@ -767,60 +826,10 @@ class _FullPlayer extends StatelessWidget {
       builder: (sheetContext) {
         return SafeArea(
           child: Consumer<VideoPlayerManager>(
-            builder: (context, manager, _) {
-              final queue = manager.playbackQueue;
-              return Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Cola de reproducción',
-                            style: Theme.of(context).textTheme.titleLarge
-                                ?.copyWith(fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                        IconButton(
-                          tooltip: 'Aleatorio',
-                          onPressed: queue.length > 1
-                              ? manager.shufflePlaybackQueue
-                              : null,
-                          icon: const Icon(CupertinoIcons.shuffle),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      manager.queueTitle,
-                      style: Theme.of(context).textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 12),
-                    if (manager.isQueueLoading)
-                      const _IosLoadingControls()
-                    else if (queue.isEmpty)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 12),
-                        child: Text('No hay elementos en la cola por ahora.'),
-                      )
-                    else
-                      Flexible(
-                        child: ListView.builder(
-                          shrinkWrap: true,
-                          itemCount: queue.length,
-                          itemBuilder: (context, index) {
-                            final item = queue[index];
-                            return _QueueRow(item: item, manager: manager);
-                          },
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            },
+            builder: (context, manager, _) => SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: _QueueSection(manager: manager),
+            ),
           ),
         );
       },
@@ -1605,6 +1614,8 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                   ),
                   url: manager.trackThumbnailUrl,
                   size: 62,
+                  animated: true,
+                  isPlaying: manager.isPlaying,
                   motionEnergy: motionEnergy,
                 ),
               ),
@@ -1906,29 +1917,72 @@ class _IosLoadingControls extends StatelessWidget {
   }
 }
 
-class _QueueSection extends StatelessWidget {
+class _QueueSection extends StatefulWidget {
   final VideoPlayerManager manager;
 
   const _QueueSection({required this.manager});
 
   @override
+  State<_QueueSection> createState() => _QueueSectionState();
+}
+
+class _QueueSectionState extends State<_QueueSection> {
+  static const double _reorderHapticStepPx = 66;
+  bool _isTrackingReorderDrag = false;
+  double _dragAccumulatorPx = 0;
+
+  void _onReorderStart(int _) {
+    _isTrackingReorderDrag = true;
+    _dragAccumulatorPx = 0;
+    unawaited(HapticFeedback.mediumImpact());
+  }
+
+  void _onReorderEnd(int _) {
+    _isTrackingReorderDrag = false;
+    _dragAccumulatorPx = 0;
+    unawaited(HapticFeedback.selectionClick());
+  }
+
+  void _onReorder(int oldIndex, int newIndex) {
+    widget.manager.reorderPlaybackQueue(oldIndex, newIndex);
+    unawaited(HapticFeedback.lightImpact());
+  }
+
+  void _onDragPointerMove(PointerMoveEvent event) {
+    if (!_isTrackingReorderDrag) return;
+    _dragAccumulatorPx += event.delta.dy;
+    while (_dragAccumulatorPx.abs() >= _reorderHapticStepPx) {
+      _dragAccumulatorPx += _dragAccumulatorPx > 0
+          ? -_reorderHapticStepPx
+          : _reorderHapticStepPx;
+      unawaited(HapticFeedback.selectionClick());
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final manager = widget.manager;
     final queue = manager.playbackQueue;
+    final textTheme = CupertinoTheme.of(context).textTheme;
+    final titleColor = CupertinoColors.label.resolveFrom(context);
+    final subtitleColor = CupertinoColors.secondaryLabel.resolveFrom(context);
 
     if (manager.isQueueLoading) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Cola de reproducción',
-            style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
+      return _QueueShell(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Cola de reproducción',
+              style: textTheme.textStyle.copyWith(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-          ),
-          const SizedBox(height: 10),
-          const _IosLoadingControls(),
-        ],
+            const SizedBox(height: 10),
+            const _IosLoadingControls(),
+          ],
+        ),
       );
     }
 
@@ -1936,47 +1990,90 @@ class _QueueSection extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                'Cola de reproducción',
-                style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
+    return _QueueShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'A continuación',
+                  style: textTheme.textStyle.copyWith(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: titleColor,
+                  ),
                 ),
               ),
-            ),
-            CupertinoButton(
-              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
-              minimumSize: const Size(30, 30),
-              onPressed: queue.length > 1 ? manager.shufflePlaybackQueue : null,
-              child: Icon(
-                CupertinoIcons.shuffle,
-                size: 18,
-                color: queue.length > 1
-                    ? CupertinoColors.label.resolveFrom(context)
-                    : CupertinoColors.tertiaryLabel.resolveFrom(context),
+              CupertinoButton(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
+                minimumSize: const Size(34, 34),
+                onPressed: queue.length > 1
+                    ? () {
+                        unawaited(HapticFeedback.lightImpact());
+                        manager.shufflePlaybackQueue();
+                      }
+                    : null,
+                child: Icon(
+                  CupertinoIcons.shuffle,
+                  size: 18,
+                  color: queue.length > 1
+                      ? titleColor
+                      : CupertinoColors.tertiaryLabel.resolveFrom(context),
+                ),
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text(
-          manager.queueTitle,
-          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-            fontSize: 13,
-            color: CupertinoColors.secondaryLabel.resolveFrom(context),
+            ],
           ),
-        ),
-        const SizedBox(height: 10),
-        ...queue
-            .take(12)
-            .map((item) => _QueueRow(item: item, manager: manager)),
-      ],
+          const SizedBox(height: 4),
+          Text(
+            '${manager.queueTitle} · ${queue.length} canciones',
+            style: textTheme.textStyle.copyWith(
+              fontSize: 13,
+              color: subtitleColor,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Mantén y arrastra para reordenar.',
+            style: textTheme.textStyle.copyWith(
+              fontSize: 12,
+              color: subtitleColor.withValues(alpha: 0.88),
+            ),
+          ),
+          const SizedBox(height: 12),
+          ReorderableListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: queue.length,
+            buildDefaultDragHandles: false,
+            proxyDecorator: (child, index, animation) {
+              return FadeTransition(
+                opacity: Tween<double>(begin: 0.96, end: 1).animate(animation),
+                child: ScaleTransition(
+                  scale: Tween<double>(begin: 0.992, end: 1).animate(animation),
+                  child: child,
+                ),
+              );
+            },
+            onReorderStart: _onReorderStart,
+            onReorderEnd: _onReorderEnd,
+            onReorder: _onReorder,
+            itemBuilder: (context, index) {
+              final item = queue[index];
+              return _QueueRow(
+                key: ValueKey(
+                  'queue_${item.videoId}_${item.isLocal}_${item.localFilePath ?? ''}',
+                ),
+                item: item,
+                manager: manager,
+                index: index,
+                onDragPointerMove: _onDragPointerMove,
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1984,92 +2081,508 @@ class _QueueSection extends StatelessWidget {
 class _QueueRow extends StatelessWidget {
   final PlaybackQueueItem item;
   final VideoPlayerManager manager;
+  final int index;
+  final ValueChanged<PointerMoveEvent>? onDragPointerMove;
 
-  const _QueueRow({required this.item, required this.manager});
+  const _QueueRow({
+    super.key,
+    required this.item,
+    required this.manager,
+    required this.index,
+    this.onDragPointerMove,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final titleColor = CupertinoColors.white.withValues(alpha: 0.96);
+    final subtitleColor = CupertinoColors.white.withValues(alpha: 0.70);
+    final rowColor = CupertinoColors.black.withValues(alpha: 0.78);
+    final rowBorder = CupertinoColors.white.withValues(alpha: 0.16);
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: Material(
-          color: Theme.of(
-            context,
-          ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.58),
-          child: InkWell(
-            onTap: () => manager.playQueueItem(item),
-            child: Padding(
-              padding: const EdgeInsets.all(10),
-              child: Row(
-                children: [
-                  item.thumbnailUrl.startsWith('/')
-                      ? SquareThumbnail.file(
-                          filePath: item.thumbnailUrl,
-                          size: 56,
-                          borderRadius: 10,
-                          zoom: 1,
-                          fallback: Container(
-                            width: 56,
-                            height: 56,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerHighest,
-                            alignment: Alignment.center,
-                            child: const Icon(Icons.music_note_rounded),
-                          ),
-                        )
-                      : SquareThumbnail.network(
-                          imageUrl: item.thumbnailUrl,
-                          size: 56,
-                          borderRadius: 10,
-                          zoom: 1,
-                          fallback: Container(
-                            width: 56,
-                            height: 56,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerHighest,
-                            alignment: Alignment.center,
-                            child: const Icon(Icons.music_note_rounded),
-                          ),
-                        ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
+        borderRadius: BorderRadius.circular(16),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: Material(
+            color: rowColor,
+            child: Ink(
+              decoration: BoxDecoration(
+                border: Border.all(color: rowBorder, width: 0.6),
+                borderRadius: BorderRadius.circular(16),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    CupertinoColors.white.withValues(alpha: 0.10),
+                    CupertinoColors.white.withValues(alpha: 0.02),
+                  ],
+                ),
+              ),
+              child: InkWell(
+                onTap: () {
+                  unawaited(HapticFeedback.selectionClick());
+                  unawaited(manager.playQueueItem(item));
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 10,
+                  ),
+                  child: Row(
+                    children: [
+                      Listener(
+                        onPointerMove: onDragPointerMove,
+                        child: ReorderableDelayedDragStartListener(
+                          index: index,
+                          child: Padding(
+                            padding: const EdgeInsets.only(right: 8, left: 2),
+                            child: Container(
+                              width: 24,
+                              height: 24,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: CupertinoColors.white.withValues(
+                                  alpha: 0.08,
+                                ),
+                                borderRadius: BorderRadius.circular(8),
                               ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          item.artist,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 12,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
+                              child: Icon(
+                                CupertinoIcons.line_horizontal_3,
+                                size: 15,
+                                color: subtitleColor,
                               ),
+                            ),
+                          ),
                         ),
-                      ],
+                      ),
+                      item.thumbnailUrl.startsWith('/')
+                          ? SquareThumbnail.file(
+                              filePath: item.thumbnailUrl,
+                              size: 56,
+                              borderRadius: 10,
+                              zoom: 1,
+                              fallback: Container(
+                                width: 56,
+                                height: 56,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerHighest,
+                                alignment: Alignment.center,
+                                child: const Icon(Icons.music_note_rounded),
+                              ),
+                            )
+                          : SquareThumbnail.network(
+                              imageUrl: item.thumbnailUrl,
+                              size: 56,
+                              borderRadius: 10,
+                              zoom: 1,
+                              fallback: Container(
+                                width: 56,
+                                height: 56,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.surfaceContainerHighest,
+                                alignment: Alignment.center,
+                                child: const Icon(Icons.music_note_rounded),
+                              ),
+                            ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (index == 0)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 3),
+                                child: Text(
+                                  'Siguiente',
+                                  style: CupertinoTheme.of(context)
+                                      .textTheme
+                                      .textStyle
+                                      .copyWith(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: CupertinoColors.systemPink
+                                            .resolveFrom(context),
+                                      ),
+                                ),
+                              ),
+                            Text(
+                              item.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                    color: titleColor,
+                                  ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              item.artist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(fontSize: 12, color: subtitleColor),
+                            ),
+                          ],
+                        ),
+                      ),
+                      CupertinoButton(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 0,
+                        ),
+                        minimumSize: const Size(28, 28),
+                        onPressed: () {
+                          unawaited(HapticFeedback.lightImpact());
+                          unawaited(_showActionsMenu(context));
+                        },
+                        child: Icon(
+                          CupertinoIcons.ellipsis,
+                          size: 18,
+                          color: titleColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showActionsMenu(BuildContext context) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.systemGrey6
+                        .resolveFrom(sheetContext)
+                        .withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: CupertinoColors.white.withValues(alpha: 0.24),
+                      width: 0.7,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(sheetContext)
+                              .withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                item.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: CupertinoTheme.of(sheetContext)
+                                    .textTheme
+                                    .navTitleTextStyle
+                                    .copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minimumSize: const Size(34, 34),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                              child: Icon(
+                                CupertinoIcons.xmark_circle_fill,
+                                size: 24,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(sheetContext),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
+                        child: Column(
+                          children: [
+                            _QueueGlassSheetActionRow(
+                              icon: CupertinoIcons.play_fill,
+                              label: 'Reproducir ahora',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('play'),
+                            ),
+                            const SizedBox(height: 8),
+                            _QueueGlassSheetActionRow(
+                              icon: CupertinoIcons.star_fill,
+                              label: 'Añadir a Favoritos',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('favorites'),
+                            ),
+                            const SizedBox(height: 8),
+                            _QueueGlassSheetActionRow(
+                              icon: CupertinoIcons.music_note_list,
+                              label: 'Añadir a playlist',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('playlist'),
+                            ),
+                            const SizedBox(height: 8),
+                            _QueueGlassSheetActionRow(
+                              icon: CupertinoIcons.minus_circle_fill,
+                              label: 'Quitar de la cola',
+                              isDestructive: true,
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('remove'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (!context.mounted || action == null) return;
+    unawaited(HapticFeedback.selectionClick());
+    switch (action) {
+      case 'play':
+        await manager.playQueueItem(item);
+        return;
+      case 'favorites':
+        await _addItemToFavorites(context);
+        return;
+      case 'playlist':
+        await _addItemToPlaylist(context);
+        return;
+      case 'remove':
+        unawaited(HapticFeedback.mediumImpact());
+        manager.removeQueueItem(item);
+        _showQueueSnackBar(context, 'Quitada de la cola');
+        return;
+    }
+  }
+
+  Future<void> _addItemToFavorites(BuildContext context) async {
+    final playlistService = context.read<PlaylistService>();
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    final playlists = await playlistService.getPlaylists();
+    final favorites = playlists.firstWhere(
+      (playlist) => PlaylistService.isFavoritesPlaylistName(playlist.name),
+      orElse: () =>
+          app_models.Playlist(name: PlaylistService.favoritesPlaylistName),
+    );
+    final track = _toVideoHistory();
+    await playlistService.addVideoToPlaylist(favorites.name, track);
+    if (!item.isLocal) {
+      await downloadService.autoDownloadIfEnabledUsingClone(
+        favorites.name,
+        track,
+        videoManager: videoManager,
+      );
+    }
+    if (!context.mounted) return;
+    _showQueueSnackBar(context, 'Añadida a Favoritos');
+  }
+
+  Future<void> _addItemToPlaylist(BuildContext context) async {
+    final playlistService = context.read<PlaylistService>();
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    final playlists = await playlistService.getPlaylists();
+    if (!context.mounted) return;
+    if (playlists.isEmpty) {
+      _showQueueSnackBar(context, 'No hay playlists disponibles.');
+      return;
+    }
+    final selectedName = await showGlassPlaylistPickerSheet(
+      context: context,
+      playlists: playlists,
+      subtitle: item.title,
+    );
+    if (!context.mounted || selectedName == null || selectedName.isEmpty) {
+      return;
+    }
+    final track = _toVideoHistory();
+    await playlistService.addVideoToPlaylist(selectedName, track);
+    if (!item.isLocal) {
+      await downloadService.autoDownloadIfEnabledUsingClone(
+        selectedName,
+        track,
+        videoManager: videoManager,
+      );
+    }
+    if (!context.mounted) return;
+    _showQueueSnackBar(context, 'Añadida a $selectedName');
+  }
+
+  VideoHistory _toVideoHistory() {
+    return VideoHistory(
+      videoId: item.videoId,
+      title: item.title,
+      thumbnailUrl: item.thumbnailUrl,
+      channelTitle: item.artist,
+      watchedAt: DateTime.now(),
+    );
+  }
+
+  void _showQueueSnackBar(BuildContext context, String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+class _QueueShell extends StatelessWidget {
+  final Widget child;
+
+  const _QueueShell({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(22),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(22),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                CupertinoColors.systemGrey6
+                    .resolveFrom(context)
+                    .withValues(alpha: 0.72),
+                CupertinoColors.systemGrey5
+                    .resolveFrom(context)
+                    .withValues(alpha: 0.52),
+              ],
+            ),
+            border: Border.all(
+              color: CupertinoColors.white.withValues(alpha: 0.20),
+              width: 0.6,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: CupertinoColors.black.withValues(alpha: 0.10),
+                blurRadius: 14,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _QueueGlassSheetActionRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool isDestructive;
+
+  const _QueueGlassSheetActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.isDestructive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final destructiveColor = CupertinoColors.destructiveRed.resolveFrom(
+      context,
+    );
+    final iconColor = isDestructive
+        ? destructiveColor
+        : CupertinoColors.label.resolveFrom(context);
+    final textColor = isDestructive
+        ? destructiveColor
+        : CupertinoColors.label.resolveFrom(context);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.05),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () {
+              unawaited(HapticFeedback.selectionClick());
+              onTap();
+            },
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: CupertinoColors.white.withValues(alpha: 0.18),
+                  width: 0.6,
+                ),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.08),
+                    Colors.white.withValues(alpha: 0.02),
+                  ],
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, size: 18, color: iconColor),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                        color: textColor,
+                      ),
+                    ),
+                  ),
                   Icon(
-                    item.isLocal
-                        ? CupertinoIcons.tray_fill
-                        : CupertinoIcons.sparkles,
-                    size: 18,
+                    CupertinoIcons.chevron_right,
+                    size: 17,
                     color: CupertinoColors.secondaryLabel.resolveFrom(context),
                   ),
                 ],
@@ -3567,70 +4080,205 @@ class _ArtworkImage extends StatefulWidget {
   State<_ArtworkImage> createState() => _ArtworkImageState();
 }
 
+class _SubjectMotionProfile {
+  final Alignment alignment;
+  final double moveScale;
+  final double tiltScale;
+  final double zoomBoost;
+  final int styleVariant;
+
+  const _SubjectMotionProfile({
+    required this.alignment,
+    required this.moveScale,
+    required this.tiltScale,
+    required this.zoomBoost,
+    required this.styleVariant,
+  });
+}
+
+class _FocusObjectLayer {
+  final Uint8List bytes;
+  final Alignment alignment;
+  final double areaRatio;
+
+  const _FocusObjectLayer({
+    required this.bytes,
+    required this.alignment,
+    required this.areaRatio,
+  });
+}
+
 class _ArtworkImageState extends State<_ArtworkImage>
     with TickerProviderStateMixin {
-  late final AnimationController _motionController;
-  late final AnimationController _pulseController;
-  static const double _subjectSizeMultiplier = 2;
+  AnimationController? _motionController;
+  AnimationController? _pulseController;
+  // 0 desactiva por completo la capa de sujeto; 1.0 mantiene tamaño natural.
+  static const double _subjectSizeMultiplier = 1.0;
+  static const int _maxArtworkCacheEntries = 120;
+  static final AiCoverAnimationService _aiCoverAnimationService =
+      AiCoverAnimationService();
+  static final Map<String, Color> _paletteCache = <String, Color>{};
+  static final Map<String, Future<Color?>> _paletteRequests =
+      <String, Future<Color?>>{};
+  static final Map<String, Uint8List?> _subjectCutoutCache =
+      <String, Uint8List?>{};
+  static final Map<String, Future<Uint8List?>> _subjectCutoutRequests =
+      <String, Future<Uint8List?>>{};
+  static final Map<String, Uint8List?> _imageBytesCache =
+      <String, Uint8List?>{};
+  static final Map<String, Future<Uint8List?>> _imageBytesRequests =
+      <String, Future<Uint8List?>>{};
+  static final Map<String, _SubjectMotionProfile?> _subjectProfileCache =
+      <String, _SubjectMotionProfile?>{};
+  static final Map<String, Future<_SubjectMotionProfile?>>
+  _subjectProfileRequests = <String, Future<_SubjectMotionProfile?>>{};
+  static final Map<String, _FocusObjectLayer?> _focusObjectCache =
+      <String, _FocusObjectLayer?>{};
+  static final Map<String, Future<_FocusObjectLayer?>> _focusObjectRequests =
+      <String, Future<_FocusObjectLayer?>>{};
   Color _dominantColor = CupertinoColors.systemBlue;
   String? _lastPaletteUrl;
   Uint8List? _subjectCutoutBytes;
   String? _lastSubjectUrl;
+  _SubjectMotionProfile? _subjectMotionProfile;
+  String? _lastSubjectProfileUrl;
+  _FocusObjectLayer? _focusObjectLayer;
+  String? _lastFocusObjectUrl;
+  String? _aiAnimatedCoverUrl;
+  String? _lastAiCoverSource;
+  bool _isResolvingAiCover = false;
+  DateTime _lastAiCoverAttemptAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _aiCoverRetryDelay = Duration(seconds: 12);
+  VideoPlayerController? _aiVideoController;
+  String? _aiVideoSource;
+  bool _aiVideoReady = false;
 
   @override
   void initState() {
     super.initState();
-    _motionController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 11500),
-    )..repeat();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2200),
-    );
-    if (widget.isPlaying) {
-      _pulseController.repeat(reverse: true);
-    } else {
-      _pulseController.value = 0.35;
+    _syncAnimationControllers(initial: true);
+    if (widget.animated) {
+      unawaited(_resolveAiAnimatedCover());
+      unawaited(_resolveArtworkColor());
+      unawaited(_resolveSubjectCutout());
     }
-    _resolveArtworkColor();
-    _resolveSubjectCutout();
   }
 
   @override
   void didUpdateWidget(covariant _ArtworkImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url) {
-      _resolveArtworkColor();
-      _resolveSubjectCutout();
+    if (oldWidget.animated != widget.animated ||
+        oldWidget.isPlaying != widget.isPlaying) {
+      _syncAnimationControllers();
     }
-    if (oldWidget.isPlaying != widget.isPlaying) {
-      if (widget.isPlaying) {
-        _pulseController.repeat(reverse: true);
+    if (oldWidget.url != widget.url) {
+      if (widget.animated) {
+        unawaited(_resolveAiAnimatedCover());
+        unawaited(_resolveArtworkColor());
+        unawaited(_resolveSubjectCutout());
       } else {
-        _pulseController.stop();
-        _pulseController.animateTo(
-          0.35,
-          duration: const Duration(milliseconds: 280),
-          curve: Curves.easeOutCubic,
-        );
+        _aiAnimatedCoverUrl = null;
+        _lastAiCoverSource = null;
+        _aiVideoReady = false;
+        _aiVideoSource = null;
+        unawaited(_disposeAiVideoController());
+        _lastPaletteUrl = null;
+        _lastSubjectUrl = null;
+        _lastSubjectProfileUrl = null;
+        _subjectMotionProfile = null;
+        _lastFocusObjectUrl = null;
+        _focusObjectLayer = null;
+        if (_subjectCutoutBytes != null && mounted) {
+          setState(() {
+            _subjectCutoutBytes = null;
+          });
+        } else {
+          _subjectCutoutBytes = null;
+        }
       }
+    } else if (!oldWidget.animated && widget.animated) {
+      unawaited(_resolveAiAnimatedCover());
+    } else if (oldWidget.animated && !widget.animated) {
+      _aiVideoReady = false;
+      _aiVideoSource = null;
+      unawaited(_disposeAiVideoController());
     }
   }
 
   @override
   void dispose() {
-    _motionController.dispose();
-    _pulseController.dispose();
+    _motionController?.dispose();
+    _pulseController?.dispose();
+    unawaited(_disposeAiVideoController());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<AppSettingsService?>();
-    final hasImage = widget.url != null && widget.url!.isNotEmpty;
+    final dataSaverMode = settings?.dataSaverMode ?? false;
+    _maybeResolveAiAnimatedCover();
+    final displayImageSource = _displayArtworkSourceUrl();
+    final hasImage = displayImageSource.isNotEmpty;
+    final isAiVideoSource = _looksLikeVideoSource(displayImageSource);
+    final fallbackStillSource = widget.url?.trim() ?? '';
+    _syncAiVideoControllerForSource(displayImageSource);
     final animatedCutoutEnabled = settings?.animatedCutoutCovers ?? true;
-    final enableMotion = widget.animated && hasImage && animatedCutoutEnabled;
+    final hasAiAnimatedCandidate =
+        widget.animated &&
+        (_aiAnimatedCoverUrl != null && _aiAnimatedCoverUrl!.trim().isNotEmpty);
+    // Cuando ya existe resultado IA, evitamos el parallax manual para no
+    // enmascarar la animación generativa de objetos/personas.
+    final enableMotion =
+        widget.animated &&
+        hasImage &&
+        animatedCutoutEnabled &&
+        !hasAiAnimatedCandidate;
+    final enableObjectMotion =
+        widget.animated && hasImage && animatedCutoutEnabled;
+    final showAiGeneratingOverlay =
+        widget.animated &&
+        hasImage &&
+        _isResolvingAiCover &&
+        (_aiAnimatedCoverUrl == null || _aiAnimatedCoverUrl!.trim().isEmpty) &&
+        !_aiVideoReady;
+
+    if (!widget.animated) {
+      return _buildStaticArtworkFrame(
+        context,
+        imageSource: displayImageSource,
+        hasImage: hasImage,
+        preferLowResolution: dataSaverMode,
+      );
+    }
+    final motionController = _motionController;
+    final pulseController = _pulseController;
+    if (motionController == null || pulseController == null) {
+      return _buildStaticArtworkFrame(
+        context,
+        imageSource: displayImageSource,
+        hasImage: hasImage,
+        preferLowResolution: dataSaverMode,
+      );
+    }
+
+    final artworkChild = hasImage
+        ? (isAiVideoSource && _aiVideoReady && _aiVideoController != null
+              ? _buildAnimatedVideoCover(_aiVideoController!)
+              : _buildArtworkImage(
+                  context,
+                  imageSource: isAiVideoSource
+                      ? (fallbackStillSource.isNotEmpty
+                            ? fallbackStillSource
+                            : displayImageSource)
+                      : displayImageSource,
+                  preferLowResolution: dataSaverMode,
+                ))
+        : Icon(
+            Icons.music_note_rounded,
+            size: widget.size * 0.4,
+            color: Theme.of(context).colorScheme.primary,
+          );
     if (animatedCutoutEnabled &&
         widget.animated &&
         hasImage &&
@@ -3641,43 +4289,91 @@ class _ArtworkImageState extends State<_ArtworkImage>
     return SizedBox.square(
       dimension: widget.size,
       child: AnimatedBuilder(
-        animation: Listenable.merge([_motionController, _pulseController]),
-        builder: (context, _) {
-          final turn = _motionController.value * math.pi * 2;
+        animation: Listenable.merge([motionController, pulseController]),
+        child: artworkChild,
+        builder: (context, child) {
+          final turn = motionController.value * math.pi * 2;
           final playFactor = widget.isPlaying ? 1.0 : 0.38;
           final energy = widget.motionEnergy.clamp(0.78, 1.32);
           final motionGain = playFactor * energy;
           final glowColor = _enhanceGlowColor(_dominantColor);
+          final profile = _subjectMotionProfile;
+          final subjectMoveScale = profile?.moveScale ?? 1.0;
+          final subjectTiltScale = profile?.tiltScale ?? 1.0;
+          final subjectZoomBoost = profile?.zoomBoost ?? 0.0;
+          final subjectStyle =
+              profile?.styleVariant ?? _subjectMotionStyleForUrl(widget.url);
+          final motionSeedX = _stableNoiseFromString(widget.url, salt: 1);
+          final motionSeedY = _stableNoiseFromString(widget.url, salt: 2);
+          final phaseA = motionSeedX * math.pi * 2;
+          final phaseB = motionSeedY * math.pi * 2;
 
           final dx = enableMotion
-              ? math.sin(turn) * widget.size * 0.0105 * motionGain
+              ? ((math.sin(turn * 0.86 + phaseA) * widget.size * 0.0096) +
+                        (math.sin(turn * 1.73 + phaseB) *
+                            widget.size *
+                            0.0038)) *
+                    motionGain *
+                    subjectMoveScale
               : 0.0;
           final dy = enableMotion
-              ? math.cos(turn * 2) * widget.size * 0.0090 * motionGain
+              ? ((math.cos(turn * 0.92 + phaseB) * widget.size * 0.0084) +
+                        (math.cos(turn * 1.61 + phaseA) *
+                            widget.size *
+                            0.0035)) *
+                    motionGain *
+                    subjectMoveScale
               : 0.0;
+          // Overscan base para evitar huecos en bordes al aplicar translate/tilt.
+          final baseArtworkScale = enableMotion
+              ? (1.10 + ((energy - 0.78) * 0.03)).clamp(1.10, 1.16)
+              : 1.0;
           final zoom = enableMotion
-              ? 1.10 + (math.sin(turn) * 0.020 * motionGain)
-              : 1.10;
+              ? baseArtworkScale +
+                    (math.sin(turn * 0.94 + phaseA) * 0.020 * motionGain) +
+                    (subjectZoomBoost * 0.018)
+              : 1.0;
           final tilt = enableMotion
-              ? math.sin(turn * 2) * 0.012 * motionGain
+              ? math.sin(turn * 1.92 + phaseB) *
+                    0.012 *
+                    motionGain *
+                    subjectTiltScale
               : 0.0;
           final warpX = enableMotion
-              ? math.sin(turn * 3) * 0.018 * motionGain
+              ? math.sin(turn * 2.84 + phaseA) *
+                    0.018 *
+                    motionGain *
+                    subjectTiltScale
               : 0.0;
           final warpY = enableMotion
-              ? math.cos(turn * 2) * 0.015 * motionGain
+              ? math.cos(turn * 1.76 + phaseB) *
+                    0.015 *
+                    motionGain *
+                    subjectTiltScale
               : 0.0;
           final glow = enableMotion
-              ? (0.36 + (_pulseController.value * 0.34)) *
+              ? (0.36 + (pulseController.value * 0.34)) *
                     (widget.isPlaying ? 1.0 : 0.56) *
                     (0.86 + (energy - 0.78) * 0.42)
               : 0.0;
+          final baseAlignment = profile?.alignment ?? Alignment.center;
           final focusAlignment = Alignment(
-            enableMotion ? math.sin(turn) * 0.20 * motionGain : 0,
-            enableMotion ? math.cos(turn) * 0.16 * motionGain : 0,
+            (baseAlignment.x * 0.40) +
+                (enableMotion
+                    ? math.sin(turn * 0.78 + phaseA) * 0.16 * motionGain
+                    : 0),
+            (baseAlignment.y * 0.34) +
+                (enableMotion
+                    ? math.cos(turn * 0.74 + phaseB) * 0.13 * motionGain
+                    : 0),
           );
-          final hasSubjectLayer = enableMotion && _subjectCutoutBytes != null;
-          final subjectStyle = _subjectMotionStyleForUrl(widget.url);
+          final focusObjectLayer = _focusObjectLayer;
+          final hasFocusObjectLayer =
+              enableObjectMotion && focusObjectLayer != null;
+          final hasSubjectLayer =
+              enableMotion &&
+              _subjectCutoutBytes != null &&
+              !hasFocusObjectLayer;
 
           var subjectRotXFreq = 2.0;
           var subjectRotYFreq = 3.0;
@@ -3687,9 +4383,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
           var subjectMoveYFreq = 1.0;
           var subjectMoveXAmp = widget.size * 0.014;
           var subjectMoveYAmp = widget.size * 0.010;
-          var subjectScaleBase = 1.20;
-          var subjectScaleFreq = 2.0;
-          var subjectScaleAmp = 0.024;
           var subjectAlignment = focusAlignment;
 
           switch (subjectStyle) {
@@ -3701,9 +4394,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
               subjectMoveYFreq = 2.0;
               subjectMoveXAmp = widget.size * 0.016;
               subjectMoveYAmp = widget.size * 0.012;
-              subjectScaleBase = 1.19;
-              subjectScaleFreq = 1.0;
-              subjectScaleAmp = 0.020;
               break;
             case 1:
               // Flotación vertical.
@@ -3713,9 +4403,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
               subjectMoveYFreq = 1.0;
               subjectMoveXAmp = widget.size * 0.010;
               subjectMoveYAmp = widget.size * 0.018;
-              subjectScaleBase = 1.22;
-              subjectScaleFreq = 2.0;
-              subjectScaleAmp = 0.018;
               break;
             case 2:
               // Drift lateral.
@@ -3725,9 +4412,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
               subjectMoveYFreq = 4.0;
               subjectMoveXAmp = widget.size * 0.020;
               subjectMoveYAmp = widget.size * 0.006;
-              subjectScaleBase = 1.18;
-              subjectScaleFreq = 1.0;
-              subjectScaleAmp = 0.022;
               subjectAlignment = Alignment(
                 focusAlignment.x * 0.7,
                 focusAlignment.y * 0.5,
@@ -3741,9 +4425,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
               subjectMoveYFreq = 2.0;
               subjectMoveXAmp = widget.size * 0.009;
               subjectMoveYAmp = widget.size * 0.009;
-              subjectScaleBase = 1.24;
-              subjectScaleFreq = 3.0;
-              subjectScaleAmp = 0.030;
               break;
             case 4:
               // Swing diagonal.
@@ -3753,15 +4434,24 @@ class _ArtworkImageState extends State<_ArtworkImage>
               subjectMoveYFreq = 1.0;
               subjectMoveXAmp = widget.size * 0.017;
               subjectMoveYAmp = widget.size * 0.014;
-              subjectScaleBase = 1.21;
-              subjectScaleFreq = 2.0;
-              subjectScaleAmp = 0.020;
               subjectAlignment = Alignment(
                 (focusAlignment.x * 0.8) + 0.05,
                 focusAlignment.y * 0.8,
               );
               break;
           }
+
+          final objectGain = (widget.isPlaying ? 1.0 : 0.44) * energy;
+          final focusAreaRatio = focusObjectLayer?.areaRatio ?? 0.0;
+          final areaBoost = (1.0 - focusAreaRatio).clamp(0.22, 1.0);
+          final objectPulseScale =
+              1.0 +
+              (math.sin(turn * 2.1 + phaseA) * 0.09 * objectGain * areaBoost) +
+              ((pulseController.value - 0.5) * 0.18 * areaBoost);
+          final objectDriftX =
+              math.sin(turn * 1.34 + phaseB) * widget.size * 0.008 * objectGain;
+          final objectDriftY =
+              math.cos(turn * 1.18 + phaseA) * widget.size * 0.006 * objectGain;
 
           return Stack(
             clipBehavior: Clip.none,
@@ -3815,18 +4505,14 @@ class _ArtworkImageState extends State<_ArtworkImage>
                                   scale: zoom,
                                   child: Align(
                                     alignment: focusAlignment,
-                                    child: _buildArtworkImage(context),
+                                    child: child,
                                   ),
                                 ),
                               ),
                             ),
                           ],
                         )
-                      : Icon(
-                          Icons.music_note_rounded,
-                          size: widget.size * 0.4,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
+                      : child,
                 ),
               ),
               if (enableMotion)
@@ -3871,12 +4557,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
                                         motionGain,
                                   ),
                                   child: Transform.scale(
-                                    scale:
-                                        (subjectScaleBase *
-                                            _subjectSizeMultiplier) +
-                                        (math.sin(turn * subjectScaleFreq) *
-                                            subjectScaleAmp *
-                                            motionGain),
+                                    scale: _subjectSizeMultiplier,
                                     child: ClipRect(
                                       child: Align(
                                         alignment: Alignment.center,
@@ -3897,6 +4578,98 @@ class _ArtworkImageState extends State<_ArtworkImage>
                     ),
                   ),
                 ),
+              if (hasFocusObjectLayer)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Opacity(
+                      opacity: 0.96 * (widget.isPlaying ? 1.0 : 0.78),
+                      child: Transform(
+                        alignment: focusObjectLayer.alignment,
+                        transform: Matrix4.identity()
+                          ..setEntry(3, 2, 0.0016)
+                          ..rotateZ(
+                            math.sin(turn * 1.3 + phaseA) * 0.02 * objectGain,
+                          ),
+                        child: Transform.translate(
+                          offset: Offset(objectDriftX, objectDriftY),
+                          child: Transform.scale(
+                            alignment: focusObjectLayer.alignment,
+                            scale: objectPulseScale.clamp(0.90, 1.36),
+                            child: Image.memory(
+                              focusObjectLayer.bytes,
+                              fit: BoxFit.contain,
+                              filterQuality: FilterQuality.high,
+                              gaplessPlayback: true,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              if (showAiGeneratingOverlay)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(
+                          widget.borderRadius,
+                        ),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.black.withValues(alpha: 0.06),
+                            Colors.black.withValues(alpha: 0.22),
+                          ],
+                        ),
+                      ),
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.46),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.22),
+                                width: 0.6,
+                              ),
+                            ),
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CupertinoActivityIndicator(
+                                      radius: 6,
+                                    ),
+                                  ),
+                                  SizedBox(width: 8),
+                                  Text(
+                                    'Generando animacion IA...',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
             ],
           );
         },
@@ -3904,34 +4677,268 @@ class _ArtworkImageState extends State<_ArtworkImage>
     );
   }
 
+  String _displayArtworkSourceUrl() {
+    if (!widget.animated) return widget.url?.trim() ?? '';
+    final animated = _aiAnimatedCoverUrl?.trim() ?? '';
+    if (animated.isNotEmpty) return animated;
+    return widget.url?.trim() ?? '';
+  }
+
+  String _stableTrackIdForSource(String raw) {
+    var hash = 0x811C9DC5;
+    for (var i = 0; i < raw.length; i++) {
+      hash ^= raw.codeUnitAt(i);
+      hash = (hash * 0x01000193) & 0x7fffffff;
+    }
+    return hash.toRadixString(16);
+  }
+
+  void _maybeResolveAiAnimatedCover() {
+    if (!widget.animated || _aiAnimatedCoverUrl != null) return;
+    if (_isResolvingAiCover) return;
+    if (!_aiCoverAnimationService.isConfigured) return;
+    final source = widget.url?.trim() ?? '';
+    if (source.isEmpty) return;
+    final now = DateTime.now();
+    if (now.difference(_lastAiCoverAttemptAt) < _aiCoverRetryDelay) return;
+    unawaited(_resolveAiAnimatedCover());
+  }
+
+  Future<void> _resolveAiAnimatedCover() async {
+    if (!widget.animated || !_aiCoverAnimationService.isConfigured) {
+      if (!mounted) return;
+      if (_aiAnimatedCoverUrl != null || _lastAiCoverSource != null) {
+        setState(() {
+          _aiAnimatedCoverUrl = null;
+          _lastAiCoverSource = null;
+        });
+      }
+      return;
+    }
+
+    final source = widget.url?.trim() ?? '';
+    if (source.isEmpty) {
+      if (!mounted) return;
+      if (_aiAnimatedCoverUrl != null || _lastAiCoverSource != source) {
+        setState(() {
+          _aiAnimatedCoverUrl = null;
+          _lastAiCoverSource = source;
+        });
+      }
+      return;
+    }
+
+    if (source == _lastAiCoverSource && _aiAnimatedCoverUrl != null) return;
+    _lastAiCoverSource = source;
+    if (_aiAnimatedCoverUrl != null && mounted) {
+      setState(() {
+        _aiAnimatedCoverUrl = null;
+      });
+    }
+    _isResolvingAiCover = true;
+    _lastAiCoverAttemptAt = DateTime.now();
+    final trackId = _stableTrackIdForSource(source);
+    Uint8List? sourceBytes;
+    String? sourceFilename;
+    if (source.startsWith('/')) {
+      sourceBytes = await _loadImageBytes(source);
+      if (sourceBytes == null || sourceBytes.isEmpty) {
+        _isResolvingAiCover = false;
+        if (!mounted || _lastAiCoverSource != source) return;
+        setState(() {
+          _aiAnimatedCoverUrl = null;
+        });
+        return;
+      }
+      sourceFilename = source.split('/').last.trim();
+      if (sourceFilename.isEmpty) {
+        sourceFilename = 'cover.jpg';
+      }
+    } else {
+      sourceBytes = await _loadImageBytes(source);
+      try {
+        final uri = Uri.parse(source);
+        if (uri.pathSegments.isNotEmpty) {
+          sourceFilename = uri.pathSegments.last.trim();
+        }
+      } catch (_) {}
+      if (sourceFilename == null || sourceFilename.isEmpty) {
+        sourceFilename = 'cover.jpg';
+      }
+    }
+    String? animatedUrl;
+    try {
+      animatedUrl = await _aiCoverAnimationService.requestAnimatedCoverUrl(
+        trackId: trackId,
+        sourceUrl: source,
+        sourceBytes: sourceBytes,
+        sourceFilename: sourceFilename,
+      );
+    } catch (_) {
+      animatedUrl = null;
+    } finally {
+      _isResolvingAiCover = false;
+    }
+
+    if (!mounted || _lastAiCoverSource != source) return;
+    final normalized = (animatedUrl ?? '').trim();
+    final next = normalized.isEmpty ? null : normalized;
+    if (next == _aiAnimatedCoverUrl) return;
+    setState(() {
+      _aiAnimatedCoverUrl = next;
+    });
+  }
+
+  bool _looksLikeVideoSource(String source) {
+    final value = source.trim().toLowerCase();
+    if (value.isEmpty) return false;
+    if (RegExp(r'\.(mp4|mov|m3u8|webm|m4v|mkv)(\?|#|$)').hasMatch(value) ||
+        value.contains('/video/') ||
+        value.contains('/videos/') ||
+        value.contains('/gradio_api/file=') ||
+        value.contains('/file=')) {
+      return true;
+    }
+    return false;
+  }
+
+  void _syncAiVideoControllerForSource(String source) {
+    final aiUrl = _aiAnimatedCoverUrl?.trim() ?? '';
+    final shouldTryAsVideo =
+        _looksLikeVideoSource(source) ||
+        (aiUrl.isNotEmpty &&
+            source == aiUrl &&
+            (source.startsWith('http://') || source.startsWith('https://')));
+    if (!shouldTryAsVideo) {
+      if (_aiVideoController != null ||
+          _aiVideoReady ||
+          _aiVideoSource != null) {
+        _aiVideoReady = false;
+        _aiVideoSource = null;
+        unawaited(_disposeAiVideoController());
+      }
+      return;
+    }
+    if (source == _aiVideoSource) return;
+    _aiVideoSource = source;
+    _aiVideoReady = false;
+    unawaited(_prepareAiVideoController(source));
+  }
+
+  Future<void> _prepareAiVideoController(String source) async {
+    await _disposeAiVideoController();
+    final controller = VideoPlayerController.networkUrl(Uri.parse(source));
+    _aiVideoController = controller;
+    try {
+      await controller.initialize();
+      await controller.setLooping(true);
+      await controller.setVolume(0);
+      await controller.play();
+      if (!mounted || _aiVideoSource != source) {
+        await controller.dispose();
+        if (identical(_aiVideoController, controller)) {
+          _aiVideoController = null;
+        }
+        return;
+      }
+      setState(() {
+        _aiVideoReady = true;
+      });
+    } catch (_) {
+      if (identical(_aiVideoController, controller)) {
+        _aiVideoController = null;
+      }
+      try {
+        await controller.dispose();
+      } catch (_) {}
+      if (!mounted || _aiVideoSource != source) return;
+      setState(() {
+        _aiVideoReady = false;
+      });
+    }
+  }
+
+  Future<void> _disposeAiVideoController() async {
+    final controller = _aiVideoController;
+    _aiVideoController = null;
+    if (controller == null) return;
+    try {
+      await controller.pause();
+    } catch (_) {}
+    try {
+      await controller.dispose();
+    } catch (_) {}
+  }
+
+  Widget _buildAnimatedVideoCover(VideoPlayerController controller) {
+    final value = controller.value;
+    if (!value.isInitialized) {
+      return const SizedBox.expand();
+    }
+    final videoAspect = value.aspectRatio > 0 ? value.aspectRatio : 1.0;
+    return SizedBox.expand(
+      child: FittedBox(
+        fit: BoxFit.cover,
+        clipBehavior: Clip.hardEdge,
+        child: SizedBox(
+          width: widget.size * videoAspect,
+          height: widget.size,
+          child: VideoPlayer(controller),
+        ),
+      ),
+    );
+  }
+
   Future<void> _resolveArtworkColor() async {
-    final settings = context.read<AppSettingsService?>();
-    final dataSaverMode = settings?.dataSaverMode ?? false;
-    final raw = widget.url?.trim();
-    final resolved = raw == null || raw.isEmpty
-        ? raw
-        : optimizeYoutubeThumbnailUrl(raw, preferLowResolution: dataSaverMode);
+    if (!widget.animated) return;
+    final resolved = _processingArtworkSourceUrl();
     if (resolved == null || resolved.isEmpty || resolved == _lastPaletteUrl) {
       return;
     }
     _lastPaletteUrl = resolved;
 
-    try {
-      final ImageProvider provider = resolved.startsWith('/')
-          ? FileImage(File(resolved))
-          : NetworkImage(resolved);
-      final palette = await PaletteGenerator.fromImageProvider(
-        provider,
-        size: const Size(96, 96),
-        maximumColorCount: 16,
-      );
-      if (!mounted || _lastPaletteUrl != resolved) return;
+    final cached = _paletteCache[resolved];
+    if (cached != null) {
+      if (mounted && _lastPaletteUrl == resolved) {
+        setState(() {
+          _dominantColor = cached;
+        });
+      } else {
+        _dominantColor = cached;
+      }
+      return;
+    }
 
-      final color =
-          palette.vibrantColor?.color ??
-          palette.lightVibrantColor?.color ??
-          palette.dominantColor?.color ??
-          palette.mutedColor?.color;
+    Future<Color?> request =
+        _paletteRequests[resolved] ??
+        () async {
+          try {
+            final ImageProvider provider = resolved.startsWith('/')
+                ? FileImage(File(resolved))
+                : NetworkImage(resolved);
+            final palette = await PaletteGenerator.fromImageProvider(
+              provider,
+              size: const Size(96, 96),
+              maximumColorCount: 16,
+            );
+            final color =
+                palette.vibrantColor?.color ??
+                palette.lightVibrantColor?.color ??
+                palette.dominantColor?.color ??
+                palette.mutedColor?.color;
+            if (color != null) {
+              _rememberPaletteColor(resolved, color);
+            }
+            return color;
+          } catch (_) {
+            return null;
+          }
+        }();
+    _paletteRequests[resolved] = request;
+
+    try {
+      final color = await request;
+      if (!mounted || _lastPaletteUrl != resolved) return;
       if (color != null) {
         setState(() {
           _dominantColor = color;
@@ -3939,27 +4946,36 @@ class _ArtworkImageState extends State<_ArtworkImage>
       }
     } catch (_) {
       // Si falla extracción de color, mantenemos fallback.
+    } finally {
+      if (identical(_paletteRequests[resolved], request)) {
+        _paletteRequests.remove(resolved);
+      }
     }
   }
 
   Future<void> _resolveSubjectCutout() async {
+    if (!widget.animated) return;
     final settings = context.read<AppSettingsService?>();
     if (settings != null && !settings.animatedCutoutCovers) {
       if (mounted && _subjectCutoutBytes != null) {
         setState(() {
           _subjectCutoutBytes = null;
           _lastSubjectUrl = null;
+          _subjectMotionProfile = null;
+          _lastSubjectProfileUrl = null;
+          _focusObjectLayer = null;
+          _lastFocusObjectUrl = null;
         });
       } else {
         _lastSubjectUrl = null;
+        _subjectMotionProfile = null;
+        _lastSubjectProfileUrl = null;
+        _focusObjectLayer = null;
+        _lastFocusObjectUrl = null;
       }
       return;
     }
-    final raw = widget.url?.trim();
-    final dataSaverMode = settings?.dataSaverMode ?? false;
-    final resolved = raw == null || raw.isEmpty
-        ? raw
-        : optimizeYoutubeThumbnailUrl(raw, preferLowResolution: dataSaverMode);
+    final resolved = _processingArtworkSourceUrl();
     if (kDebugMode) {
       debugPrint('[cutout] resolve start url=$resolved');
     }
@@ -3968,6 +4984,10 @@ class _ArtworkImageState extends State<_ArtworkImage>
         setState(() {
           _subjectCutoutBytes = null;
           _lastSubjectUrl = null;
+          _subjectMotionProfile = null;
+          _lastSubjectProfileUrl = null;
+          _focusObjectLayer = null;
+          _lastFocusObjectUrl = null;
         });
       }
       if (kDebugMode) {
@@ -3978,34 +4998,50 @@ class _ArtworkImageState extends State<_ArtworkImage>
     if (resolved == _lastSubjectUrl) return;
     _lastSubjectUrl = resolved;
 
-    try {
-      final bytes = await _loadImageBytes(resolved);
-      if (kDebugMode) {
-        debugPrint(
-          '[cutout] source bytes loaded url=$resolved bytes=${bytes?.length ?? 0}',
-        );
-      }
-      if (!mounted ||
-          _lastSubjectUrl != resolved ||
-          bytes == null ||
-          bytes.isEmpty) {
-        if (kDebugMode) {
-          debugPrint(
-            '[cutout] resolve abort mounted=$mounted sameUrl=${_lastSubjectUrl == raw} hasBytes=${bytes?.isNotEmpty == true}',
-          );
-        }
-        return;
-      }
+    if (_subjectCutoutCache.containsKey(resolved)) {
+      final cached = _subjectCutoutCache[resolved];
+      if (!mounted || _lastSubjectUrl != resolved) return;
+      setState(() {
+        _subjectCutoutBytes = cached;
+      });
+      unawaited(_resolveSubjectMotionProfile(resolved, cached));
+      unawaited(_resolveFocusObjectLayer(resolved, cached));
+      return;
+    }
 
-      final cutout = await ArtworkSubjectCutoutService.buildCutout(
-        cacheKey: 'v11:$resolved:native-validated',
-        sourceBytes: bytes,
-        viewportZoom: 1.0,
-      );
+    Future<Uint8List?> request =
+        _subjectCutoutRequests[resolved] ??
+        () async {
+          try {
+            final bytes = await _loadImageBytes(resolved);
+            if (kDebugMode) {
+              debugPrint(
+                '[cutout] source bytes loaded url=$resolved bytes=${bytes?.length ?? 0}',
+              );
+            }
+            if (bytes == null || bytes.isEmpty) return null;
+            final cutout = await ArtworkSubjectCutoutService.buildCutout(
+              cacheKey: 'v11:$resolved:native-validated',
+              sourceBytes: bytes,
+              viewportZoom: 1.0,
+            );
+            _rememberSubjectCutout(resolved, cutout);
+            return cutout;
+          } catch (_) {
+            _rememberSubjectCutout(resolved, null);
+            return null;
+          }
+        }();
+    _subjectCutoutRequests[resolved] = request;
+
+    try {
+      final cutout = await request;
       if (!mounted || _lastSubjectUrl != resolved) return;
       setState(() {
         _subjectCutoutBytes = cutout;
       });
+      unawaited(_resolveSubjectMotionProfile(resolved, cutout));
+      unawaited(_resolveFocusObjectLayer(resolved, cutout));
       if (kDebugMode) {
         debugPrint(
           '[cutout] resolve done url=$resolved outBytes=${cutout?.length ?? 0}',
@@ -4015,14 +5051,170 @@ class _ArtworkImageState extends State<_ArtworkImage>
       if (!mounted || _lastSubjectUrl != resolved) return;
       setState(() {
         _subjectCutoutBytes = null;
+        _subjectMotionProfile = null;
+        _lastSubjectProfileUrl = null;
+        _focusObjectLayer = null;
+        _lastFocusObjectUrl = null;
       });
       if (kDebugMode) {
         debugPrint('[cutout] resolve failed url=$resolved');
+      }
+    } finally {
+      if (identical(_subjectCutoutRequests[resolved], request)) {
+        _subjectCutoutRequests.remove(resolved);
+      }
+    }
+  }
+
+  Future<void> _resolveSubjectMotionProfile(
+    String sourceKey,
+    Uint8List? cutoutBytes,
+  ) async {
+    if (cutoutBytes == null || cutoutBytes.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _subjectMotionProfile = null;
+        _lastSubjectProfileUrl = sourceKey;
+      });
+      return;
+    }
+    _lastSubjectProfileUrl = sourceKey;
+    final cached = _subjectProfileCache[sourceKey];
+    if (cached != null || _subjectProfileCache.containsKey(sourceKey)) {
+      if (!mounted || _lastSubjectProfileUrl != sourceKey) return;
+      setState(() {
+        _subjectMotionProfile = cached;
+      });
+      return;
+    }
+
+    final request =
+        _subjectProfileRequests[sourceKey] ??
+        compute<Uint8List, Map<String, num>?>(
+          _buildSubjectMotionProfileWorker,
+          cutoutBytes,
+        ).then((raw) {
+          if (raw == null) return null;
+          return _SubjectMotionProfile(
+            alignment: Alignment(
+              ((raw['alignmentX']?.toDouble() ?? 0.0).clamp(-0.55, 0.55)),
+              ((raw['alignmentY']?.toDouble() ?? 0.0).clamp(-0.55, 0.55)),
+            ),
+            moveScale: (raw['moveScale']?.toDouble() ?? 1.0).clamp(0.85, 1.42),
+            tiltScale: (raw['tiltScale']?.toDouble() ?? 1.0).clamp(0.82, 1.30),
+            zoomBoost: (raw['zoomBoost']?.toDouble() ?? 0.0).clamp(0.0, 0.26),
+            styleVariant: ((raw['style']?.toInt() ?? 0) % 5).clamp(0, 4),
+          );
+        });
+
+    _subjectProfileRequests[sourceKey] = request;
+    try {
+      final profile = await request;
+      _subjectProfileCache[sourceKey] = profile;
+      if (!mounted || _lastSubjectProfileUrl != sourceKey) return;
+      setState(() {
+        _subjectMotionProfile = profile;
+      });
+    } catch (_) {
+      _subjectProfileCache[sourceKey] = null;
+      if (!mounted || _lastSubjectProfileUrl != sourceKey) return;
+      setState(() {
+        _subjectMotionProfile = null;
+      });
+    } finally {
+      if (identical(_subjectProfileRequests[sourceKey], request)) {
+        _subjectProfileRequests.remove(sourceKey);
+      }
+    }
+  }
+
+  Future<void> _resolveFocusObjectLayer(
+    String sourceKey,
+    Uint8List? cutoutBytes,
+  ) async {
+    if (cutoutBytes == null || cutoutBytes.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _focusObjectLayer = null;
+        _lastFocusObjectUrl = sourceKey;
+      });
+      return;
+    }
+    _lastFocusObjectUrl = sourceKey;
+    final cached = _focusObjectCache[sourceKey];
+    if (cached != null || _focusObjectCache.containsKey(sourceKey)) {
+      if (!mounted || _lastFocusObjectUrl != sourceKey) return;
+      setState(() {
+        _focusObjectLayer = cached;
+      });
+      return;
+    }
+
+    final request =
+        _focusObjectRequests[sourceKey] ??
+        compute<Uint8List, Map<String, Object?>?>(
+          _buildFocusObjectLayerWorker,
+          cutoutBytes,
+        ).then((raw) {
+          if (raw == null) return null;
+          final bytes = raw['bytes'];
+          if (bytes is! Uint8List || bytes.isEmpty) return null;
+          final alignmentX = ((raw['alignmentX'] as num?)?.toDouble() ?? 0.0)
+              .clamp(-0.95, 0.95);
+          final alignmentY = ((raw['alignmentY'] as num?)?.toDouble() ?? 0.0)
+              .clamp(-0.95, 0.95);
+          final areaRatio = ((raw['areaRatio'] as num?)?.toDouble() ?? 0.0)
+              .clamp(0.0, 1.0);
+          return _FocusObjectLayer(
+            bytes: bytes,
+            alignment: Alignment(alignmentX, alignmentY),
+            areaRatio: areaRatio,
+          );
+        });
+    _focusObjectRequests[sourceKey] = request;
+
+    try {
+      final layer = await request;
+      _rememberFocusObjectLayer(sourceKey, layer);
+      if (!mounted || _lastFocusObjectUrl != sourceKey) return;
+      setState(() {
+        _focusObjectLayer = layer;
+      });
+    } catch (_) {
+      _rememberFocusObjectLayer(sourceKey, null);
+      if (!mounted || _lastFocusObjectUrl != sourceKey) return;
+      setState(() {
+        _focusObjectLayer = null;
+      });
+    } finally {
+      if (identical(_focusObjectRequests[sourceKey], request)) {
+        _focusObjectRequests.remove(sourceKey);
       }
     }
   }
 
   Future<Uint8List?> _loadImageBytes(String raw) async {
+    if (_imageBytesCache.containsKey(raw)) {
+      return _imageBytesCache[raw];
+    }
+    final inFlight = _imageBytesRequests[raw];
+    if (inFlight != null) {
+      return inFlight;
+    }
+    final request = _readImageBytes(raw);
+    _imageBytesRequests[raw] = request;
+    try {
+      final bytes = await request;
+      _rememberImageBytes(raw, bytes);
+      return bytes;
+    } finally {
+      if (identical(_imageBytesRequests[raw], request)) {
+        _imageBytesRequests.remove(raw);
+      }
+    }
+  }
+
+  Future<Uint8List?> _readImageBytes(String raw) async {
     if (raw.startsWith('/')) {
       final file = File(raw);
       if (!await file.exists()) {
@@ -4060,6 +5252,99 @@ class _ArtworkImageState extends State<_ArtworkImage>
     }
   }
 
+  Widget _buildStaticArtworkFrame(
+    BuildContext context, {
+    required String imageSource,
+    required bool hasImage,
+    required bool preferLowResolution,
+  }) {
+    return SizedBox.square(
+      dimension: widget.size,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(widget.borderRadius),
+        child: ColoredBox(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          child: hasImage
+              ? _buildArtworkImage(
+                  context,
+                  imageSource: imageSource,
+                  preferLowResolution: preferLowResolution,
+                )
+              : Icon(
+                  Icons.music_note_rounded,
+                  size: widget.size * 0.4,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+        ),
+      ),
+    );
+  }
+
+  void _syncAnimationControllers({bool initial = false}) {
+    if (!widget.animated) {
+      _motionController?.stop();
+      _pulseController?.stop();
+      return;
+    }
+
+    _motionController ??= AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 11500),
+    )..repeat();
+
+    _pulseController ??= AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2200),
+    );
+
+    final pulse = _pulseController!;
+    if (widget.isPlaying) {
+      if (!pulse.isAnimating) {
+        pulse.repeat(reverse: true);
+      }
+      return;
+    }
+
+    pulse.stop();
+    if (initial) {
+      pulse.value = 0.35;
+      return;
+    }
+    pulse.animateTo(
+      0.35,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _rememberPaletteColor(String key, Color value) {
+    _paletteCache[key] = value;
+    while (_paletteCache.length > _maxArtworkCacheEntries) {
+      _paletteCache.remove(_paletteCache.keys.first);
+    }
+  }
+
+  void _rememberSubjectCutout(String key, Uint8List? value) {
+    _subjectCutoutCache[key] = value;
+    while (_subjectCutoutCache.length > _maxArtworkCacheEntries) {
+      _subjectCutoutCache.remove(_subjectCutoutCache.keys.first);
+    }
+  }
+
+  void _rememberImageBytes(String key, Uint8List? value) {
+    _imageBytesCache[key] = value;
+    while (_imageBytesCache.length > _maxArtworkCacheEntries) {
+      _imageBytesCache.remove(_imageBytesCache.keys.first);
+    }
+  }
+
+  void _rememberFocusObjectLayer(String key, _FocusObjectLayer? value) {
+    _focusObjectCache[key] = value;
+    while (_focusObjectCache.length > _maxArtworkCacheEntries) {
+      _focusObjectCache.remove(_focusObjectCache.keys.first);
+    }
+  }
+
   Color _enhanceGlowColor(Color base) {
     final hsl = HSLColor.fromColor(base);
     final boosted = hsl
@@ -4078,49 +5363,294 @@ class _ArtworkImageState extends State<_ArtworkImage>
     return hash % 5;
   }
 
-  Widget _buildArtworkImage(BuildContext context) {
-    final dataSaverMode =
-        context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
-    final raw = optimizeYoutubeThumbnailUrl(
-      widget.url!,
-      preferLowResolution: dataSaverMode,
+  double _stableNoiseFromString(String? raw, {int salt = 0}) {
+    final text = raw?.trim() ?? '';
+    if (text.isEmpty) return 0.0;
+    var hash = 17 + (salt * 131);
+    for (var i = 0; i < text.length; i++) {
+      hash = (hash * 37 + text.codeUnitAt(i)) & 0x7fffffff;
+    }
+    return (hash % 10000) / 10000.0;
+  }
+
+  String? _preferredArtworkSourceUrl({required bool preferLowResolution}) {
+    final raw = widget.url?.trim();
+    if (raw == null || raw.isEmpty || raw.startsWith('/')) {
+      return raw;
+    }
+    final candidates = buildThumbnailCandidates(
+      thumbnailUrl: raw,
+      preferLowResolution: preferLowResolution,
     );
+    if (candidates.isNotEmpty) return candidates.first;
+    return optimizeYoutubeThumbnailUrl(
+      raw,
+      preferLowResolution: preferLowResolution,
+    );
+  }
+
+  String? _processingArtworkSourceUrl() {
+    // Usamos una variante liviana para análisis visual (palette/cutout) y así
+    // evitamos decodificar imágenes enormes durante transiciones.
+    return _preferredArtworkSourceUrl(preferLowResolution: true);
+  }
+
+  Widget _buildArtworkImage(
+    BuildContext context, {
+    required String imageSource,
+    required bool preferLowResolution,
+  }) {
+    final trimmed = imageSource.trim();
+    final isYoutubeThumb =
+        trimmed.contains('ytimg.com') || trimmed.contains('youtube.com');
+    final raw = isYoutubeThumb
+        ? optimizeYoutubeThumbnailUrl(
+            trimmed,
+            preferLowResolution: preferLowResolution,
+          )
+        : trimmed;
     final looksLikeLocalPath = raw.startsWith('/');
+    final fallback = Icon(
+      Icons.music_note_rounded,
+      size: widget.size * 0.4,
+      color: Theme.of(context).colorScheme.primary,
+    );
     if (looksLikeLocalPath) {
       return Transform.scale(
         scale: 1.0,
-        child: Image.file(
-          File(raw),
-          width: widget.size,
-          height: widget.size,
-          fit: BoxFit.cover,
-          alignment: Alignment.center,
-          filterQuality: FilterQuality.high,
-          errorBuilder: (context, error, stackTrace) => Icon(
-            Icons.music_note_rounded,
-            size: widget.size * 0.4,
-            color: Theme.of(context).colorScheme.primary,
-          ),
+        child: SquareThumbnail.file(
+          filePath: raw,
+          size: widget.size,
+          borderRadius: 0,
+          zoom: 1.0,
+          fallback: fallback,
         ),
       );
     }
     return Transform.scale(
       scale: 1.0,
-      child: Image.network(
-        raw,
-        width: widget.size,
-        height: widget.size,
-        fit: BoxFit.cover,
-        alignment: Alignment.center,
-        filterQuality: FilterQuality.high,
-        errorBuilder: (context, error, stackTrace) => Icon(
-          Icons.music_note_rounded,
-          size: widget.size * 0.4,
-          color: Theme.of(context).colorScheme.primary,
-        ),
+      child: SquareThumbnail.network(
+        imageUrl: raw,
+        size: widget.size,
+        borderRadius: 0,
+        zoom: 1.0,
+        fallback: fallback,
       ),
     );
   }
+}
+
+Map<String, num>? _buildSubjectMotionProfileWorker(Uint8List cutoutBytes) {
+  final image = img.decodeImage(cutoutBytes);
+  if (image == null) return null;
+  final w = image.width;
+  final h = image.height;
+  if (w <= 8 || h <= 8) return null;
+  final total = w * h;
+
+  var count = 0;
+  var weightedX = 0.0;
+  var weightedY = 0.0;
+  var minX = w;
+  var minY = h;
+  var maxX = -1;
+  var maxY = -1;
+
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      final alpha = image.getPixel(x, y).a;
+      if (alpha <= 22) continue;
+      count++;
+      final weight = alpha / 255.0;
+      weightedX += x * weight;
+      weightedY += y * weight;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (count < total * 0.008 || maxX < minX || maxY < minY) {
+    return null;
+  }
+
+  final coverage = count / total;
+  final denom = count.toDouble();
+  final centerX = weightedX / denom;
+  final centerY = weightedY / denom;
+  final alignX = ((centerX / (w - 1)) * 2.0 - 1.0).clamp(-1.0, 1.0);
+  final alignY = ((centerY / (h - 1)) * 2.0 - 1.0).clamp(-1.0, 1.0);
+  final bboxW = ((maxX - minX + 1) / w).clamp(0.01, 1.0);
+  final bboxH = ((maxY - minY + 1) / h).clamp(0.01, 1.0);
+
+  final compactness = (coverage / (bboxW * bboxH)).clamp(0.05, 1.0);
+  final moveScale =
+      (1.10 + (1.0 - coverage) * 0.38 + (1.0 - compactness) * 0.14).clamp(
+        0.86,
+        1.42,
+      );
+  final tiltScale = (0.90 + (bboxW * 0.32) + ((1.0 - bboxH) * 0.24)).clamp(
+    0.82,
+    1.30,
+  );
+  final zoomBoost = (0.06 + (1.0 - coverage) * 0.26).clamp(0.0, 0.26);
+
+  var seed = 97;
+  seed += (alignX * 1000).round();
+  seed += (alignY * 1400).round();
+  seed += (coverage * 10000).round();
+  seed += ((bboxW + bboxH) * 1300).round();
+  final style = seed.abs() % 5;
+
+  return <String, num>{
+    'alignmentX': alignX,
+    'alignmentY': alignY,
+    'moveScale': moveScale,
+    'tiltScale': tiltScale,
+    'zoomBoost': zoomBoost,
+    'style': style,
+  };
+}
+
+Map<String, Object?>? _buildFocusObjectLayerWorker(Uint8List cutoutBytes) {
+  final image = img.decodeImage(cutoutBytes);
+  if (image == null) return null;
+  final w = image.width;
+  final h = image.height;
+  if (w <= 16 || h <= 16) return null;
+  final total = w * h;
+
+  final alphaMask = Uint8List(total);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      final alpha = image.getPixel(x, y).a;
+      if (alpha > 26) {
+        alphaMask[y * w + x] = 1;
+      }
+    }
+  }
+
+  final visited = Uint8List(total);
+  final queue = List<int>.filled(total, 0, growable: false);
+  _FocusComponent? best;
+  var bestScore = -1.0;
+
+  for (var i = 0; i < total; i++) {
+    if (alphaMask[i] == 0 || visited[i] == 1) continue;
+
+    var head = 0;
+    var tail = 0;
+    queue[tail++] = i;
+    visited[i] = 1;
+
+    final pixels = <int>[];
+    var minX = w;
+    var minY = h;
+    var maxX = 0;
+    var maxY = 0;
+    var sumX = 0.0;
+    var sumY = 0.0;
+
+    while (head < tail) {
+      final idx = queue[head++];
+      pixels.add(idx);
+      final x = idx % w;
+      final y = idx ~/ w;
+      sumX += x;
+      sumY += y;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+
+      void push(int nx, int ny) {
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) return;
+        final n = ny * w + nx;
+        if (visited[n] == 1 || alphaMask[n] == 0) return;
+        visited[n] = 1;
+        queue[tail++] = n;
+      }
+
+      push(x - 1, y);
+      push(x + 1, y);
+      push(x, y - 1);
+      push(x, y + 1);
+    }
+
+    final area = pixels.length;
+    if (area < math.max(18, (total * 0.0018).round())) continue;
+    final areaRatio = area / total;
+    final bboxW = (maxX - minX + 1).toDouble();
+    final bboxH = (maxY - minY + 1).toDouble();
+    final bboxArea = bboxW * bboxH;
+    if (bboxArea <= 0) continue;
+    final compactness = (area / bboxArea).clamp(0.05, 1.0);
+    final aspect = (bboxW / bboxH).clamp(0.2, 5.0);
+    final circularity = (1.0 - ((aspect - 1.0).abs() / 1.2)).clamp(0.0, 1.0);
+
+    final cx = sumX / area;
+    final cy = sumY / area;
+    final nx = ((cx / (w - 1)) * 2.0 - 1.0).clamp(-1.0, 1.0);
+    final ny = ((cy / (h - 1)) * 2.0 - 1.0).clamp(-1.0, 1.0);
+    final centerDist = math.sqrt(nx * nx + ny * ny).clamp(0.0, 1.8);
+    final centerScore = (1.0 - (centerDist / 1.8)).clamp(0.0, 1.0);
+
+    // Priorizamos objetos medianos/compactos (pelotas, elementos sueltos)
+    // en vez del sujeto completo.
+    final areaPref = (1.0 - ((areaRatio - 0.045).abs() / 0.060)).clamp(
+      0.0,
+      1.0,
+    );
+    final score =
+        areaPref * 0.38 +
+        circularity * 0.30 +
+        compactness * 0.22 +
+        centerScore * 0.10;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = _FocusComponent(
+        pixels: pixels,
+        centerX: cx,
+        centerY: cy,
+        areaRatio: areaRatio,
+      );
+    }
+  }
+
+  if (best == null || bestScore < 0.24) return null;
+  final out = img.Image(width: w, height: h, numChannels: 4);
+  for (final idx in best.pixels) {
+    final x = idx % w;
+    final y = idx ~/ w;
+    final p = image.getPixel(x, y);
+    out.setPixelRgba(x, y, p.r, p.g, p.b, p.a);
+  }
+  img.gaussianBlur(out, radius: 1);
+  final encoded = Uint8List.fromList(img.encodePng(out, level: 5));
+  final alignmentX = ((best.centerX / (w - 1)) * 2.0 - 1.0).clamp(-1.0, 1.0);
+  final alignmentY = ((best.centerY / (h - 1)) * 2.0 - 1.0).clamp(-1.0, 1.0);
+  return <String, Object?>{
+    'bytes': encoded,
+    'alignmentX': alignmentX,
+    'alignmentY': alignmentY,
+    'areaRatio': best.areaRatio,
+  };
+}
+
+class _FocusComponent {
+  final List<int> pixels;
+  final double centerX;
+  final double centerY;
+  final double areaRatio;
+
+  const _FocusComponent({
+    required this.pixels,
+    required this.centerX,
+    required this.centerY,
+    required this.areaRatio,
+  });
 }
 
 class _DownloadButton extends StatelessWidget {

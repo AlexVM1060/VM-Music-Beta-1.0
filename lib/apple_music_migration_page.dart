@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
@@ -178,6 +180,16 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  Uint8List? _decodeArtwork(String? rawBase64) {
+    final input = (rawBase64 ?? '').trim();
+    if (input.isEmpty) return null;
+    try {
+      return base64Decode(input);
+    } catch (_) {
+      return null;
+    }
+  }
+
   String _authorizationText() {
     switch (_authorizationStatus) {
       case AppleMusicAuthorizationStatus.authorized:
@@ -239,21 +251,36 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
 
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
-        middle: Text(
-          'Migrar Apple Music',
-          style: TextStyle(color: textPrimary, decoration: TextDecoration.none),
+        middle: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Migrar',
+              style: TextStyle(
+                color: textPrimary,
+                fontWeight: FontWeight.w600,
+                fontSize: 16,
+              ),
+            ),
+            Text(
+              'Apple Music',
+              style: TextStyle(
+                color: CupertinoColors.systemGrey.resolveFrom(context),
+                fontSize: 12,
+              ),
+            ),
+          ],
         ),
         backgroundColor: navBackground,
-        automaticBackgroundVisibility: !isDark,
-        transitionBetweenRoutes: !isDark,
+        automaticBackgroundVisibility: false,
         border: null,
       ),
       child: ColoredBox(
         color: pageBackground,
         child: SafeArea(
-          top: false,
+          top: true,
           child: ListView(
-            padding: EdgeInsets.fromLTRB(16, 10, 16, 22 + bottomSafeInset + 24),
+            padding: EdgeInsets.fromLTRB(16, 8, 16, 28 + bottomSafeInset),
             children: [
               _buildSectionTitle(context, 'Conexión'),
               const SizedBox(height: 10),
@@ -284,32 +311,42 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
                     ),
                     const SizedBox(height: 10),
                     CupertinoButton(
-                      onPressed: _isRequestingAuthorization
+                      onPressed: _isAuthorized
                           ? null
-                          : _requestAuthorization,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
-                      color: isDark
-                          ? const Color(0xFF1F1F22)
-                          : CupertinoColors.white,
-                      borderRadius: BorderRadius.circular(14),
-                      child: Text(
-                        _isRequestingAuthorization
-                            ? 'Solicitando permiso...'
-                            : 'Autorizar acceso',
-                        style: TextStyle(
-                          color: textPrimary,
-                          fontWeight: FontWeight.w700,
-                          decoration: TextDecoration.none,
-                        ),
+                          : (_isRequestingAuthorization ? null : _requestAuthorization),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      borderRadius: BorderRadius.circular(16),
+                      color: _isAuthorized
+                          ? CupertinoColors.systemGreen
+                          : CupertinoColors.systemBlue,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            CupertinoIcons.person_crop_circle_badge_checkmark,
+                            size: 18,
+                            color: CupertinoColors.white,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _isAuthorized
+                                ? 'Conectado'
+                                : (_isRequestingAuthorization
+                                    ? 'Solicitando...'
+                                    : 'Conectar Apple Music'),
+                            style: TextStyle(
+                              color: CupertinoColors.white,
+                              fontWeight: FontWeight.w600,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 24),
               _buildSectionTitle(context, 'Playlists'),
               const SizedBox(height: 10),
               _GlassSection(
@@ -407,72 +444,22 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
                         final selected = _selectedPlaylistIds.contains(
                           playlist.id,
                         );
-                        return GestureDetector(
-                          onTap: _isMigrating
-                              ? null
-                              : () => _toggleSelection(playlist.id, !selected),
-                          child: Container(
-                            margin: const EdgeInsets.only(bottom: 6),
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 8,
-                            ),
-                            decoration: BoxDecoration(
-                              color: isDark
-                                  ? const Color(0xFF1C1C1E)
-                                  : CupertinoColors.systemGrey6.resolveFrom(
-                                      context,
-                                    ),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        playlist.name,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          color: textPrimary,
-                                          decoration: TextDecoration.none,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        '${playlist.trackCount} canciones',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          color: CupertinoColors.secondaryLabel
-                                              .resolveFrom(context),
-                                          decoration: TextDecoration.none,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                CupertinoSwitch(
-                                  value: selected,
-                                  onChanged: _isMigrating
-                                      ? null
-                                      : (value) => _toggleSelection(
-                                          playlist.id,
-                                          value,
-                                        ),
-                                ),
-                              ],
-                            ),
-                          ),
+                        return _PlaylistSelectionTile(
+                          key: ValueKey('am_playlist_${playlist.id}'),
+                          playlist: playlist,
+                          artworkBytes: _decodeArtwork(playlist.artworkBase64),
+                          selected: selected,
+                          isDark: isDark,
+                          isMigrating: _isMigrating,
+                          textPrimary: textPrimary,
+                          onToggle: (value) =>
+                              _toggleSelection(playlist.id, value),
                         );
                       }),
                   ],
                 ),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 24),
               _buildSectionTitle(context, 'Migración'),
               const SizedBox(height: 10),
               _GlassSection(
@@ -505,20 +492,26 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
                         ),
                       ),
                     if (_progress != null) const SizedBox(height: 10),
-                    CupertinoButton.filled(
-                      onPressed: _isMigrating
-                          ? null
-                          : _migrateSelectedPlaylists,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      borderRadius: BorderRadius.circular(14),
-                      child: Text(
-                        _isMigrating
-                            ? 'Migrando...'
-                            : 'Migrar ${_selectedPlaylistIds.length} playlists seleccionadas',
-                        style: const TextStyle(decoration: TextDecoration.none),
+                    CupertinoButton(
+                      onPressed: _isMigrating ? null : _migrateSelectedPlaylists,
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      borderRadius: BorderRadius.circular(16),
+                      color: CupertinoColors.systemPink,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(CupertinoIcons.arrow_2_squarepath, size: 18),
+                          const SizedBox(width: 8),
+                          Text(
+                            _isMigrating
+                                ? 'Migrando...'
+                                : 'Migrar ${_selectedPlaylistIds.length} playlists',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
@@ -558,21 +551,145 @@ class _GlassSection extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(18),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: isDark
-                ? const Color(0xFF121212)
-                : CupertinoColors.systemBackground.withValues(alpha: 0.92),
+                ? const Color(0xFF1C1C1E).withOpacity(0.85)
+                : CupertinoColors.systemBackground.withOpacity(0.85),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
               color: isDark
-                  ? const Color(0xFF2A2A2A)
-                  : CupertinoColors.systemGrey5.resolveFrom(context),
-              width: 0.9,
+                  ? const Color(0xFF2C2C2E)
+                  : CupertinoColors.systemGrey4.resolveFrom(context),
+              width: 0.6,
             ),
           ),
           child: Padding(padding: const EdgeInsets.all(12), child: child),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlaylistSelectionTile extends StatelessWidget {
+  final AppleMusicLibraryPlaylist playlist;
+  final Uint8List? artworkBytes;
+  final bool selected;
+  final bool isDark;
+  final bool isMigrating;
+  final Color textPrimary;
+  final ValueChanged<bool> onToggle;
+
+  const _PlaylistSelectionTile({
+    super.key,
+    required this.playlist,
+    required this.artworkBytes,
+    required this.selected,
+    required this.isDark,
+    required this.isMigrating,
+    required this.textPrimary,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final tileBackground = isDark
+        ? const Color(0xFF2C2C2E)
+        : CupertinoColors.systemGrey5.resolveFrom(context);
+    final tileBorder = selected
+        ? CupertinoColors.systemPink
+        : (isDark ? const Color(0xFF2A2A2F) : const Color(0xFFE0E2E8));
+
+    return GestureDetector(
+      onTap: isMigrating ? null : () => onToggle(!selected),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+        decoration: BoxDecoration(
+          color: tileBackground,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: tileBorder, width: selected ? 1.3 : 1),
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: CupertinoColors.systemPink.withOpacity(0.25),
+                    blurRadius: 10,
+                    offset: Offset(0, 4),
+                  ),
+                ]
+              : [],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: SizedBox(
+                width: 54,
+                height: 54,
+                child: _buildArtwork(context),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    playlist.name,
+                    style: TextStyle(
+                      color: textPrimary,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      height: 1.2,
+                      decoration: TextDecoration.none,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${playlist.trackCount} canciones',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: CupertinoColors.secondaryLabel.resolveFrom(
+                        context,
+                      ),
+                      decoration: TextDecoration.none,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            CupertinoSwitch(
+              value: selected,
+              onChanged: isMigrating ? null : onToggle,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildArtwork(BuildContext context) {
+    if (artworkBytes != null) {
+      return Image.memory(artworkBytes!, fit: BoxFit.cover);
+    }
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDark
+              ? const [Color(0xFF30343B), Color(0xFF17191E)]
+              : const [Color(0xFFF5F7FA), Color(0xFFD9DEE7)],
+        ),
+      ),
+      child: Center(
+        child: Icon(
+          CupertinoIcons.music_note_list,
+          size: 20,
+          color: isDark ? const Color(0xFFE6E8EC) : const Color(0xFF626775),
         ),
       ),
     );

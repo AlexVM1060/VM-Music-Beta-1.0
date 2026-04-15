@@ -74,6 +74,16 @@ class _RecommendationSignals {
   });
 }
 
+class _SearchVideosCacheEntry {
+  final DateTime createdAt;
+  final List<Video> videos;
+
+  const _SearchVideosCacheEntry({
+    required this.createdAt,
+    required this.videos,
+  });
+}
+
 class _YouTubeMusicQueueCandidate {
   final String videoId;
   final String title;
@@ -150,6 +160,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _completionHandledForCurrent = false;
   bool _skipHistoryPushOnce = false;
   bool _isResettingEngines = false;
+  Completer<void>? _resetEnginesCompleter;
   bool _isSwitchingEngine = false;
   bool _isTogglingPlayPause = false;
   String? _currentStreamUrl;
@@ -157,6 +168,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   List<PlaybackQueueItem> _playbackQueue = const [];
   bool _isQueueLoading = false;
   String _queueTitle = 'Siguiente';
+  String? _queueSeedVideoId;
   int _queueEpoch = 0;
   final List<PlaybackQueueItem> _playbackHistory = [];
   final Set<String> _sessionPlayedVideoIds = <String>{};
@@ -174,6 +186,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, Duration?> _djFirstLyricOffsetCache = {};
   final Map<String, Future<Duration?>> _djFirstLyricOffsetRequests = {};
   final Map<String, String> _searchThumbnailOverrides = {};
+  final Map<String, _SearchVideosCacheEntry> _searchVideosCache = {};
+  final Map<String, Future<List<Video>>> _searchVideosRequests = {};
   final NowPlayingArtworkService _nowPlayingArtworkService =
       NowPlayingArtworkService();
   final AiStemsService _aiStemsService = AiStemsService();
@@ -201,6 +215,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
+  static const Duration _searchVideosCacheTtl = Duration(minutes: 12);
+  static const int _searchVideosCacheMaxEntries = 220;
   static const double _defaultPlaybackVolume = 3;
   static const Duration _crossfadeDuration = Duration(seconds: 4);
   static const Duration _djMinMixDuration = Duration(seconds: 6);
@@ -364,6 +380,22 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _hasQueuedItems() =>
       _manualPlaybackQueue.isNotEmpty || _playbackQueue.isNotEmpty;
 
+  bool _hasResolvedQueueForVideo(String videoId) {
+    final normalized = videoId.trim();
+    if (normalized.isEmpty) return false;
+    return _queueSeedVideoId == normalized;
+  }
+
+  bool _shouldRefreshQueueForVideo(
+    String videoId, {
+    required bool preserveExistingQueue,
+  }) {
+    if (preserveExistingQueue) {
+      return !_hasQueuedItems();
+    }
+    return !_hasResolvedQueueForVideo(videoId);
+  }
+
   bool _isTrackInQueue({required String videoId, required bool isLocal}) {
     final id = videoId.trim();
     if (id.isEmpty) return false;
@@ -428,6 +460,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _playbackQueue = const [];
     _isQueueLoading = false;
     _queueTitle = 'Siguiente';
+    _queueSeedVideoId = null;
     _clearPreloadedNextTrack();
   }
 
@@ -999,6 +1032,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _crossfadeFailedForCurrentVideoId = null;
     _crossfadeFailedQueueKey = null;
     _clearPreloadedNextTrack();
+    if (!preserveExistingQueue) {
+      _queueSeedVideoId = null;
+    }
     _trackTitle = (preferredTitle != null && preferredTitle.trim().isNotEmpty)
         ? preferredTitle.trim()
         : null;
@@ -1190,13 +1226,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         if (_autoplayEnabled && video != null && _currentVideoId == videoId) {
-          if (!preserveExistingQueue || !_hasQueuedItems()) {
+          if (_shouldRefreshQueueForVideo(
+            videoId,
+            preserveExistingQueue: preserveExistingQueue,
+          )) {
             await _loadOnlineQueue(video, currentVideoId: videoId);
           }
         } else if (_autoplayEnabled &&
             video == null &&
             _currentVideoId == videoId) {
-          if (!preserveExistingQueue || !_hasQueuedItems()) {
+          if (_shouldRefreshQueueForVideo(
+            videoId,
+            preserveExistingQueue: preserveExistingQueue,
+          )) {
             await _loadOnlineQueueFallbackFromCurrentContext(
               currentVideoId: videoId,
             );
@@ -3657,29 +3699,107 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }) async {
     final query = _sanitizeSearchQuery(rawQuery);
     if (query.isEmpty) return const [];
+    final cacheKey = _searchVideosCacheKey(
+      query: query,
+      limit: limit,
+      onlyTopic: onlyTopic,
+      onlyAutoGenerated: onlyAutoGenerated,
+    );
+    final now = DateTime.now();
+    final cached = _searchVideosCache[cacheKey];
+    if (cached != null &&
+        now.difference(cached.createdAt) <= _searchVideosCacheTtl) {
+      return cached.videos;
+    }
+
+    final inFlight = _searchVideosRequests[cacheKey];
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final request = () async {
+      try {
+        final results = await _runYoutubeWithRetry(
+          () => _ytExplode.search.search(query),
+          maxAttempts: 2,
+        );
+        // Evita recorrer el stream completo: tomamos solo una ventana útil.
+        final scanLimit = _searchVideosScanLimit(
+          requestedLimit: limit,
+          onlyTopic: onlyTopic,
+          onlyAutoGenerated: onlyAutoGenerated,
+        );
+        final list = results.take(scanLimit).toList(growable: false);
+        if (!onlyTopic) {
+          if (!onlyAutoGenerated) {
+            return list.take(limit).toList(growable: false);
+          }
+          return list
+              .where(_hasAutoGeneratedSignal)
+              .take(limit)
+              .toList(growable: false);
+        }
+        Iterable<Video> filtered = list.where(
+          (item) => _isTopicAuthor(item.author.toLowerCase()),
+        );
+        filtered = filtered.where(
+          (item) => !_isBlockedRecommendationAuthor(item.author.toLowerCase()),
+        );
+        if (onlyAutoGenerated) {
+          filtered = filtered.where(_hasAutoGeneratedSignal);
+        }
+        return filtered.take(limit).toList(growable: false);
+      } catch (e, s) {
+        log('Busqueda de recomendados falló: $query', error: e, stackTrace: s);
+        return const <Video>[];
+      }
+    }();
+
+    _searchVideosRequests[cacheKey] = request;
     try {
-      final results = await _runYoutubeWithRetry(
-        () => _ytExplode.search.search(query),
-        maxAttempts: 2,
+      final resolved = await request;
+      _searchVideosCache[cacheKey] = _SearchVideosCacheEntry(
+        createdAt: now,
+        videos: resolved,
       );
-      final list = results.toList();
-      if (!onlyTopic) {
-        if (!onlyAutoGenerated) return list.take(limit).toList();
-        return list.where(_hasAutoGeneratedSignal).take(limit).toList();
-      }
-      Iterable<Video> filtered = list.where(
-        (item) => _isTopicAuthor(item.author.toLowerCase()),
-      );
-      filtered = filtered.where(
-        (item) => !_isBlockedRecommendationAuthor(item.author.toLowerCase()),
-      );
-      if (onlyAutoGenerated) {
-        filtered = filtered.where(_hasAutoGeneratedSignal);
-      }
-      return filtered.take(limit).toList();
-    } catch (e, s) {
-      log('Busqueda de recomendados falló: $query', error: e, stackTrace: s);
-      return const [];
+      _trimSearchVideosCache();
+      return resolved;
+    } finally {
+      _searchVideosRequests.remove(cacheKey);
+    }
+  }
+
+  String _searchVideosCacheKey({
+    required String query,
+    required int limit,
+    required bool onlyTopic,
+    required bool onlyAutoGenerated,
+  }) {
+    return '$query|$limit|${onlyTopic ? 1 : 0}|${onlyAutoGenerated ? 1 : 0}';
+  }
+
+  int _searchVideosScanLimit({
+    required int requestedLimit,
+    required bool onlyTopic,
+    required bool onlyAutoGenerated,
+  }) {
+    final base = requestedLimit.clamp(1, 80);
+    if (!onlyTopic && !onlyAutoGenerated) return base;
+    // Para filtros estrictos escaneamos más resultados sin irnos al stream entero.
+    final boosted = math.max(36, base * 4);
+    return boosted.clamp(24, 90);
+  }
+
+  void _trimSearchVideosCache() {
+    final now = DateTime.now();
+    _searchVideosCache.removeWhere(
+      (_, entry) => now.difference(entry.createdAt) > _searchVideosCacheTtl,
+    );
+    if (_searchVideosCache.length <= _searchVideosCacheMaxEntries) return;
+    final overflow = _searchVideosCache.length - _searchVideosCacheMaxEntries;
+    final keysToDrop = _searchVideosCache.keys.take(overflow).toList();
+    for (final key in keysToDrop) {
+      _searchVideosCache.remove(key);
     }
   }
 
@@ -4103,6 +4223,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _crossfadeFailedForCurrentVideoId = null;
     _crossfadeFailedQueueKey = null;
     _clearPreloadedNextTrack();
+    if (!preserveExistingQueue) {
+      _queueSeedVideoId = null;
+    }
     _resetLyricsState();
 
     String? resolvedPlainLyrics = localPlainLyrics;
@@ -4148,7 +4271,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _sessionPlayedVideoIds.add(id);
       _usingHiddenVideo = false;
       if (_autoplayEnabled) {
-        if (!preserveExistingQueue || !_hasQueuedItems()) {
+        if (_shouldRefreshQueueForVideo(
+          id,
+          preserveExistingQueue: preserveExistingQueue,
+        )) {
           unawaited(_loadLocalQueue(currentVideoId: id));
         }
       } else if (!preserveExistingQueue) {
@@ -4287,6 +4413,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     combined.shuffle(math.Random());
     _manualPlaybackQueue = combined;
     _playbackQueue = const [];
+    _queueSeedVideoId = null;
     _queueTitle = 'En cola';
     _clearPreloadedNextTrack();
     unawaited(_maybePreloadUpcomingQueueTrack());
@@ -4298,8 +4425,39 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String queueTitle = 'En cola',
   }) {
     _manualPlaybackQueue = List<PlaybackQueueItem>.from(items);
+    _queueSeedVideoId = null;
     _queueTitle = queueTitle;
     _clearPreloadedNextTrack();
+    unawaited(_maybePreloadUpcomingQueueTrack());
+    notifyListeners();
+  }
+
+  void reorderPlaybackQueue(int oldIndex, int newIndex) {
+    final combined = [..._manualPlaybackQueue, ..._playbackQueue];
+    if (combined.length < 2) return;
+    if (oldIndex < 0 || oldIndex >= combined.length) return;
+    if (newIndex < 0 || newIndex > combined.length) return;
+    var targetIndex = newIndex;
+    if (targetIndex > oldIndex) {
+      targetIndex -= 1;
+    }
+    if (targetIndex == oldIndex) return;
+    final item = combined.removeAt(oldIndex);
+    combined.insert(targetIndex, item);
+    _manualPlaybackQueue = combined;
+    _playbackQueue = const [];
+    _queueSeedVideoId = null;
+    _queueTitle = 'En cola';
+    _clearPreloadedNextTrack();
+    unawaited(_maybePreloadUpcomingQueueTrack());
+    notifyListeners();
+  }
+
+  void removeQueueItem(PlaybackQueueItem item) {
+    final beforeCount = _manualPlaybackQueue.length + _playbackQueue.length;
+    _removeFromQueues(item);
+    final afterCount = _manualPlaybackQueue.length + _playbackQueue.length;
+    if (afterCount == beforeCount) return;
     unawaited(_maybePreloadUpcomingQueueTrack());
     notifyListeners();
   }
@@ -4848,6 +5006,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _playbackHistory.clear();
     _isQueueLoading = false;
     _queueTitle = 'Siguiente';
+    _queueSeedVideoId = null;
     _completionHandledForCurrent = false;
 
     _clearSystemNowPlaying();
@@ -4946,25 +5105,48 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _resetEngines() async {
-    _isResettingEngines = true;
-    await _player.stop();
-    try {
-      await _crossfadePlayer.stop();
-    } catch (_) {}
-    _clearPreloadedNextTrack();
-    final controller = _hiddenVideoController;
-    _hiddenVideoController = null;
-    _usingHiddenVideo = false;
-    if (controller != null) {
-      controller.removeListener(_syncFromHiddenVideo);
-      try {
-        await controller.pause();
-      } catch (_) {}
-      try {
-        await controller.dispose();
-      } catch (_) {}
+    final inFlight = _resetEnginesCompleter;
+    if (inFlight != null) {
+      await inFlight.future;
+      return;
     }
-    _isResettingEngines = false;
+
+    final completer = Completer<void>();
+    _resetEnginesCompleter = completer;
+    _isResettingEngines = true;
+    try {
+      try {
+        await _player.stop();
+      } catch (e, s) {
+        log('No se pudo detener player principal', error: e, stackTrace: s);
+      }
+
+      try {
+        await _crossfadePlayer.stop();
+      } catch (e, s) {
+        log('No se pudo detener player crossfade', error: e, stackTrace: s);
+      }
+
+      _clearPreloadedNextTrack();
+      final controller = _hiddenVideoController;
+      _hiddenVideoController = null;
+      _usingHiddenVideo = false;
+      if (controller != null) {
+        controller.removeListener(_syncFromHiddenVideo);
+        try {
+          await controller.pause();
+        } catch (_) {}
+        try {
+          await controller.dispose();
+        } catch (_) {}
+      }
+    } finally {
+      _isResettingEngines = false;
+      _resetEnginesCompleter = null;
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+    }
   }
 
   void _syncFromHiddenVideo() {
@@ -5060,6 +5242,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final queueRequestId = ++_queueEpoch;
     _queueTitle = 'Siguiente';
     _playbackQueue = const [];
+    _queueSeedVideoId = null;
     _isQueueLoading = true;
     notifyListeners();
 
@@ -5069,6 +5252,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       _playbackQueue = related;
+      _queueSeedVideoId = currentVideoId;
       _rememberRecommendedQueue(_playbackQueue);
       unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
       unawaited(_maybePreloadUpcomingQueueTrack());
@@ -5078,6 +5262,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       _playbackQueue = const [];
+      _queueSeedVideoId = null;
     } finally {
       if (queueRequestId == _queueEpoch && _currentVideoId == currentVideoId) {
         _isQueueLoading = false;
@@ -5094,6 +5279,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final queueRequestId = ++_queueEpoch;
     _queueTitle = 'Siguiente';
     _playbackQueue = const [];
+    _queueSeedVideoId = null;
     _isQueueLoading = true;
     notifyListeners();
 
@@ -5107,6 +5293,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       _playbackQueue = queue;
+      _queueSeedVideoId = currentVideoId;
       _rememberRecommendedQueue(_playbackQueue);
       unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
       unawaited(_maybePreloadUpcomingQueueTrack());
@@ -5120,6 +5307,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       _playbackQueue = const [];
+      _queueSeedVideoId = null;
     } finally {
       if (queueRequestId == _queueEpoch && _currentVideoId == currentVideoId) {
         _isQueueLoading = false;
@@ -5135,6 +5323,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
     final queueRequestId = ++_queueEpoch;
     _queueTitle = 'Descargas';
+    _queueSeedVideoId = null;
     _isQueueLoading = true;
     notifyListeners();
 
@@ -5166,6 +5355,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       _playbackQueue = queue;
+      _queueSeedVideoId = currentVideoId;
       unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
       unawaited(_maybePreloadUpcomingQueueTrack());
     } catch (e, s) {
@@ -5174,6 +5364,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return;
       }
       _playbackQueue = const [];
+      _queueSeedVideoId = null;
     } finally {
       if (queueRequestId == _queueEpoch && _currentVideoId == currentVideoId) {
         _isQueueLoading = false;
@@ -5409,6 +5600,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (!_autoplayEnabled || _isLocal || _currentVideoId != currentVideoId) {
       return;
     }
+    if (_hasResolvedQueueForVideo(currentVideoId)) return;
     if (_manualPlaybackQueue.isNotEmpty ||
         _playbackQueue.isNotEmpty ||
         _isQueueLoading) {
@@ -5917,6 +6109,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _playbackQueue = const [];
     _isQueueLoading = false;
     _queueTitle = 'Siguiente';
+    _queueSeedVideoId = null;
     _clearPreloadedNextTrack();
   }
 

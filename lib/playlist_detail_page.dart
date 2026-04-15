@@ -680,7 +680,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                         imageUrl: cover,
                         size: coverSize,
                         borderRadius: 0,
-                        zoom: 1.34,
+                        zoom: 1,
                         fallback: Container(
                           color: fallback,
                           alignment: Alignment.center,

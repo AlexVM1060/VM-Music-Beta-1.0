@@ -18,6 +18,15 @@ const STEMS_ROOT = path.resolve(
 const STEMS_MODEL = (process.env.STEMS_MODEL || "htdemucs_ft").trim();
 const STEMS_PYTHON = (process.env.STEMS_PYTHON || "python3").trim();
 const STEMS_TIMEOUT_MS = Number(process.env.STEMS_TIMEOUT_MS || 12 * 60 * 1000);
+const COVER_ANIMATION_PROXY_URL = (
+  process.env.COVER_ANIMATION_PROXY_URL || ""
+).trim();
+const COVER_ANIMATION_PROXY_KEY = (
+  process.env.COVER_ANIMATION_PROXY_KEY || ""
+).trim();
+const COVER_ANIMATION_TIMEOUT_MS = Number(
+  process.env.COVER_ANIMATION_TIMEOUT_MS || 90 * 1000
+);
 
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
@@ -60,7 +69,12 @@ function pickMuxedFormat(formats) {
 }
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, service: "vmmusic-yt-resolver", stems: true });
+  res.json({
+    ok: true,
+    service: "vmmusic-yt-resolver",
+    stems: true,
+    coverAnimation: Boolean(COVER_ANIMATION_PROXY_URL),
+  });
 });
 
 app.get("/resolve", authMiddleware, async (req, res) => {
@@ -199,6 +213,48 @@ async function runDemucs({ inputPath, outputRoot, model }) {
   });
 }
 
+async function requestAnimatedCoverFromProxy({ trackId, sourceUrl }) {
+  if (!COVER_ANIMATION_PROXY_URL) {
+    throw new Error("cover_animation_not_configured");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, COVER_ANIMATION_TIMEOUT_MS);
+
+  const headers = { "content-type": "application/json" };
+  if (COVER_ANIMATION_PROXY_KEY) {
+    headers["x-api-key"] = COVER_ANIMATION_PROXY_KEY;
+    headers.authorization = `Bearer ${COVER_ANIMATION_PROXY_KEY}`;
+  }
+
+  try {
+    const response = await fetch(COVER_ANIMATION_PROXY_URL, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ trackId, sourceUrl }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`cover_animation_proxy_status_${response.status}`);
+    }
+    const data = await response.json().catch(() => null);
+    if (!data || typeof data !== "object") {
+      throw new Error("cover_animation_proxy_invalid_json");
+    }
+    const animatedCoverUrl = String(
+      data.animatedCoverUrl || data.url || data.output || ""
+    ).trim();
+    if (!animatedCoverUrl) {
+      throw new Error("cover_animation_proxy_missing_url");
+    }
+    return animatedCoverUrl;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 app.post("/stems/separate", authMiddleware, async (req, res) => {
   const sourceUrl = String(req.body?.sourceUrl || "").trim();
   const requestedTrackId = safeTrackId(req.body?.trackId);
@@ -248,6 +304,47 @@ app.post("/stems/separate", authMiddleware, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "stems_failed",
+      detail: String(error?.message || error),
+    });
+  }
+});
+
+app.post("/cover/animate", authMiddleware, async (req, res) => {
+  const sourceUrl = String(req.body?.sourceUrl || "").trim();
+  const requestedTrackId = safeTrackId(req.body?.trackId);
+  if (!sourceUrl) {
+    return res.status(400).json({ ok: false, error: "missing_source_url" });
+  }
+  if (!/^https?:\/\//i.test(sourceUrl)) {
+    return res.status(400).json({ ok: false, error: "invalid_source_url" });
+  }
+  if (!COVER_ANIMATION_PROXY_URL) {
+    return res
+      .status(501)
+      .json({ ok: false, error: "cover_animation_not_configured" });
+  }
+
+  const sourceHash = sha1(sourceUrl);
+  const trackId = requestedTrackId || sourceHash.slice(0, 14);
+
+  try {
+    let animatedCoverUrl = await requestAnimatedCoverFromProxy({
+      trackId,
+      sourceUrl,
+    });
+    if (/^\//.test(animatedCoverUrl)) {
+      const baseUrl = `${req.protocol}://${req.get("host")}`;
+      animatedCoverUrl = `${baseUrl}${animatedCoverUrl}`;
+    }
+    return res.json({
+      ok: true,
+      trackId,
+      animatedCoverUrl,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "cover_animation_failed",
       detail: String(error?.message || error),
     });
   }

@@ -12,11 +12,13 @@ class AppleMusicLibraryPlaylist {
   final String id;
   final String name;
   final int trackCount;
+  final String? artworkBase64;
 
   const AppleMusicLibraryPlaylist({
     required this.id,
     required this.name,
     required this.trackCount,
+    this.artworkBase64,
   });
 }
 
@@ -80,11 +82,15 @@ class AppleMusicLibraryService {
         final name = (item['name'] ?? '').toString().trim();
         if (id.isEmpty || name.isEmpty) continue;
         final trackCount = (item['trackCount'] as num?)?.toInt() ?? 0;
+        final artworkBase64Raw = (item['artworkBase64'] ?? '')
+            .toString()
+            .trim();
         output.add(
           AppleMusicLibraryPlaylist(
             id: id,
             name: name,
             trackCount: trackCount < 0 ? 0 : trackCount,
+            artworkBase64: artworkBase64Raw.isEmpty ? null : artworkBase64Raw,
           ),
         );
       }

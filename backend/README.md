@@ -7,6 +7,7 @@ Backend de fallback para resolver URLs de audio/video cuando YouTube limita soli
 - `GET /health`
 - `GET /resolve?videoId=<youtube_video_id>`
 - `POST /stems/separate`
+- `POST /cover/animate`
 
 Respuesta de `resolve`:
 
@@ -40,6 +41,25 @@ Respuesta:
 }
 ```
 
+Body de `POST /cover/animate`:
+
+```json
+{
+  "trackId": "opcional_id_cancion",
+  "sourceUrl": "https://url-de-caratula"
+}
+```
+
+Respuesta:
+
+```json
+{
+  "ok": true,
+  "trackId": "abc123",
+  "animatedCoverUrl": "https://..."
+}
+```
+
 ## Deploy en Render
 
 1. Sube esta carpeta al repo (`backend/`).
@@ -56,6 +76,9 @@ Respuesta:
    - opcional `STEMS_MODEL` (default: `htdemucs_ft`)
    - opcional `STEMS_PYTHON` (default: `python3`)
    - opcional `STEMS_TIMEOUT_MS` (default: `720000`)
+   - opcional `COVER_ANIMATION_PROXY_URL` (endpoint de tu servicio IA que anima carátulas)
+   - opcional `COVER_ANIMATION_PROXY_KEY` (si tu proxy requiere API key)
+   - opcional `COVER_ANIMATION_TIMEOUT_MS` (default: `90000`)
 6. Deploy.
 7. Prueba:
    - `https://<tu-servicio>.onrender.com/health`
@@ -78,7 +101,9 @@ flutter run \
   --dart-define=YT_RESOLVER_BASE_URL=https://<tu-servicio>.onrender.com \
   --dart-define=YT_RESOLVER_API_KEY=<tu_key_opcional> \
   --dart-define=STEMS_API_BASE_URL=https://<tu-servicio>.onrender.com \
-  --dart-define=STEMS_API_KEY=<tu_key_opcional>
+  --dart-define=STEMS_API_KEY=<tu_key_opcional> \
+  --dart-define=COVER_ANIMATION_API_BASE_URL=https://<tu-servicio>.onrender.com \
+  --dart-define=COVER_ANIMATION_API_KEY=<tu_key_opcional>
 ```
 
 > Si no usas `RESOLVER_API_KEY` en Render, omite `YT_RESOLVER_API_KEY`.

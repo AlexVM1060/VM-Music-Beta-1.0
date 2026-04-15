@@ -61,6 +61,7 @@ class DownloadService with ChangeNotifier {
   Set<String> _autoDownloadPlaylists = {};
   final Map<String, StreamManifest> _manifestCache = {};
   final Map<String, Future<StreamManifest>> _manifestRequests = {};
+  late final Future<void> _initialDownloadsSync;
 
   Future<Box<DownloadedVideo>> get _downloadsBox async =>
       await Hive.openBox<DownloadedVideo>(_downloadsBoxName);
@@ -69,7 +70,7 @@ class DownloadService with ChangeNotifier {
 
   DownloadService(this._settingsService) {
     _loadAutoDownloadPlaylists();
-    loadDownloadedVideos();
+    _initialDownloadsSync = loadDownloadedVideos();
   }
 
   Future<void> _loadAutoDownloadPlaylists() async {
@@ -243,8 +244,26 @@ class DownloadService with ChangeNotifier {
   }
 
   Future<List<DownloadedVideo>> getDownloadedVideos() async {
+    await _ensureInitialDownloadsSync();
     final box = await _downloadsBox;
-    return box.values.toList();
+    final videos = box.values.toList(growable: false);
+    final resolved = <DownloadedVideo>[];
+    var changed = false;
+    for (final video in videos) {
+      final repaired = await _sanitizeDownloadedVideoEntry(box, video);
+      if (repaired == null) {
+        changed = true;
+        continue;
+      }
+      if (_didDownloadedEntryChange(video, repaired)) {
+        changed = true;
+      }
+      resolved.add(repaired);
+    }
+    if (changed) {
+      notifyListeners();
+    }
+    return resolved;
   }
 
   Future<bool> downloadVideo(
@@ -562,54 +581,31 @@ class DownloadService with ChangeNotifier {
 
   Future<void> loadDownloadedVideos() async {
     final box = await _downloadsBox;
-    final videos = box.values;
-    for (var video in videos) {
-      final fileExists = await File(video.filePath).exists();
-      if (fileExists) {
-        _downloadStatus[video.videoId] = DownloadStatus.downloaded;
-        _downloadErrors.remove(video.videoId);
-      } else {
-        await box.delete(video.videoId);
-        _downloadStatus.remove(video.videoId);
-        _downloadErrors.remove(video.videoId);
-      }
+    final videos = box.values.toList(growable: false);
+    for (final video in videos) {
+      await _sanitizeDownloadedVideoEntry(box, video);
     }
     notifyListeners();
   }
 
   Future<DownloadedVideo?> getDownloadedVideoById(String videoId) async {
+    await _ensureInitialDownloadsSync();
     final box = await _downloadsBox;
     final downloaded = box.get(videoId);
-    if (downloaded == null) return null;
-
-    final file = File(downloaded.filePath);
-    if (!await file.exists()) {
-      final recoveredPath = await _findRecoveredDownloadPath(videoId);
-      if (recoveredPath != null && recoveredPath.isNotEmpty) {
-        final repaired = DownloadedVideo(
-          videoId: downloaded.videoId,
-          title: downloaded.title,
-          thumbnailUrl: downloaded.thumbnailUrl,
-          channelTitle: downloaded.channelTitle,
-          filePath: recoveredPath,
-          plainLyrics: downloaded.plainLyrics,
-          syncedLyrics: downloaded.syncedLyrics,
-          localThumbnailPath: downloaded.localThumbnailPath,
-        );
-        await box.put(videoId, repaired);
-        _downloadStatus[videoId] = DownloadStatus.downloaded;
-        _downloadErrors.remove(videoId);
-        notifyListeners();
-        return repaired;
-      }
-
-      await box.delete(videoId);
+    if (downloaded == null) {
       _downloadStatus.remove(videoId);
       _downloadErrors.remove(videoId);
+      return null;
+    }
+    final repaired = await _sanitizeDownloadedVideoEntry(box, downloaded);
+    if (repaired == null) {
       notifyListeners();
       return null;
     }
-    return downloaded;
+    if (_didDownloadedEntryChange(downloaded, repaired)) {
+      notifyListeners();
+    }
+    return repaired;
   }
 
   Future<DownloadedVideo?> resolvePlayableDownloadedVideo(
@@ -637,6 +633,113 @@ class DownloadService with ChangeNotifier {
       // Best effort de recuperación local.
     }
     return null;
+  }
+
+  Future<String?> _findRecoveredThumbnailPath(String videoId) async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      const extensions = ['jpg', 'jpeg', 'png', 'webp'];
+      for (final ext in extensions) {
+        final candidate = File('${appDir.path}/${videoId}_thumb.$ext');
+        if (await candidate.exists()) {
+          return candidate.path;
+        }
+      }
+    } catch (_) {
+      // Best effort de recuperación local.
+    }
+    return null;
+  }
+
+  Future<void> _ensureInitialDownloadsSync() async {
+    try {
+      await _initialDownloadsSync;
+    } catch (_) {
+      // Evitamos bloquear la UI si falla la sincronización inicial.
+    }
+  }
+
+  String? _normalizePathOrNull(String? value) {
+    if (value == null) return null;
+    final normalized = value.trim();
+    return normalized.isEmpty ? null : normalized;
+  }
+
+  Future<String?> _resolveExistingDownloadPath(
+    String videoId, {
+    required String preferredPath,
+  }) async {
+    final normalized = preferredPath.trim();
+    if (normalized.isNotEmpty && await File(normalized).exists()) {
+      return normalized;
+    }
+    return _findRecoveredDownloadPath(videoId);
+  }
+
+  Future<String?> _resolveExistingThumbnailPath(
+    String videoId, {
+    String? preferredPath,
+  }) async {
+    final normalized = _normalizePathOrNull(preferredPath);
+    if (normalized != null && await File(normalized).exists()) {
+      return normalized;
+    }
+    return _findRecoveredThumbnailPath(videoId);
+  }
+
+  bool _didDownloadedEntryChange(
+    DownloadedVideo before,
+    DownloadedVideo after,
+  ) {
+    return before.filePath != after.filePath ||
+        _normalizePathOrNull(before.localThumbnailPath) !=
+            _normalizePathOrNull(after.localThumbnailPath);
+  }
+
+  Future<DownloadedVideo?> _sanitizeDownloadedVideoEntry(
+    Box<DownloadedVideo> box,
+    DownloadedVideo downloaded,
+  ) async {
+    final resolvedFilePath = await _resolveExistingDownloadPath(
+      downloaded.videoId,
+      preferredPath: downloaded.filePath,
+    );
+    if (resolvedFilePath == null || resolvedFilePath.isEmpty) {
+      await box.delete(downloaded.videoId);
+      _downloadStatus.remove(downloaded.videoId);
+      _downloadErrors.remove(downloaded.videoId);
+      return null;
+    }
+
+    final resolvedThumbPath = await _resolveExistingThumbnailPath(
+      downloaded.videoId,
+      preferredPath: downloaded.localThumbnailPath,
+    );
+    final normalizedOriginalThumb = _normalizePathOrNull(
+      downloaded.localThumbnailPath,
+    );
+
+    if (resolvedFilePath == downloaded.filePath &&
+        resolvedThumbPath == normalizedOriginalThumb) {
+      _downloadStatus[downloaded.videoId] = DownloadStatus.downloaded;
+      _downloadErrors.remove(downloaded.videoId);
+      return downloaded;
+    }
+
+    final repaired = DownloadedVideo(
+      videoId: downloaded.videoId,
+      title: downloaded.title,
+      thumbnailUrl: downloaded.thumbnailUrl,
+      channelTitle: downloaded.channelTitle,
+      filePath: resolvedFilePath,
+      plainLyrics: downloaded.plainLyrics,
+      syncedLyrics: downloaded.syncedLyrics,
+      localThumbnailPath: resolvedThumbPath,
+    );
+    await box.put(downloaded.videoId, repaired);
+    _downloadStatus[downloaded.videoId] = DownloadStatus.downloaded;
+    _downloadErrors.remove(downloaded.videoId);
+    return repaired;
   }
 
   Future<bool> isVideoDownloaded(String videoId) async {

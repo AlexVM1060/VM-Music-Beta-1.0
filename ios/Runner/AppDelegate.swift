@@ -221,11 +221,15 @@ import MediaPlayer
       guard let playlist = collection as? MPMediaPlaylist else { continue }
       let name = (playlist.name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
       if name.isEmpty { continue }
-      output.append([
+      var payload: [String: Any] = [
         "id": String(playlist.persistentID),
         "name": name,
         "trackCount": playlist.count
-      ])
+      ]
+      if let artworkBase64 = playlistArtworkBase64(playlist: playlist) {
+        payload["artworkBase64"] = artworkBase64
+      }
+      output.append(payload)
     }
 
     output.sort { left, right in
@@ -234,6 +238,16 @@ import MediaPlayer
       return leftName < rightName
     }
     return output
+  }
+
+  private func playlistArtworkBase64(playlist: MPMediaPlaylist) -> String? {
+    guard let artwork = playlist.representativeItem?.artwork else { return nil }
+    let targetSize = CGSize(width: 240, height: 240)
+    guard let image = artwork.image(at: targetSize),
+          let imageData = image.jpegData(compressionQuality: 0.86) else {
+      return nil
+    }
+    return imageData.base64EncodedString()
   }
 
   private func fetchTracksForPlaylist(playlistId: UInt64) -> [[String: Any]] {

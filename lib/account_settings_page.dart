@@ -109,7 +109,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     _SettingSwitchRow(
                       title: 'Carátula animada',
                       subtitle:
-                          'Activa el efecto de caratula animada en la pantalla de reproducción',
+                          'Activa una animación natural con procesamiento IA en la carátula durante la reproducción',
                       value: settings.animatedCutoutCovers,
                       onChanged: (value) =>
                           settings.setAnimatedCutoutCovers(value),
