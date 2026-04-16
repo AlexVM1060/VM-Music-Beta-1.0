@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' show ImageFilter;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -121,8 +122,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             : CupertinoButton(
                 padding: EdgeInsets.zero,
                 minimumSize: const Size(28, 28),
-                onPressed: () =>
-                    _showEditPlaylistDialog(playlistService: playlistService),
+                onPressed: () => _showEditPlaylistDialog(
+                  playlistService: playlistService,
+                  downloadService: downloadService,
+                ),
                 child: const Icon(CupertinoIcons.pencil, size: 20),
               ),
       ),
@@ -274,38 +277,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       child: InkWell(
                         borderRadius: BorderRadius.circular(14),
                         onTap: () async {
-                          final local = await _resolveLocalVideoForPlayback(
+                          await _playPlaylistTrackAtIndex(
                             downloadService: downloadService,
-                            videoId: video.videoId,
-                            cached: downloadedVideo,
-                          );
-                          if (!context.mounted) return;
-
-                          if (local != null) {
-                            final thumb =
-                                (local.localThumbnailPath != null &&
-                                    local.localThumbnailPath!.isNotEmpty)
-                                ? local.localThumbnailPath!
-                                : local.thumbnailUrl;
-                            await videoManager.playLocalFileFromUserSelection(
-                              context,
-                              id: local.videoId,
-                              filePath: local.filePath,
-                              title: local.title,
-                              thumbnailUrl: thumb,
-                              artist: local.channelTitle,
-                              localPlainLyrics: local.plainLyrics,
-                              localSyncedLyrics: local.syncedLyrics,
-                            );
-                            return;
-                          }
-
-                          await videoManager.playFromUserSelection(
-                            context,
-                            video.videoId,
-                            preferredThumbnailUrl: video.thumbnailUrl,
-                            preferredTitle: video.title,
-                            preferredArtist: video.channelTitle,
+                            videoManager: videoManager,
+                            displayVideos: displayVideos,
+                            downloadedById: downloadedById,
+                            startIndex: videoIndex,
                           );
                         },
                         child: Container(
@@ -360,6 +337,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                   children: [
                                     Text(
                                       video.title,
+                                      style: CupertinoTheme.of(
+                                        context,
+                                      ).textTheme.textStyle.copyWith(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w700,
+                                        color: CupertinoColors.label.resolveFrom(
+                                          context,
+                                        ),
+                                        letterSpacing: -0.1,
+                                      ),
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -368,8 +355,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       video.channelTitle,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: 12,
+                                      style: CupertinoTheme.of(
+                                        context,
+                                      ).textTheme.textStyle.copyWith(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w500,
                                         color: CupertinoColors.secondaryLabel
                                             .resolveFrom(context),
                                       ),
@@ -378,113 +368,80 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                 ),
                               ),
                               const SizedBox(width: 8),
-                              _DownloadStatusIndicator(
-                                status: downloadService.getDownloadStatus(
-                                  video.videoId,
-                                ),
-                                progress: downloadService.getDownloadProgress(
-                                  video.videoId,
-                                ),
-                                isDownloaded: downloadedVideo != null,
-                                onPressed: downloadedVideo != null
-                                    ? null
-                                    : () async {
-                                        if (downloadService.isDownloading(
-                                          video.videoId,
-                                        )) {
-                                          if (!context.mounted) return;
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            const SnackBar(
-                                              content: Text(
-                                                'Esta canción ya se está descargando.',
-                                              ),
-                                            ),
-                                          );
-                                          return;
-                                        }
-
-                                        final alreadyDownloaded =
-                                            await downloadService
-                                                .isVideoDownloaded(
-                                                  video.videoId,
-                                                );
-                                        if (alreadyDownloaded) {
-                                          if (!context.mounted) return;
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            const SnackBar(
-                                              content: Text(
-                                                'Esta canción ya está descargada.',
-                                              ),
-                                            ),
-                                          );
-                                          return;
-                                        }
-
-                                        final started =
-                                            await _downloadUsingLargePlayerMethod(
-                                              downloadService: downloadService,
-                                              videoManager: videoManager,
-                                              video: video,
-                                            );
-                                        if (!context.mounted) return;
-                                        if (!started) {
-                                          final err = downloadService
-                                              .getDownloadError(video.videoId);
-                                          final fallbackMessage =
-                                              downloadService.isDownloading(
-                                                video.videoId,
-                                              )
-                                              ? 'La descarga ya está en curso.'
-                                              : 'No se pudo iniciar la descarga.';
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                err ?? fallbackMessage,
-                                              ),
-                                            ),
-                                          );
-                                        }
-                                      },
-                              ),
-                              IconButton(
-                                icon: const Icon(
-                                  CupertinoIcons.delete,
-                                  color: CupertinoColors.systemRed,
-                                ),
-                                onPressed: () async {
-                                  final wasDownloaded = await downloadService
-                                      .isVideoDownloaded(video.videoId);
-                                  await downloadService.deleteVideo(
-                                    video.videoId,
-                                  );
-                                  await playlistService.removeVideoFromPlaylist(
-                                    _currentPlaylist.name,
-                                    video.videoId,
-                                  );
-
-                                  if (!context.mounted) return;
-
-                                  setState(() {
-                                    _currentPlaylist.videos.removeWhere(
-                                      (v) => v.videoId == video.videoId,
-                                    );
-                                  });
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        wasDownloaded
-                                            ? 'Canción eliminada de la playlist y de descargas locales.'
-                                            : 'Canción eliminada de la playlist.',
-                                      ),
+                              if (downloadedVideo != null) ...[
+                                Container(
+                                  padding: const EdgeInsets.all(5),
+                                  decoration: BoxDecoration(
+                                    color: CupertinoColors.tertiarySystemFill
+                                        .resolveFrom(context),
+                                    borderRadius: BorderRadius.circular(999),
+                                    border: Border.all(
+                                      color: CupertinoColors.separator
+                                          .resolveFrom(context)
+                                          .withValues(alpha: 0.32),
+                                      width: 0.5,
                                     ),
+                                  ),
+                                  child: const Icon(
+                                    CupertinoIcons.arrow_down_circle_fill,
+                                    size: 14,
+                                    color: CupertinoColors.systemGreen,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                              CupertinoButton(
+                                padding: EdgeInsets.zero,
+                                minimumSize: const Size(32, 32),
+                                onPressed: () async {
+                                  final action = await showCupertinoModalPopup<
+                                    String
+                                  >(
+                                    context: context,
+                                    builder: (sheetContext) {
+                                      return CupertinoActionSheet(
+                                        title: Text(
+                                          video.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        actions: [
+                                          CupertinoActionSheetAction(
+                                            isDestructiveAction: true,
+                                            onPressed: () {
+                                              Navigator.of(
+                                                sheetContext,
+                                              ).pop('remove');
+                                            },
+                                            child: const Text(
+                                              'Eliminar de la playlist',
+                                            ),
+                                          ),
+                                        ],
+                                        cancelButton: CupertinoActionSheetAction(
+                                          onPressed: () {
+                                            Navigator.of(sheetContext).pop();
+                                          },
+                                          child: const Text('Cancelar'),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                  if (!context.mounted || action != 'remove') {
+                                    return;
+                                  }
+                                  await _removeTrackFromPlaylistAndLocal(
+                                    video: video,
+                                    playlistService: playlistService,
+                                    downloadService: downloadService,
                                   );
                                 },
+                                child: Icon(
+                                  CupertinoIcons.ellipsis_circle,
+                                  size: 24,
+                                  color: CupertinoColors.secondaryLabel
+                                      .resolveFrom(context),
+                                ),
                               ),
                             ],
                           ),
@@ -584,8 +541,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                     );
                     return;
                   }
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Auto-descarga desactivada.')),
+                  _showQueueIosToast(
+                    context,
+                    message: 'Auto-descarga desactivada.',
+                    icon: CupertinoIcons.arrow_down_circle,
                   );
                 },
               ),
@@ -876,19 +835,55 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     await videoManager.playQueueItem(first);
   }
 
-  Future<bool> _downloadUsingLargePlayerMethod({
+  Future<void> _playPlaylistTrackAtIndex({
     required DownloadService downloadService,
     required VideoPlayerManager videoManager,
-    required VideoHistory video,
+    required List<VideoHistory> displayVideos,
+    required Map<String, DownloadedVideo> downloadedById,
+    required int startIndex,
   }) async {
-    try {
-      return downloadService.downloadVideoUsingClone(
-        video: video,
-        videoManager: videoManager,
-      );
-    } catch (_) {
-      return false;
-    }
+    if (displayVideos.isEmpty) return;
+    final queueItems = await _buildPlaylistQueueItems(
+      downloadService: downloadService,
+      displayVideos: displayVideos,
+      downloadedById: downloadedById,
+    );
+    if (queueItems.isEmpty) return;
+
+    final safeStart = startIndex.clamp(0, queueItems.length - 1);
+    final ordered = <PlaybackQueueItem>[
+      ...queueItems.skip(safeStart),
+      ...queueItems.take(safeStart),
+    ];
+    final first = ordered.first;
+    final rest = ordered.skip(1).toList(growable: false);
+    final queueLabel = 'Playlist · ${_currentPlaylist.name}';
+    videoManager.replaceManualPlaybackQueue(rest, queueTitle: queueLabel);
+    await videoManager.playQueueItem(first);
+  }
+
+  Future<void> _removeTrackFromPlaylistAndLocal({
+    required VideoHistory video,
+    required PlaylistService playlistService,
+    required DownloadService downloadService,
+  }) async {
+    final wasDownloaded = await downloadService.isVideoDownloaded(video.videoId);
+    await downloadService.deleteVideo(video.videoId);
+    await playlistService.removeVideoFromPlaylist(
+      _currentPlaylist.name,
+      video.videoId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _currentPlaylist.videos.removeWhere((v) => v.videoId == video.videoId);
+    });
+    _showQueueIosToast(
+      context,
+      message: wasDownloaded
+          ? 'Canción eliminada de playlist y descargas locales.'
+          : 'Canción eliminada de la playlist.',
+      icon: CupertinoIcons.check_mark_circled_solid,
+    );
   }
 
   Future<DownloadedVideo?> _resolveLocalVideoForPlayback({
@@ -907,6 +902,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   Future<void> _showEditPlaylistDialog({
     required PlaylistService playlistService,
+    required DownloadService downloadService,
   }) async {
     final nameController = TextEditingController(text: _currentPlaylist.name);
     String? errorText;
@@ -1051,6 +1047,55 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   ),
                 ),
                 actions: [
+                  if (!_isFavoritesPlaylist)
+                    CupertinoDialogAction(
+                      isDestructiveAction: true,
+                      onPressed: () async {
+                        final confirmed = await showCupertinoDialog<bool>(
+                          context: dialogContext,
+                          builder: (confirmContext) => CupertinoAlertDialog(
+                            title: const Text('Eliminar playlist'),
+                            content: const Padding(
+                              padding: EdgeInsets.only(top: 8),
+                              child: Text(
+                                'Esto eliminará la playlist y también '
+                                'todas las descargas locales de sus canciones.',
+                              ),
+                            ),
+                            actions: [
+                              CupertinoDialogAction(
+                                onPressed: () =>
+                                    Navigator.of(confirmContext).pop(false),
+                                child: const Text('Cancelar'),
+                              ),
+                              CupertinoDialogAction(
+                                isDestructiveAction: true,
+                                onPressed: () =>
+                                    Navigator.of(confirmContext).pop(true),
+                                child: const Text('Eliminar'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirmed != true) return;
+                        try {
+                          await _deletePlaylistAndLocalData(
+                            playlistService: playlistService,
+                            downloadService: downloadService,
+                          );
+                          if (!dialogContext.mounted) return;
+                          Navigator.of(dialogContext).pop();
+                        } catch (e) {
+                          setDialogState(() {
+                            errorText = e.toString().replaceFirst(
+                              'Exception: ',
+                              '',
+                            );
+                          });
+                        }
+                      },
+                      child: const Text('Eliminar playlist'),
+                    ),
                   CupertinoDialogAction(
                     onPressed: () => Navigator.of(dialogContext).pop(),
                     child: const Text('Cancelar'),
@@ -1114,6 +1159,39 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     } finally {
       nameController.dispose();
     }
+  }
+
+  Future<void> _deletePlaylistAndLocalData({
+    required PlaylistService playlistService,
+    required DownloadService downloadService,
+  }) async {
+    if (_isFavoritesPlaylist) {
+      throw Exception('No se puede eliminar la playlist Favoritos');
+    }
+
+    final playlistName = _currentPlaylist.name;
+    final videos = List<VideoHistory>.from(_currentPlaylist.videos);
+    final coverPath = _currentPlaylist.coverUrl;
+
+    await downloadService.setPlaylistAutoDownload(playlistName, false);
+    for (final video in videos) {
+      await downloadService.deleteVideo(video.videoId);
+    }
+    await playlistService.deletePlaylist(playlistName);
+    await _deletePlaylistCoverIfOwned(coverPath);
+
+    if (!mounted) return;
+    if (widget.onBack != null) {
+      widget.onBack!();
+    } else {
+      Navigator.of(context).maybePop();
+    }
+    if (!mounted) return;
+    _showQueueIosToast(
+      context,
+      message: 'Playlist eliminada y descargas locales borradas.',
+      icon: CupertinoIcons.trash_fill,
+    );
   }
 
   Future<String> _persistPlaylistCoverImage({
@@ -1190,66 +1268,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         : alreadyDownloaded > 0
         ? 'Auto-descarga activa. Ya estaban descargadas.'
         : 'Auto-descarga activa.';
-    ScaffoldMessenger.of(
+    _showQueueIosToast(
       context,
-    ).showSnackBar(SnackBar(content: Text(message)));
-  }
-}
-
-class _DownloadStatusIndicator extends StatelessWidget {
-  final DownloadStatus status;
-  final double progress;
-  final bool isDownloaded;
-  final VoidCallback? onPressed;
-
-  const _DownloadStatusIndicator({
-    required this.status,
-    required this.progress,
-    required this.isDownloaded,
-    required this.onPressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    Widget child;
-
-    if (isDownloaded || status == DownloadStatus.downloaded) {
-      child = const Icon(
-        CupertinoIcons.check_mark_circled_solid,
-        color: CupertinoColors.systemGreen,
-      );
-    } else if (status == DownloadStatus.downloading) {
-      child = SizedBox(
-        width: 18,
-        height: 18,
-        child: CupertinoActivityIndicator.partiallyRevealed(
-          progress: progress.clamp(0.0, 1.0),
-          radius: 9,
-        ),
-      );
-    } else if (status == DownloadStatus.error) {
-      child = const Icon(
-        CupertinoIcons.exclamationmark_circle,
-        color: CupertinoColors.systemRed,
-      );
-    } else {
-      child = Icon(
-        CupertinoIcons.arrow_down_circle,
-        color: onPressed == null
-            ? CupertinoColors.tertiaryLabel.resolveFrom(context)
-            : CupertinoColors.label.resolveFrom(context),
-      );
-    }
-
-    return CupertinoButton(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      minimumSize: const Size(30, 30),
-      onPressed:
-          (status == DownloadStatus.downloading ||
-              status == DownloadStatus.downloaded)
-          ? null
-          : onPressed,
-      child: child,
+      message: message,
+      icon: CupertinoIcons.check_mark_circled_solid,
     );
   }
 }
@@ -1269,56 +1291,47 @@ class _PlaylistActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final border = CupertinoColors.separator
-        .resolveFrom(context)
-        .withValues(alpha: 0.32);
-    final labelColor = isPrimary
-        ? CupertinoColors.white
-        : CupertinoColors.label.resolveFrom(context);
-
+    final borderRadius = BorderRadius.circular(14);
+    final primaryColor = const Color(0xFFE83C64);
     return CupertinoButton(
       padding: EdgeInsets.zero,
-      minimumSize: const Size(0, 44),
+      minimumSize: Size.zero,
       onPressed: onPressed,
-      child: Container(
-        height: 42,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: border, width: 0.6),
-          gradient: isPrimary
-              ? const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF1DB954), Color(0xFF0C9C4A)],
-                )
-              : LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    CupertinoColors.systemGrey6
-                        .resolveFrom(context)
-                        .withValues(alpha: 0.88),
-                    CupertinoColors.systemGrey5
-                        .resolveFrom(context)
-                        .withValues(alpha: 0.78),
-                  ],
-                ),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 16, color: labelColor),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: TextStyle(
-                fontFamily: '.SF Pro Text',
-                fontWeight: FontWeight.w700,
-                fontSize: 14,
-                color: labelColor,
+      child: ClipRRect(
+        borderRadius: borderRadius,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: Container(
+            height: 34,
+            decoration: BoxDecoration(
+              borderRadius: borderRadius,
+              color: isPrimary
+                  ? primaryColor.withValues(alpha: 0.88)
+                  : Colors.white.withValues(alpha: 0.11),
+              border: Border.all(
+                color: isPrimary
+                    ? Colors.white.withValues(alpha: 0.26)
+                    : Colors.white.withValues(alpha: 0.18),
+                width: 0.55,
               ),
             ),
-          ],
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon, size: 14, color: Colors.white),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    fontFamily: '.SF Pro Text',
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1331,6 +1344,7 @@ void _showQueueIosToast(
   required IconData icon,
 }) {
   final overlay = Overlay.of(context, rootOverlay: true);
+  final isDark = Theme.of(context).brightness == Brightness.dark;
 
   late OverlayEntry entry;
   entry = OverlayEntry(
@@ -1343,7 +1357,11 @@ void _showQueueIosToast(
             alignment: Alignment.bottomCenter,
             child: Padding(
               padding: EdgeInsets.only(bottom: bottomInset + 130),
-              child: _QueueIosToast(message: message, icon: icon),
+              child: _QueueIosToast(
+                message: message,
+                icon: icon,
+                isDark: isDark,
+              ),
             ),
           ),
         ),
@@ -1359,8 +1377,13 @@ void _showQueueIosToast(
 class _QueueIosToast extends StatefulWidget {
   final String message;
   final IconData icon;
+  final bool isDark;
 
-  const _QueueIosToast({required this.message, required this.icon});
+  const _QueueIosToast({
+    required this.message,
+    required this.icon,
+    required this.isDark,
+  });
 
   @override
   State<_QueueIosToast> createState() => _QueueIosToastState();
@@ -1407,51 +1430,61 @@ class _QueueIosToastState extends State<_QueueIosToast>
 
   @override
   Widget build(BuildContext context) {
-    final background = CupertinoDynamicColor.resolve(
-      CupertinoColors.systemGrey6.withValues(alpha: 0.96),
-      context,
-    );
-    final border = CupertinoDynamicColor.resolve(
-      CupertinoColors.separator.withValues(alpha: 0.32),
-      context,
-    );
     return FadeTransition(
       opacity: _opacity,
       child: SlideTransition(
         position: _slide,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: background,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: border, width: 0.6),
-            boxShadow: [
-              BoxShadow(
-                color: CupertinoColors.black.withValues(alpha: 0.18),
-                blurRadius: 14,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  widget.icon,
-                  size: 18,
-                  color: CupertinoColors.systemPink.resolveFrom(context),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: widget.isDark
+                    ? const Color(0xFF0D0F13).withValues(alpha: 0.84)
+                    : Colors.white.withValues(alpha: 0.9),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: widget.isDark
+                      ? Colors.white.withValues(alpha: 0.14)
+                      : Colors.black.withValues(alpha: 0.08),
+                  width: 0.6,
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  widget.message,
-                  style: const TextStyle(
-                    fontFamily: '.SF Pro Text',
-                    fontWeight: FontWeight.w700,
-                    fontSize: 13,
+                boxShadow: [
+                  BoxShadow(
+                    color: CupertinoColors.black.withValues(alpha: 0.18),
+                    blurRadius: 14,
+                    offset: const Offset(0, 6),
                   ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
                 ),
-              ],
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      widget.icon,
+                      size: 18,
+                      color: CupertinoColors.systemPink.resolveFrom(context),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      widget.message,
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                        color: widget.isDark ? Colors.white : Colors.black,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),

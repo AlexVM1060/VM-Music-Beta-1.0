@@ -9,6 +9,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:provider/provider.dart';
@@ -187,7 +188,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             _video!,
             preferLowResolution: dataSaverMode,
           ),
-          channelTitle: _video!.author,
+          channelTitle: cleanArtistName(_video!.author),
           duration: _video!.duration, // Se pasa la duración del video
         );
 
@@ -510,7 +511,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                             _video!,
                             preferLowResolution: preferLowResolution,
                           ),
-                          channelTitle: _video!.author,
+                          channelTitle: cleanArtistName(_video!.author),
                           watchedAt: DateTime.now(),
                         );
                         await playlistService.addVideoToPlaylist(

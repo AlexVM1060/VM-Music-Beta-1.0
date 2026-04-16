@@ -19,6 +19,7 @@ import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/now_playing_artwork_service.dart';
+import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:video_player/video_player.dart';
@@ -45,6 +46,8 @@ class PlaybackQueueItem {
     this.localSyncedLyrics,
   });
 }
+
+enum LocalPlaybackQueueStrategy { downloads, recommendations }
 
 class DownloadSourceInfo {
   final String sourceUrl;
@@ -110,6 +113,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   );
   static const MethodChannel _iosSiriPlaybackChannel = MethodChannel(
     'com.vm.music.beta/siri_playback',
+  );
+  static const MethodChannel _songShareChannel = MethodChannel(
+    'com.vm.music.beta/song_share',
   );
   final HistoryService _historyService = HistoryService();
   final PlaylistService _playlistService = PlaylistService();
@@ -212,12 +218,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   int _lyricsEpoch = 0;
   bool _iosLockScreenFavoriteBound = false;
   bool _iosSiriPlaybackBound = false;
+  bool _songShareBound = false;
   static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
   static const Duration _searchVideosCacheTtl = Duration(minutes: 12);
   static const int _searchVideosCacheMaxEntries = 220;
   static const double _defaultPlaybackVolume = 3;
+  static const double _karaokeVolumeBoostMultiplier = 2.0;
   static const Duration _crossfadeDuration = Duration(seconds: 4);
   static const Duration _djMinMixDuration = Duration(seconds: 6);
   static const Duration _djMaxMixDuration = Duration(seconds: 12);
@@ -260,6 +268,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _bindSystemMediaControls();
     _bindIosLockScreenFavoriteCommand();
     _bindIosSiriPlaybackCommand();
+    _bindSharedSongChannel();
     WidgetsBinding.instance.addObserver(this);
     _attachActivePlayerSubscriptions();
   }
@@ -320,7 +329,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool get isFullScreen => _isFullScreen;
   String? get trackTitle => _trackTitle;
   String? get trackThumbnailUrl => _trackThumbnailUrl;
-  String? get trackArtist => _trackArtist;
+  String? get trackArtist {
+    final artist = cleanArtistName(_trackArtist);
+    return artist.isEmpty ? null : artist;
+  }
   Duration get trackDuration => _trackDuration;
   Duration get position => _position;
   Duration get bufferedPosition => _bufferedPosition;
@@ -370,6 +382,60 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool get isInBackground => false;
 
   void init() {}
+
+  Future<List<PlaybackQueueItem>> fetchQueueStyleRecommendations({
+    int limit = 24,
+    String? seedVideoId,
+  }) async {
+    if (limit <= 0) return const <PlaybackQueueItem>[];
+
+    final normalizedSeed = seedVideoId?.trim();
+    if (normalizedSeed != null && normalizedSeed.isNotEmpty) {
+      return _fetchQueueRecommendationsFromSeed(
+        videoId: normalizedSeed,
+        limit: limit,
+      );
+    }
+
+    final fromQueue = _playbackQueue
+        .where((item) => !item.isLocal && item.videoId.trim().isNotEmpty)
+        .take(limit)
+        .toList(growable: false);
+    if (fromQueue.isNotEmpty) return fromQueue;
+
+    final currentId = _currentVideoId?.trim();
+    if (currentId == null || currentId.isEmpty || _isLocal) {
+      return const <PlaybackQueueItem>[];
+    }
+
+    return _fetchQueueRecommendationsFromSeed(videoId: currentId, limit: limit);
+  }
+
+  Future<List<PlaybackQueueItem>> _fetchQueueRecommendationsFromSeed({
+    required String videoId,
+    required int limit,
+  }) async {
+    try {
+      final seedVideo = await _getVideoWithRetry(videoId).timeout(
+        const Duration(seconds: 10),
+      );
+      final related = await _getRelatedQueueWithRetry(seedVideo);
+      if (related.isNotEmpty) {
+        _rememberRecommendedQueue(related);
+      }
+      return related
+          .where((item) => !item.isLocal && item.videoId.trim().isNotEmpty)
+          .take(limit)
+          .toList(growable: false);
+    } catch (e, s) {
+      log(
+        'Error obteniendo recomendaciones tipo cola',
+        error: e,
+        stackTrace: s,
+      );
+      return const <PlaybackQueueItem>[];
+    }
+  }
 
   void clearErrorMessage() {
     if (_errorMessage == null) return;
@@ -559,6 +625,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required String artist,
     String? localPlainLyrics,
     String? localSyncedLyrics,
+    LocalPlaybackQueueStrategy queueStrategy =
+        LocalPlaybackQueueStrategy.downloads,
   }) async {
     final preserveQueue = _shouldPreserveQueueForTarget(
       targetVideoId: id,
@@ -579,6 +647,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       localPlainLyrics: localPlainLyrics,
       localSyncedLyrics: localSyncedLyrics,
       preserveExistingQueue: preserveQueue,
+      queueStrategy: queueStrategy,
     );
   }
 
@@ -673,15 +742,18 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (handler == null) return;
     final videoId = _currentVideoId;
     final title = (_trackTitle ?? '').trim();
-    final artist = (_trackArtist ?? '').trim();
+    final artist = cleanArtistName(_trackArtist);
     final thumb = _trackThumbnailUrl;
     if (videoId == null || videoId.isEmpty || title.isEmpty) return;
+    final isIos = !kIsWeb && Platform.isIOS;
     final fallbackArtUri = _buildArtUri(thumb);
     final cachedArtUri = _cachedSystemArtUri(
       videoId: videoId,
       thumbnailSource: thumb,
     );
-    final initialArtUri = cachedArtUri ?? fallbackArtUri;
+    // En iOS evitamos enviar el thumbnail crudo de YouTube al lockscreen.
+    // Solo usamos artwork ya procesado/recortado.
+    final initialArtUri = cachedArtUri ?? (isIos ? null : fallbackArtUri);
     handler.syncNowPlaying(
       id: videoId,
       title: title,
@@ -695,14 +767,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (thumb == null || thumb.trim().isEmpty) return;
     final requestEpoch = ++_nowPlayingArtworkEpoch;
     unawaited(() async {
-      final processedUri = await _nowPlayingArtworkService
-          .resolveNowPlayingArtUri(videoId: videoId, thumbnailSource: thumb);
+      final processedUri = await _prepareSystemArtwork(
+        videoId: videoId,
+        thumbnailSource: thumb,
+      );
       if (processedUri == null) return;
       if (requestEpoch != _nowPlayingArtworkEpoch) return;
       if (_currentVideoId != videoId) return;
       if ((_trackThumbnailUrl ?? '').trim() != thumb.trim()) return;
-      _systemArtworkByVideoId[videoId] = processedUri;
-      _systemArtworkSourceByVideoId[videoId] = thumb.trim();
       if (initialArtUri?.toString() == processedUri.toString()) return;
       handler.syncNowPlaying(
         id: videoId,
@@ -788,6 +860,57 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (song.trim().isEmpty) return;
       await _playRequestedSongFromSiri(song: song, artist: artist);
     } catch (_) {}
+  }
+
+  void _bindSharedSongChannel() {
+    if (kIsWeb || (!Platform.isIOS && !Platform.isAndroid)) return;
+    if (_songShareBound) return;
+    _songShareBound = true;
+    _songShareChannel.setMethodCallHandler((call) async {
+      if (call.method == 'onSharedSongReceived') {
+        final args = call.arguments;
+        if (args is Map) {
+          final payload = Map<String, dynamic>.from(
+            args.cast<dynamic, dynamic>(),
+          );
+          await _playSharedSongPayload(payload);
+        }
+        return;
+      }
+      throw MissingPluginException('Método no implementado: ${call.method}');
+    });
+    unawaited(_consumePendingSharedSongRequest());
+  }
+
+  Future<void> _consumePendingSharedSongRequest() async {
+    try {
+      final raw = await _songShareChannel.invokeMethod<Map<Object?, Object?>?>(
+        'consumePendingSharedSong',
+      );
+      if (raw == null) return;
+      final payload = Map<String, dynamic>.from(raw);
+      await _playSharedSongPayload(payload);
+    } catch (_) {}
+  }
+
+  Future<void> _playSharedSongPayload(Map<String, dynamic> payload) async {
+    final videoId = (payload['videoId'] ?? '').toString().trim();
+    if (videoId.isEmpty) return;
+    final title = (payload['title'] ?? '').toString().trim();
+    final artist = (payload['artist'] ?? '').toString().trim();
+    final thumbnailUrl = (payload['thumbnailUrl'] ?? '').toString().trim();
+    final durationMsRaw = payload['durationMs'];
+    Duration? preferredDuration;
+    if (durationMsRaw is num && durationMsRaw > 0) {
+      preferredDuration = Duration(milliseconds: durationMsRaw.round());
+    }
+    await play(
+      videoId,
+      preferredThumbnailUrl: thumbnailUrl.isEmpty ? null : thumbnailUrl,
+      preferredTitle: title.isEmpty ? null : title,
+      preferredArtist: artist.isEmpty ? null : artist,
+      preferredDuration: preferredDuration,
+    );
   }
 
   Future<void> _playRequestedSongFromSiri({
@@ -892,7 +1015,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final title = (_trackTitle ?? '').trim();
     if (videoId.isEmpty || title.isEmpty) return;
     final thumbnail = (_trackThumbnailUrl ?? '').trim();
-    final artist = (_trackArtist ?? '').trim();
+    final artist = cleanArtistName(_trackArtist);
     final playlists = await _playlistService.getPlaylists();
     final favoritesExists = playlists.any(
       (playlist) => PlaylistService.isFavoritesPlaylistName(playlist.name),
@@ -981,6 +1104,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       unawaited(_consumePendingIosSiriRequest());
+      unawaited(_consumePendingSharedSongRequest());
     }
     if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.inactive) &&
@@ -1038,10 +1162,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _trackTitle = (preferredTitle != null && preferredTitle.trim().isNotEmpty)
         ? preferredTitle.trim()
         : null;
-    _trackArtist =
-        (preferredArtist != null && preferredArtist.trim().isNotEmpty)
-        ? preferredArtist.trim()
-        : null;
+    _trackArtist = cleanArtistName(preferredArtist);
+    if (_trackArtist != null && _trackArtist!.isEmpty) {
+      _trackArtist = null;
+    }
     _trackDuration = preferredDuration ?? Duration.zero;
     final dataSaverMode = _settingsService.dataSaverMode;
     final rawPreferredThumbnail =
@@ -1056,9 +1180,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             preferLowResolution: dataSaverMode,
           )
         : null;
-    if (effectivePreferredThumbnail != null &&
-        effectivePreferredThumbnail.isNotEmpty) {
-      _searchThumbnailOverrides[videoId] = effectivePreferredThumbnail;
+    if (rawPreferredThumbnail != null && rawPreferredThumbnail.isNotEmpty) {
+      _searchThumbnailOverrides[videoId] = rawPreferredThumbnail;
     }
     _trackThumbnailUrl = null;
     if (effectivePreferredThumbnail != null &&
@@ -1189,16 +1312,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         if (_currentVideoId != videoId) return;
 
         if (video != null) {
+          final metadataThumbnail = bestThumbnailForVideo(
+            video,
+            preferLowResolution: false,
+          );
           _trackTitle = video.title;
-          _trackThumbnailUrl =
-              (effectivePreferredThumbnail != null &&
-                  effectivePreferredThumbnail.isNotEmpty)
-              ? effectivePreferredThumbnail
-              : bestThumbnailForVideo(
-                  video,
-                  preferLowResolution: dataSaverMode,
-                );
-          _trackArtist = video.author;
+          _trackThumbnailUrl = metadataThumbnail.isNotEmpty
+              ? metadataThumbnail
+              : effectivePreferredThumbnail;
+          _trackArtist = cleanArtistName(video.author);
           _trackDuration = video.duration ?? Duration.zero;
           _syncSystemNowPlaying();
           _syncSystemPlaybackState(force: true);
@@ -1313,12 +1435,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _addCurrentTrackToHistory(String videoId) async {
     final title = _trackTitle;
     final thumbnail = _trackThumbnailUrl;
-    final artist = _trackArtist;
+    final artist = cleanArtistName(_trackArtist);
     if (title == null ||
         title.isEmpty ||
         thumbnail == null ||
         thumbnail.isEmpty ||
-        artist == null) {
+        artist.isEmpty) {
       return;
     }
     try {
@@ -1926,7 +2048,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           videoId: candidate.videoId,
           title: candidate.title,
           thumbnailUrl: candidate.thumbnailUrl,
-          artist: candidate.artist,
+          artist: cleanArtistName(candidate.artist),
           isLocal: false,
         ),
       );
@@ -2697,7 +2819,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           videoId: id,
           title: item.title,
           thumbnailUrl: _bestThumbnailUrl(item),
-          artist: item.author,
+          artist: cleanArtistName(item.author),
           isLocal: false,
         ),
       );
@@ -2762,7 +2884,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             videoId: id,
             title: item.title,
             thumbnailUrl: _bestThumbnailUrl(item),
-            artist: item.author,
+            artist: cleanArtistName(item.author),
             isLocal: false,
           ),
         );
@@ -3048,7 +3170,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           videoId: id,
           title: item.title,
           thumbnailUrl: _bestThumbnailUrl(item),
-          artist: item.author,
+          artist: cleanArtistName(item.author),
           isLocal: false,
         ),
       );
@@ -3119,7 +3241,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             videoId: id,
             title: item.title,
             thumbnailUrl: _bestThumbnailUrl(item),
-            artist: item.author,
+            artist: cleanArtistName(item.author),
             isLocal: false,
           ),
         );
@@ -3152,7 +3274,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             videoId: id,
             title: item.title,
             thumbnailUrl: _bestThumbnailUrl(item),
-            artist: item.author,
+            artist: cleanArtistName(item.author),
             isLocal: false,
           ),
         );
@@ -4198,6 +4320,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String? localPlainLyrics,
     String? localSyncedLyrics,
     bool preserveExistingQueue = false,
+    LocalPlaybackQueueStrategy queueStrategy =
+        LocalPlaybackQueueStrategy.downloads,
   }) async {
     _rememberCurrentForHistory();
     _isAiStemsLoading = false;
@@ -4213,7 +4337,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _isFullScreen = false;
     _trackTitle = title;
     _trackThumbnailUrl = thumbnailUrl;
-    _trackArtist = artist;
+    _trackArtist = cleanArtistName(artist);
     _currentStreamUrl = filePath;
     _position = Duration.zero;
     _bufferedPosition = Duration.zero;
@@ -4275,7 +4399,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           id,
           preserveExistingQueue: preserveExistingQueue,
         )) {
-          unawaited(_loadLocalQueue(currentVideoId: id));
+          if (queueStrategy == LocalPlaybackQueueStrategy.recommendations) {
+            unawaited(
+              _loadOnlineQueueFallbackFromCurrentContext(currentVideoId: id),
+            );
+          } else {
+            unawaited(_loadLocalQueue(currentVideoId: id));
+          }
         }
       } else if (!preserveExistingQueue) {
         _clearQueueForAutoplayDisabled();
@@ -4347,7 +4477,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       videoId: videoId,
       title: title,
       thumbnailUrl: thumbnailUrl,
-      artist: artist,
+      artist: cleanArtistName(artist),
       isLocal: false,
     );
     return _enqueueManualQueueItem(item);
@@ -4367,7 +4497,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       videoId: videoId,
       title: title,
       thumbnailUrl: thumbnailUrl,
-      artist: artist,
+      artist: cleanArtistName(artist),
       isLocal: true,
       localFilePath: filePath,
       localPlainLyrics: localPlainLyrics,
@@ -4484,6 +4614,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     } else {
       unawaited(_restoreOriginalAudioIfUsingAiStems());
     }
+    _volumeFadeEpoch++;
+    unawaited(_applyPlaybackVolumeSetting());
     unawaited(_applyAudioEffects());
     notifyListeners();
   }
@@ -4495,7 +4627,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         await _iosAudioEffectsChannel
             .invokeMethod<void>('setKaraokeMode', <String, Object>{
               'enabled': _karaokeModeEnabled && !_usingAiInstrumental,
-              'amount': _karaokeModeEnabled ? 2.0 : 0.0,
+              'amount': _karaokeModeEnabled ? 1.8 : 0.0,
             });
         _audioEffectsConfigured = true;
       } catch (e, s) {
@@ -4549,7 +4681,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       var enhancerGain = 0.0;
-      if (effectsEnabled) enhancerGain += 1.1;
+      if (effectsEnabled) enhancerGain += 2.2;
       await enhancer.setTargetGain(enhancerGain.clamp(0.0, 2.4));
       _audioEffectsConfigured = true;
     } catch (e, s) {
@@ -4682,9 +4814,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _applyPlaybackVolumeSetting() async {
     try {
-      final targetVolume = _settingsService.normalizeVolume
-          ? 1.0
-          : _defaultPlaybackVolume;
+      final targetVolume = _targetPlaybackVolume();
       await _player.setVolume(targetVolume);
       await _crossfadePlayer.setVolume(0.0);
     } catch (_) {
@@ -4786,9 +4916,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _applyTrackStartFadeInIfEnabled() async {
     if (!_isMixingEnabled) return;
     final fadeId = ++_volumeFadeEpoch;
-    final targetVolume = _settingsService.normalizeVolume
-        ? 1.0
-        : _defaultPlaybackVolume;
+    final targetVolume = _targetPlaybackVolume();
     try {
       await _player.setVolume(0.0);
       const stepCount = 8;
@@ -4880,6 +5008,48 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  double _targetPlaybackVolume() {
+    final baseVolume = _settingsService.normalizeVolume
+        ? 1.0
+        : _defaultPlaybackVolume;
+    if (!_karaokeModeEnabled) return baseVolume;
+    return baseVolume * _karaokeVolumeBoostMultiplier;
+  }
+
+  Future<void> _ensureAudibleAfterResume(AudioPlayer expectedPlayer) async {
+    // Si el usuario pausó durante un fade-in, el volumen puede quedar en 0.
+    // Al reanudar, lo recuperamos con una rampa corta para evitar "silencio".
+    const maxChecks = 12;
+    for (var i = 0; i < maxChecks; i++) {
+      if (!identical(_player, expectedPlayer)) return;
+      if (expectedPlayer.playing) break;
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+    }
+    if (!identical(_player, expectedPlayer) || !expectedPlayer.playing) return;
+
+    final targetVolume = _targetPlaybackVolume();
+    final currentVolume = expectedPlayer.volume;
+    if (currentVolume >= (targetVolume * 0.72)) return;
+
+    final fadeId = ++_volumeFadeEpoch;
+    final startVolume = currentVolume.clamp(0.0, targetVolume);
+    const steps = 6;
+    for (var step = 1; step <= steps; step++) {
+      if (fadeId != _volumeFadeEpoch) return;
+      if (!identical(_player, expectedPlayer) || !expectedPlayer.playing) {
+        return;
+      }
+      final nextVolume =
+          startVolume + ((targetVolume - startVolume) * (step / steps));
+      try {
+        await expectedPlayer.setVolume(nextVolume);
+      } catch (_) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 65));
+    }
+  }
+
   Future<void> togglePlayPause() async {
     if (_isResettingEngines || _isTogglingPlayPause) return;
     _isTogglingPlayPause = true;
@@ -4919,10 +5089,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       try {
         if (shouldPlay) {
+          final resumePlayer = _player;
           // En just_audio, play() puede mantener el Future vivo durante la reproducción.
           // No esperamos aquí para no bloquear taps siguientes.
           unawaited(_playInBackgroundSafely(isLocalPlayback: _isLocal));
+          unawaited(_ensureAudibleAfterResume(resumePlayer));
         } else {
+          _volumeFadeEpoch++;
           await _player.pause();
         }
       } catch (e, s) {
@@ -5343,7 +5516,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
                     item.localThumbnailPath!.isNotEmpty)
                 ? item.localThumbnailPath!
                 : item.thumbnailUrl,
-            artist: item.channelTitle,
+            artist: cleanArtistName(item.channelTitle),
             isLocal: true,
             localFilePath: item.filePath,
             localPlainLyrics: item.plainLyrics,
@@ -5685,7 +5858,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       // Refrescamos info visual al track entrante durante la mezcla,
       // pero sin cambiar todavía el id actual hasta completar el swap.
       _trackTitle = next.title;
-      _trackArtist = next.artist;
+      _trackArtist = cleanArtistName(next.artist);
       _trackThumbnailUrl = next.thumbnailUrl;
       _trackDuration = Duration.zero;
       _currentStreamUrl = _preloadedNextStreamUrl ?? next.localFilePath;
@@ -5694,9 +5867,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _syncSystemPlaybackState(force: true);
       notifyListeners();
 
-      final targetVolume = _settingsService.normalizeVolume
-          ? 1.0
-          : _defaultPlaybackVolume;
+      final targetVolume = _targetPlaybackVolume();
       final totalMs = mixDuration.inMilliseconds;
       final steps = math.max(16, (totalMs / 220).round());
       final stepDelay = Duration(
@@ -5819,7 +5990,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           final video = await _getVideoWithRetry(next.videoId);
           if (_currentVideoId != next.videoId) return;
           _trackTitle = video.title;
-          _trackArtist = video.author;
+          _trackArtist = cleanArtistName(video.author);
           _trackThumbnailUrl = bestThumbnailForVideo(
             video,
             preferLowResolution: _settingsService.dataSaverMode,
@@ -6059,12 +6230,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final currentId = _currentVideoId;
     final currentTitle = _trackTitle;
     final currentThumb = _trackThumbnailUrl;
-    final currentArtist = _trackArtist;
+    final currentArtist = cleanArtistName(_trackArtist);
     if (currentId == null ||
         currentTitle == null ||
         currentTitle.isEmpty ||
         currentThumb == null ||
-        currentArtist == null) {
+        currentArtist.isEmpty) {
       return;
     }
 
@@ -6244,7 +6415,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _loadLyricsForCurrentTrack() async {
     final requestVideoId = (_currentVideoId ?? '').trim();
     final title = _trackTitle?.trim();
-    final artist = _trackArtist?.trim();
+    final artist = cleanArtistName(_trackArtist);
     if (title == null || title.isEmpty) {
       _lyricsText = null;
       _lyricsError = 'No se pudo identificar la canción para buscar letra.';
@@ -6253,7 +6424,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
 
-    final key = '${artist ?? ''}::$title'.toLowerCase();
+    final key = '$artist::$title'.toLowerCase();
     final cached = _lyricsCache[key];
     final cachedSynced = _syncedLyricsCache[key] ?? const <SyncedLyricLine>[];
     if (cached != null && cached.isNotEmpty) {
@@ -6284,7 +6455,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     try {
       result = await _lyricsService.fetchLyrics(
         title: title,
-        artist: artist ?? '',
+        artist: artist,
       );
     } catch (e, s) {
       if (requestId != _lyricsEpoch) return;

@@ -138,6 +138,17 @@ class _DownloadsPageState extends State<DownloadsPage> {
       itemCount: songs.length,
       itemBuilder: (context, index) {
         final song = songs[index];
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final cardColor = isDark
+            ? Colors.black
+            : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
+                context,
+              );
+        final cardBorder = isDark
+            ? Colors.white.withValues(alpha: 0.12)
+            : CupertinoColors.separator
+                  .resolveFrom(context)
+                  .withValues(alpha: 0.12);
         final localThumbPath = song.localThumbnailPath;
         final hasLocalThumb =
             localThumbPath != null &&
@@ -148,8 +159,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(14),
             child: Material(
-              color: CupertinoColors.secondarySystemGroupedBackground
-                  .resolveFrom(context),
+              color: cardColor,
               child: InkWell(
                 borderRadius: BorderRadius.circular(14),
                 onTap: () async {
@@ -188,9 +198,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(
-                      color: CupertinoColors.separator
-                          .resolveFrom(context)
-                          .withValues(alpha: 0.12),
+                      color: cardBorder,
                       width: 0.5,
                     ),
                   ),

@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:hive/hive.dart';
 import 'package:myapp/models/downloaded_video.dart';
@@ -11,6 +13,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
@@ -32,6 +35,7 @@ class _HomePageState extends State<HomePage> {
   final YoutubeExplode _yt = YoutubeExplode();
   late Future<_HomeContent> _contentFuture;
   late Future<List<_HomeTrack>> _trendingFuture;
+  bool _relistenListIsDragging = false;
 
   @override
   void initState() {
@@ -53,17 +57,58 @@ class _HomePageState extends State<HomePage> {
     final history = await historyService.getHistory();
     final downloads = await downloadService.getDownloadedVideos();
     final trendingSeed = await _readTrendingCache();
+    final searchSeed = await _loadSearchStyleRecommendationSeed(history);
 
     final suggestions = _buildSuggestions(
       history: history,
       downloads: downloads,
       trendingSeed: trendingSeed,
+      searchSeed: searchSeed,
     );
     final relisten = history
         .take(20)
         .map(_HomeTrack.fromHistory)
         .toList(growable: false);
-    return _HomeContent(suggestions: suggestions, relisten: relisten);
+    final mixes = _buildDailyMixes(
+      suggestions: suggestions,
+      relisten: relisten,
+      trendingSeed: trendingSeed,
+      searchSeed: searchSeed,
+    );
+    return _HomeContent(
+      suggestions: suggestions,
+      relisten: relisten,
+      mixes: mixes,
+    );
+  }
+
+  Future<List<_HomeTrack>> _loadSearchStyleRecommendationSeed(
+    List<VideoHistory> history,
+  ) async {
+    final manager = context.read<VideoPlayerManager>();
+    var queueItems = await manager.fetchQueueStyleRecommendations(limit: 20);
+    if (queueItems.isEmpty) {
+      final seed = history
+          .map((item) => item.videoId.trim())
+          .firstWhere((id) => id.isNotEmpty, orElse: () => '');
+      if (seed.isNotEmpty) {
+        queueItems = await manager.fetchQueueStyleRecommendations(
+          limit: 20,
+          seedVideoId: seed,
+        );
+      }
+    }
+    if (queueItems.isEmpty) return const <_HomeTrack>[];
+
+    final output = <_HomeTrack>[];
+    final seen = <String>{};
+    for (final item in queueItems) {
+      final id = item.videoId.trim();
+      if (id.isEmpty || !seen.add(id)) continue;
+      output.add(_HomeTrack.fromQueueItem(item));
+      if (output.length >= 14) break;
+    }
+    return output;
   }
 
   Future<List<_HomeTrack>> _loadTrendingTracks() async {
@@ -252,7 +297,7 @@ class _HomePageState extends State<HomePage> {
             (item) => _HomeTrack(
               videoId: (item['videoId'] ?? '').toString(),
               title: (item['title'] ?? '').toString(),
-              artist: (item['artist'] ?? '').toString(),
+              artist: cleanArtistName((item['artist'] ?? '').toString()),
               thumbnailUrl: (item['thumbnailUrl'] ?? '').toString(),
               isLocal: false,
             ),
@@ -292,6 +337,7 @@ class _HomePageState extends State<HomePage> {
     required List<VideoHistory> history,
     required List<DownloadedVideo> downloads,
     required List<_HomeTrack> trendingSeed,
+    required List<_HomeTrack> searchSeed,
   }) {
     const target = 14;
     final suggestions = <_HomeTrack>[];
@@ -304,6 +350,12 @@ class _HomePageState extends State<HomePage> {
       if (relistenIds.contains(item.videoId)) return;
       seenIds.add(item.videoId);
       suggestions.add(item);
+    }
+
+    // 0) Parte de recomendados tipo Buscar/cola.
+    for (final item in searchSeed.take(8)) {
+      add(item);
+      if (suggestions.length >= target) return suggestions;
     }
 
     // 1) Tendencias alineadas con gustos del historial.
@@ -342,6 +394,57 @@ class _HomePageState extends State<HomePage> {
     }
 
     return suggestions;
+  }
+
+  List<_HomeMix> _buildDailyMixes({
+    required List<_HomeTrack> suggestions,
+    required List<_HomeTrack> relisten,
+    required List<_HomeTrack> trendingSeed,
+    required List<_HomeTrack> searchSeed,
+  }) {
+    List<_HomeTrack> dedupeTracks(Iterable<_HomeTrack> source, {int take = 12}) {
+      final out = <_HomeTrack>[];
+      final seen = <String>{};
+      for (final item in source) {
+        if (!seen.add(item.videoId)) continue;
+        out.add(item);
+        if (out.length >= take) break;
+      }
+      return out;
+    }
+
+    final mixes = <_HomeMix>[];
+    final madeForYou = dedupeTracks([...searchSeed, ...suggestions], take: 12);
+    if (madeForYou.isNotEmpty) {
+      mixes.add(
+        _HomeMix(
+          title: 'Mix para ti',
+          subtitle: 'Radio personalizada',
+          tracks: madeForYou,
+        ),
+      );
+    }
+    final relistenMix = dedupeTracks(relisten, take: 12);
+    if (relistenMix.isNotEmpty) {
+      mixes.add(
+        _HomeMix(
+          title: 'Volver a escuchar',
+          subtitle: 'Basado en tu historial',
+          tracks: relistenMix,
+        ),
+      );
+    }
+    final trendingMix = dedupeTracks(trendingSeed, take: 12);
+    if (trendingMix.isNotEmpty) {
+      mixes.add(
+        _HomeMix(
+          title: 'Tendencia MX',
+          subtitle: 'Lo más escuchado ahora',
+          tracks: trendingMix,
+        ),
+      );
+    }
+    return mixes;
   }
 
   List<String> _extractTopArtists(List<VideoHistory> history) {
@@ -498,6 +601,115 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Future<List<PlaybackQueueItem>> _buildQueueItemsFromTracks(
+    List<_HomeTrack> tracks,
+  ) async {
+    final downloadService = context.read<DownloadService>();
+    final queue = <PlaybackQueueItem>[];
+    final seenIds = <String>{};
+
+    for (final track in tracks) {
+      if (!seenIds.add(track.videoId)) continue;
+      if (track.isLocal &&
+          track.localFilePath != null &&
+          track.localFilePath!.isNotEmpty &&
+          File(track.localFilePath!).existsSync()) {
+        queue.add(
+          PlaybackQueueItem(
+            videoId: track.videoId,
+            title: track.title,
+            thumbnailUrl: track.thumbnailUrl,
+            artist: track.artist,
+            isLocal: true,
+            localFilePath: track.localFilePath,
+            localPlainLyrics: track.localPlainLyrics,
+            localSyncedLyrics: track.localSyncedLyrics,
+          ),
+        );
+        continue;
+      }
+
+      final local = await downloadService.getDownloadedVideoById(track.videoId);
+      if (local != null) {
+        final thumb =
+            (local.localThumbnailPath != null &&
+                local.localThumbnailPath!.isNotEmpty)
+            ? local.localThumbnailPath!
+            : local.thumbnailUrl;
+        queue.add(
+          PlaybackQueueItem(
+            videoId: local.videoId,
+            title: local.title,
+            thumbnailUrl: thumb,
+            artist: cleanArtistName(local.channelTitle),
+            isLocal: true,
+            localFilePath: local.filePath,
+            localPlainLyrics: local.plainLyrics,
+            localSyncedLyrics: local.syncedLyrics,
+          ),
+        );
+      } else {
+        queue.add(
+          PlaybackQueueItem(
+            videoId: track.videoId,
+            title: track.title,
+            thumbnailUrl: track.thumbnailUrl,
+            artist: track.artist,
+            isLocal: false,
+          ),
+        );
+      }
+    }
+    return queue;
+  }
+
+  Future<void> _playMix(_HomeMix mix) async {
+    if (mix.tracks.isEmpty) return;
+    final manager = context.read<VideoPlayerManager>();
+    final queueItems = await _buildQueueItemsFromTracks(mix.tracks);
+    if (queueItems.isEmpty) return;
+    final first = queueItems.first;
+    final rest = queueItems.skip(1).toList(growable: false);
+    manager.replaceManualPlaybackQueue(rest, queueTitle: 'Mix · ${mix.title}');
+    await manager.playQueueItem(first);
+  }
+
+  Future<void> _queueMix(_HomeMix mix) async {
+    if (mix.tracks.isEmpty) return;
+    final manager = context.read<VideoPlayerManager>();
+    final queueItems = await _buildQueueItemsFromTracks(mix.tracks);
+    var addedCount = 0;
+    for (final item in queueItems) {
+      final added = item.isLocal
+          ? manager.addLocalTrackToPlaybackQueue(
+              videoId: item.videoId,
+              title: item.title,
+              thumbnailUrl: item.thumbnailUrl,
+              artist: item.artist,
+              filePath: item.localFilePath ?? '',
+              localPlainLyrics: item.localPlainLyrics,
+              localSyncedLyrics: item.localSyncedLyrics,
+            )
+          : manager.addOnlineTrackToPlaybackQueue(
+              videoId: item.videoId,
+              title: item.title,
+              thumbnailUrl: item.thumbnailUrl,
+              artist: item.artist,
+            );
+      if (added) addedCount++;
+    }
+    if (!mounted) return;
+    _showQueueIosToast(
+      context,
+      message: addedCount > 0
+          ? 'Mix añadido a la cola ($addedCount)'
+          : 'Ese mix ya estaba en cola',
+      icon: addedCount > 0
+          ? CupertinoIcons.check_mark_circled_solid
+          : CupertinoIcons.info_circle_fill,
+    );
+  }
+
   List<List<_HomeTrack>> _buildRelistenColumns(List<_HomeTrack> source) {
     if (source.isEmpty) return const [];
     final columns = <List<_HomeTrack>>[];
@@ -573,6 +785,32 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   ),
+                  if (content.mixes.isNotEmpty) ...[
+                    const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                    _SectionHeaderSliver(
+                      title: 'Mixes para ti',
+                      subtitle: 'Como en radio, pero con tu gusto',
+                    ),
+                    SliverToBoxAdapter(
+                      child: SizedBox(
+                        height: 154,
+                        child: ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                          scrollDirection: Axis.horizontal,
+                          itemCount: content.mixes.length,
+                          separatorBuilder: (_, _) => const SizedBox(width: 12),
+                          itemBuilder: (context, index) {
+                            final mix = content.mixes[index];
+                            return _HomeMixCard(
+                              mix: mix,
+                              onPlay: () => _playMix(mix),
+                              onQueue: () => _queueMix(mix),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
                   const SliverToBoxAdapter(child: SizedBox(height: 6)),
                   _SectionHeaderSliver(
                     title: 'Volver a escuchar',
@@ -581,20 +819,46 @@ class _HomePageState extends State<HomePage> {
                   SliverToBoxAdapter(
                     child: SizedBox(
                       height: 232,
-                      child: ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                        scrollDirection: Axis.horizontal,
-                        itemCount: relistenColumns.length,
-                        separatorBuilder: (_, _) => const SizedBox(width: 12),
-                        itemBuilder: (context, index) {
-                          final columnItems = relistenColumns[index];
-                          return _RelistenStackedColumn(
-                            items: columnItems,
-                            onTap: _playTrack,
-                            onSwipeToQueue: _addTrackToQueue,
-                            onAddToPlaylist: _addTrackToPlaylist,
-                          );
+                      child: NotificationListener<ScrollNotification>(
+                        onNotification: (notification) {
+                          final nextIsDragging =
+                              notification is ScrollStartNotification ||
+                              (notification is UserScrollNotification &&
+                                  notification.direction !=
+                                      ScrollDirection.idle) ||
+                              notification is ScrollUpdateNotification;
+                          final nextIsIdle =
+                              notification is ScrollEndNotification ||
+                              (notification is UserScrollNotification &&
+                                  notification.direction ==
+                                      ScrollDirection.idle);
+                          if (nextIsDragging && !_relistenListIsDragging) {
+                            setState(() {
+                              _relistenListIsDragging = true;
+                            });
+                          } else if (nextIsIdle && _relistenListIsDragging) {
+                            setState(() {
+                              _relistenListIsDragging = false;
+                            });
+                          }
+                          return false;
                         },
+                        child: ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                          scrollDirection: Axis.horizontal,
+                          itemCount: relistenColumns.length,
+                          separatorBuilder: (_, _) => const SizedBox(width: 12),
+                          itemBuilder: (context, index) {
+                            final columnItems = relistenColumns[index];
+                            return _RelistenStackedColumn(
+                              items: columnItems,
+                              onTap: _playTrack,
+                              onSwipeToQueue: _addTrackToQueue,
+                              onAddToPlaylist: _addTrackToPlaylist,
+                              allowSwipeToQueue: !_relistenListIsDragging,
+                            );
+                          },
+                        ),
                       ),
                     ),
                   ),
@@ -662,8 +926,25 @@ class _HomePageState extends State<HomePage> {
 class _HomeContent {
   final List<_HomeTrack> suggestions;
   final List<_HomeTrack> relisten;
+  final List<_HomeMix> mixes;
 
-  const _HomeContent({required this.suggestions, required this.relisten});
+  const _HomeContent({
+    required this.suggestions,
+    required this.relisten,
+    required this.mixes,
+  });
+}
+
+class _HomeMix {
+  final String title;
+  final String subtitle;
+  final List<_HomeTrack> tracks;
+
+  const _HomeMix({
+    required this.title,
+    required this.subtitle,
+    required this.tracks,
+  });
 }
 
 class _HomeTrack {
@@ -691,7 +972,7 @@ class _HomeTrack {
     return _HomeTrack(
       videoId: item.videoId,
       title: item.title,
-      artist: item.channelTitle,
+      artist: cleanArtistName(item.channelTitle),
       thumbnailUrl: item.thumbnailUrl,
       isLocal: false,
     );
@@ -705,7 +986,7 @@ class _HomeTrack {
     return _HomeTrack(
       videoId: item.videoId,
       title: item.title,
-      artist: item.channelTitle,
+      artist: cleanArtistName(item.channelTitle),
       thumbnailUrl: thumb,
       isLocal: true,
       localFilePath: item.filePath,
@@ -718,9 +999,22 @@ class _HomeTrack {
     return _HomeTrack(
       videoId: video.id.value,
       title: video.title,
-      artist: video.author,
+      artist: cleanArtistName(video.author),
       thumbnailUrl: bestThumbnailForVideo(video),
       isLocal: false,
+    );
+  }
+
+  factory _HomeTrack.fromQueueItem(PlaybackQueueItem item) {
+    return _HomeTrack(
+      videoId: item.videoId,
+      title: item.title,
+      artist: cleanArtistName(item.artist),
+      thumbnailUrl: item.thumbnailUrl,
+      isLocal: item.isLocal,
+      localFilePath: item.localFilePath,
+      localPlainLyrics: item.localPlainLyrics,
+      localSyncedLyrics: item.localSyncedLyrics,
     );
   }
 }
@@ -836,17 +1130,155 @@ class _HomeFeatureCard extends StatelessWidget {
   }
 }
 
+class _HomeMixCard extends StatelessWidget {
+  final _HomeMix mix;
+  final VoidCallback onPlay;
+  final VoidCallback onQueue;
+
+  const _HomeMixCard({
+    required this.mix,
+    required this.onPlay,
+    required this.onQueue,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark
+        ? Colors.black
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final cardBorder = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.12);
+    final coverTrack = mix.tracks.isNotEmpty ? mix.tracks.first : null;
+
+    return SizedBox(
+      width: 226,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Material(
+          color: cardColor,
+          child: InkWell(
+            onTap: onPlay,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: cardBorder, width: 0.6),
+              ),
+              padding: const EdgeInsets.all(10),
+              child: Row(
+                children: [
+                  coverTrack == null
+                      ? Container(
+                          width: 76,
+                          height: 76,
+                          decoration: BoxDecoration(
+                            color: CupertinoColors.tertiarySystemFill
+                                .resolveFrom(context),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          alignment: Alignment.center,
+                          child: const Icon(CupertinoIcons.music_note_list),
+                        )
+                      : _AdaptiveThumb(item: coverTrack, size: 76),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          mix.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontWeight: FontWeight.w800,
+                            fontSize: 15,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          mix.subtitle,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontSize: 12,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            CupertinoButton(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              minimumSize: Size.zero,
+                              color: CupertinoColors.systemPink.resolveFrom(
+                                context,
+                              ),
+                              borderRadius: BorderRadius.circular(999),
+                              onPressed: onPlay,
+                              child: const Icon(
+                                CupertinoIcons.play_fill,
+                                color: CupertinoColors.white,
+                                size: 14,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            CupertinoButton(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              minimumSize: Size.zero,
+                              color: CupertinoColors.tertiarySystemFill
+                                  .resolveFrom(context),
+                              borderRadius: BorderRadius.circular(999),
+                              onPressed: onQueue,
+                              child: Icon(
+                                CupertinoIcons.music_note_list,
+                                color: CupertinoColors.label.resolveFrom(
+                                  context,
+                                ),
+                                size: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _RelistenStackedColumn extends StatelessWidget {
   final List<_HomeTrack> items;
   final Future<void> Function(_HomeTrack item) onTap;
   final Future<void> Function(_HomeTrack item) onSwipeToQueue;
   final Future<void> Function(_HomeTrack item) onAddToPlaylist;
+  final bool allowSwipeToQueue;
 
   const _RelistenStackedColumn({
     required this.items,
     required this.onTap,
     required this.onSwipeToQueue,
     required this.onAddToPlaylist,
+    required this.allowSwipeToQueue,
   });
 
   @override
@@ -861,6 +1293,7 @@ class _RelistenStackedColumn extends StatelessWidget {
             onTap: () => onTap(items.first),
             onSwipeToQueue: () => onSwipeToQueue(items.first),
             onAddToPlaylist: () => onAddToPlaylist(items.first),
+            allowSwipeToQueue: allowSwipeToQueue,
           ),
           const SizedBox(height: 10),
           if (items.length > 1)
@@ -869,6 +1302,7 @@ class _RelistenStackedColumn extends StatelessWidget {
               onTap: () => onTap(items[1]),
               onSwipeToQueue: () => onSwipeToQueue(items[1]),
               onAddToPlaylist: () => onAddToPlaylist(items[1]),
+              allowSwipeToQueue: allowSwipeToQueue,
             )
           else
             const Spacer(),
@@ -883,12 +1317,14 @@ class _CompactReplayCard extends StatelessWidget {
   final VoidCallback onTap;
   final Future<void> Function() onSwipeToQueue;
   final VoidCallback onAddToPlaylist;
+  final bool allowSwipeToQueue;
 
   const _CompactReplayCard({
     required this.item,
     required this.onTap,
     required this.onSwipeToQueue,
     required this.onAddToPlaylist,
+    required this.allowSwipeToQueue,
   });
 
   @override
@@ -903,73 +1339,77 @@ class _CompactReplayCard extends StatelessWidget {
               .resolveFrom(context)
               .withValues(alpha: 0.12);
 
-    return Expanded(
-      child: Dismissible(
-        key: ObjectKey(item),
-        direction: DismissDirection.startToEnd,
-        dismissThresholds: const {DismissDirection.startToEnd: 0.28},
-        confirmDismiss: (_) async {
-          await onSwipeToQueue();
-          return false;
-        },
-        background: _queueSwipeBackground(context),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: Material(
-            color: cardColor,
-            surfaceTintColor: Colors.transparent,
-            child: InkWell(
-              onTap: onTap,
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: cardBorder, width: 0.6),
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
-                child: Row(
-                  children: [
-                    _AdaptiveThumb(item: item, size: 64),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            item.title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontFamily: '.SF Pro Text',
-                              fontSize: 14,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            item.artist,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontFamily: '.SF Pro Text',
-                              fontSize: 12,
-                              color: CupertinoColors.secondaryLabel.resolveFrom(
-                                context,
-                              ),
-                            ),
-                          ),
-                        ],
+    final card = ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: Material(
+        color: cardColor,
+        surfaceTintColor: Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: cardBorder, width: 0.6),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+            child: Row(
+              children: [
+                _AdaptiveThumb(item: item, size: 64),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        item.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: '.SF Pro Text',
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    _QueueAddButton(onPressed: onAddToPlaylist),
-                  ],
+                      const SizedBox(height: 4),
+                      Text(
+                        item.artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: '.SF Pro Text',
+                          fontSize: 12,
+                          color: CupertinoColors.secondaryLabel.resolveFrom(
+                            context,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: 8),
+                _QueueAddButton(onPressed: onAddToPlaylist),
+              ],
             ),
           ),
         ),
       ),
+    );
+
+    return Expanded(
+      child: allowSwipeToQueue
+          ? Dismissible(
+              key: ObjectKey(item),
+              direction: DismissDirection.startToEnd,
+              dismissThresholds: const {DismissDirection.startToEnd: 0.28},
+              confirmDismiss: (_) async {
+                await onSwipeToQueue();
+                return false;
+              },
+              background: _queueSwipeBackground(context),
+              child: card,
+            )
+          : card,
     );
   }
 }
@@ -1176,6 +1616,7 @@ void _showQueueIosToast(
   required IconData icon,
 }) {
   final overlay = Overlay.of(context, rootOverlay: true);
+  final isDark = Theme.of(context).brightness == Brightness.dark;
 
   late OverlayEntry entry;
   entry = OverlayEntry(
@@ -1188,7 +1629,11 @@ void _showQueueIosToast(
             alignment: Alignment.bottomCenter,
             child: Padding(
               padding: EdgeInsets.only(bottom: bottomInset + 130),
-              child: _QueueIosToast(message: message, icon: icon),
+              child: _QueueIosToast(
+                message: message,
+                icon: icon,
+                isDark: isDark,
+              ),
             ),
           ),
         ),
@@ -1202,8 +1647,13 @@ void _showQueueIosToast(
 class _QueueIosToast extends StatefulWidget {
   final String message;
   final IconData icon;
+  final bool isDark;
 
-  const _QueueIosToast({required this.message, required this.icon});
+  const _QueueIosToast({
+    required this.message,
+    required this.icon,
+    required this.isDark,
+  });
 
   @override
   State<_QueueIosToast> createState() => _QueueIosToastState();
@@ -1250,52 +1700,61 @@ class _QueueIosToastState extends State<_QueueIosToast>
 
   @override
   Widget build(BuildContext context) {
-    final background = CupertinoDynamicColor.resolve(
-      CupertinoColors.systemGrey6.withValues(alpha: 0.96),
-      context,
-    );
-    final border = CupertinoDynamicColor.resolve(
-      CupertinoColors.separator.withValues(alpha: 0.32),
-      context,
-    );
     return FadeTransition(
       opacity: _opacity,
       child: SlideTransition(
         position: _slide,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: background,
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: border, width: 0.6),
-            boxShadow: [
-              BoxShadow(
-                color: CupertinoColors.black.withValues(alpha: 0.18),
-                blurRadius: 14,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  widget.icon,
-                  size: 18,
-                  color: CupertinoColors.systemPink.resolveFrom(context),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(18),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: widget.isDark
+                    ? const Color(0xFF0D0F13).withValues(alpha: 0.84)
+                    : Colors.white.withValues(alpha: 0.9),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: widget.isDark
+                      ? Colors.white.withValues(alpha: 0.14)
+                      : Colors.black.withValues(alpha: 0.08),
+                  width: 0.6,
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  widget.message,
-                  style: TextStyle(
-                    fontFamily: '.SF Pro Text',
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: CupertinoColors.label.resolveFrom(context),
+                boxShadow: [
+                  BoxShadow(
+                    color: CupertinoColors.black.withValues(alpha: 0.18),
+                    blurRadius: 14,
+                    offset: const Offset(0, 6),
                   ),
+                ],
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 10,
                 ),
-              ],
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      widget.icon,
+                      size: 18,
+                      color: CupertinoColors.systemPink.resolveFrom(context),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      widget.message,
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: widget.isDark ? Colors.white : Colors.black,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         ),

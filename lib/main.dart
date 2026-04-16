@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:myapp/account_page.dart';
+import 'package:myapp/account_settings_page.dart';
 import 'package:myapp/app_tab_state.dart';
 import 'package:myapp/audio_handler.dart';
 import 'package:myapp/downloads_page.dart';
@@ -103,11 +104,17 @@ Future<void> _configureAudioSessionSafe() async {
 class ThemeProvider with ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.system;
   ThemeMode get themeMode => _themeMode;
+  bool get isDarkMode => _themeMode == ThemeMode.dark;
 
   void toggleTheme() {
     _themeMode = _themeMode == ThemeMode.light
         ? ThemeMode.dark
         : ThemeMode.light;
+    notifyListeners();
+  }
+
+  void setDarkMode(bool enabled) {
+    _themeMode = enabled ? ThemeMode.dark : ThemeMode.light;
     notifyListeners();
   }
 }
@@ -147,7 +154,7 @@ class MyApp extends StatelessWidget {
       builder: (context, themeProvider, child) {
         return MaterialApp.router(
           routerConfig: router,
-          title: 'VM Music',
+          title: 'Music',
           theme: lightTheme,
           darkTheme: darkTheme,
           themeMode: themeProvider.themeMode,
@@ -163,7 +170,176 @@ class AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Stack(children: [MainTabs(), OverlayVideoPlayer()]);
+    return const Stack(
+      children: [MainTabs(), OverlayVideoPlayer(), _StartupSplashOverlay()],
+    );
+  }
+}
+
+class _StartupSplashOverlay extends StatefulWidget {
+  const _StartupSplashOverlay();
+
+  @override
+  State<_StartupSplashOverlay> createState() => _StartupSplashOverlayState();
+}
+
+class _StartupSplashOverlayState extends State<_StartupSplashOverlay>
+    with TickerProviderStateMixin {
+  late final AnimationController _entryController;
+  late final AnimationController _exitController;
+  late final AnimationController _loopController;
+  bool _visible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _entryController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1150),
+    )..forward();
+    _exitController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 460),
+    );
+    _loopController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2100),
+    )..repeat(reverse: true);
+
+    unawaited(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 1650));
+      if (!mounted) return;
+      await _exitController.forward();
+      if (!mounted) return;
+      setState(() {
+        _visible = false;
+      });
+    }());
+  }
+
+  @override
+  void dispose() {
+    _entryController.dispose();
+    _exitController.dispose();
+    _loopController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_visible) return const SizedBox.shrink();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final base = Theme.of(context).colorScheme.primary;
+    final backgroundA = isDark
+        ? const Color(0xFF060708)
+        : CupertinoColors.systemBackground.resolveFrom(context);
+    final backgroundB = isDark
+        ? const Color(0xFF0F1218)
+        : CupertinoColors.systemGrey6.resolveFrom(context);
+
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: Listenable.merge([
+          _entryController,
+          _exitController,
+          _loopController,
+        ]),
+        builder: (context, _) {
+          final intro = Curves.easeOutCubic.transform(_entryController.value);
+          final fadeOut = Curves.easeInCubic.transform(_exitController.value);
+          final opacity = (1.0 - fadeOut).clamp(0.0, 1.0);
+          final titleLift = 14.0 * (1.0 - intro);
+          final titleScale = 0.94 + (0.06 * intro);
+          final wave = Curves.easeInOutSine.transform(_loopController.value);
+
+          return Opacity(
+            opacity: opacity,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    backgroundA,
+                    Color.lerp(backgroundA, base, 0.06) ?? backgroundA,
+                    backgroundB,
+                  ],
+                ),
+              ),
+              child: Center(
+                child: Transform.translate(
+                  offset: Offset(0, titleLift),
+                  child: Transform.scale(
+                    scale: titleScale,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Transform.scale(
+                          scale: 1.0 + (0.10 * (1.0 - wave)),
+                          child: SizedBox(
+                            width: 108,
+                            height: 108,
+                            child: Image.asset(
+                              'assets/iconloadscreen.png',
+                              fit: BoxFit.contain,
+                              errorBuilder: (context, error, stackTrace) =>
+                                  Icon(
+                                    CupertinoIcons.music_note_2,
+                                    color: base,
+                                    size: 42,
+                                  ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        ShaderMask(
+                          blendMode: BlendMode.srcIn,
+                          shaderCallback: (bounds) {
+                            final shimmerCenter = (0.2 + (0.6 * wave)).clamp(
+                              0.0,
+                              1.0,
+                            );
+                            return LinearGradient(
+                              begin: Alignment.centerLeft,
+                              end: Alignment.centerRight,
+                              colors: [
+                                base.withValues(alpha: 0.62),
+                                base.withValues(alpha: 0.96),
+                                Colors.white.withValues(alpha: 0.95),
+                                base.withValues(alpha: 0.96),
+                                base.withValues(alpha: 0.62),
+                              ],
+                              stops: [
+                                0.0,
+                                (shimmerCenter - 0.20).clamp(0.0, 1.0),
+                                shimmerCenter,
+                                (shimmerCenter + 0.20).clamp(0.0, 1.0),
+                                1.0,
+                              ],
+                            ).createShader(bounds);
+                          },
+                          child: Text(
+                            'Music',
+                            style: Theme.of(context).textTheme.headlineMedium
+                                ?.copyWith(
+                                  fontFamily: '.SF Pro Display',
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: -0.2,
+                                ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        const CupertinoActivityIndicator(radius: 11),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 }
 
@@ -269,7 +445,6 @@ class _MainTabsState extends State<MainTabs> {
     final controller = _pageController!;
     final isFullScreen = context.watch<VideoPlayerManager>().isFullScreen;
     final searchViewState = context.watch<SearchViewState>();
-    final themeProvider = Provider.of<ThemeProvider>(context);
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final shellBackground = isDark
@@ -309,26 +484,48 @@ class _MainTabsState extends State<MainTabs> {
                       width: 0.0,
                     ),
                   ),
-                  middle: const Text(
-                    'VM Music',
-                    style: TextStyle(
-                      fontFamily: '.SF Pro Display',
-                      fontWeight: FontWeight.w700,
-                      fontSize: 20,
-                      letterSpacing: -0.2,
+                  automaticallyImplyLeading: false,
+                  leading: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Transform.translate(
+                          offset: const Offset(0, 5),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(5),
+                            child: Image.asset(
+                              'assets/iconloadscreen.png',
+                              width: 45,
+                              height: 35,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Music',
+                          style: Theme.of(context).textTheme.headlineMedium
+                              ?.copyWith(
+                                fontFamily: '.SF Pro Display',
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.2,
+                              ),
+                        ),
+                      ],
                     ),
                   ),
-                  trailing: CupertinoButton(
-                    padding: EdgeInsets.zero,
-                    minimumSize: const Size(28, 28),
-                    onPressed: () => themeProvider.toggleTheme(),
-                    child: Icon(
-                      themeProvider.themeMode == ThemeMode.dark
-                          ? CupertinoIcons.sun_max_fill
-                          : CupertinoIcons.moon_fill,
-                      size: 20,
-                      color: CupertinoColors.systemPink.resolveFrom(context),
-                    ),
+                  trailing: IconButton(
+                    tooltip: 'Configuración',
+                    iconSize: 24,
+                    icon: const Icon(CupertinoIcons.settings),
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        CupertinoPageRoute<void>(
+                          builder: (_) => const AccountSettingsPage(),
+                        ),
+                      );
+                    },
                   ),
                 ),
           body: PageView(

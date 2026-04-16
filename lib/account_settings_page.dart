@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart' show Theme;
+import 'package:myapp/main.dart' show ThemeProvider;
 import 'package:myapp/apple_music_migration_page.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:provider/provider.dart';
@@ -17,6 +18,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<AppSettingsService?>();
+    final themeProvider = context.watch<ThemeProvider?>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final primaryTextColor = isDark
         ? const Color(0xFFF5F5F7)
@@ -113,6 +115,21 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                       value: settings.animatedCutoutCovers,
                       onChanged: (value) =>
                           settings.setAnimatedCutoutCovers(value),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                _buildSectionTitle(context, 'Apariencia'),
+                const SizedBox(height: 10),
+                _GlassSection(
+                  isDark: isDark,
+                  children: [
+                    _SettingSwitchRow(
+                      title: 'Modo oscuro',
+                      subtitle: 'Activa el tema oscuro en toda la app',
+                      value: themeProvider?.isDarkMode ?? isDark,
+                      onChanged: (value) =>
+                          themeProvider?.setDarkMode(value),
                     ),
                   ],
                 ),

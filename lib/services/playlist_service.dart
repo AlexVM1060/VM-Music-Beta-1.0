@@ -86,6 +86,26 @@ class PlaylistService {
     await playlist.save();
   }
 
+  Future<void> deletePlaylist(String playlistName) async {
+    final box = await _box;
+    final normalizedName = _normalizePlaylistName(playlistName.trim());
+    if (isFavoritesPlaylistName(normalizedName)) {
+      throw Exception('No se puede eliminar la playlist Favoritos');
+    }
+
+    dynamic playlistKey;
+    for (final entry in box.toMap().entries) {
+      if (entry.value.name == normalizedName) {
+        playlistKey = entry.key;
+        break;
+      }
+    }
+    if (playlistKey == null) {
+      throw Exception('No se encontró la playlist');
+    }
+    await box.delete(playlistKey);
+  }
+
   Future<Playlist> updatePlaylistDetails({
     required String currentName,
     required String newName,

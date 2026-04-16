@@ -3,25 +3,190 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui' show ImageFilter;
+import 'dart:ui' show ImageFilter, Rect;
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 enum SearchState { initial, loading, success, error, noResults }
 
 String _bestQualityThumbnail(Video video) {
   return bestThumbnailForVideo(video);
+}
+
+Rect _shareOriginFromContext(BuildContext context) {
+  final renderBox = context.findRenderObject() as RenderBox?;
+  if (renderBox != null && renderBox.hasSize) {
+    return renderBox.localToGlobal(Offset.zero) & renderBox.size;
+  }
+  return const Rect.fromLTWH(1, 1, 1, 1);
+}
+
+Future<void> _shareVideoDeepLink(
+  Video video, {
+  required Rect shareOrigin,
+}) async {
+  final videoId = video.id.value.trim();
+  if (videoId.isEmpty) return;
+  final title = video.title.trim();
+  final artist = cleanArtistName(video.author);
+  final thumbnailUrl = _bestQualityThumbnail(video).trim();
+  final durationMs = (video.duration ?? Duration.zero).inMilliseconds;
+  final safeId = videoId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+  final safeTitle = title
+      .replaceAll(RegExp(r'\s+'), '_')
+      .replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '')
+      .trim();
+  final baseName = safeTitle.isEmpty ? safeId : '${safeTitle}_$safeId';
+  final deepLink = Uri(
+    scheme: 'vmmusic',
+    host: 'song',
+    queryParameters: <String, String>{
+      'videoId': videoId,
+      if (title.isNotEmpty) 'title': title,
+      if (artist.isNotEmpty) 'artist': artist,
+      if (thumbnailUrl.isNotEmpty) 'thumbnailUrl': thumbnailUrl,
+      if (durationMs > 0) 'durationMs': '$durationMs',
+    },
+  ).toString();
+
+  XFile? artworkFile;
+  try {
+    final imageBytes = await _loadShareArtworkBytes(
+      thumbnailUrl: thumbnailUrl,
+      videoId: videoId,
+    );
+    if (imageBytes != null && imageBytes.isNotEmpty) {
+      final tempDir = await getTemporaryDirectory();
+      final isPng = _isPngBytes(imageBytes);
+      final ext = isPng ? 'png' : 'jpg';
+      final mimeType = isPng ? 'image/png' : 'image/jpeg';
+      final imageFile = File('${tempDir.path}/${baseName}_cover.$ext');
+      await imageFile.writeAsBytes(imageBytes, flush: true);
+      artworkFile = XFile(
+        imageFile.path,
+        mimeType: mimeType,
+        name: '${baseName}_cover.$ext',
+      );
+    }
+  } catch (_) {}
+
+  await SharePlus.instance.share(
+    ShareParams(
+      subject: 'VM Music',
+      text: '${artist.isEmpty ? title : '$title · $artist'}\n$deepLink',
+      sharePositionOrigin: shareOrigin,
+      files: artworkFile != null ? <XFile>[artworkFile] : null,
+    ),
+  );
+}
+
+Future<Uint8List?> _loadShareArtworkBytes({
+  required String thumbnailUrl,
+  required String videoId,
+}) async {
+  final source = thumbnailUrl.trim();
+  if (source.startsWith('/')) {
+    final file = File(source);
+    if (await file.exists()) {
+      final bytes = await file.readAsBytes();
+      final prepared = await compute(_prepareShareArtworkWorker, bytes);
+      return prepared ?? bytes;
+    }
+  }
+
+  final candidates = buildThumbnailCandidates(
+    videoId: videoId,
+    thumbnailUrl: source.isEmpty ? null : source,
+    preferLowResolution: false,
+  );
+  if (candidates.isEmpty && source.isNotEmpty) {
+    final uri = Uri.tryParse(source);
+    if (uri != null) candidates.add(source);
+  }
+
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 12);
+  try {
+    for (final candidate in candidates) {
+      final uri = Uri.tryParse(candidate);
+      if (uri == null) continue;
+      try {
+        final req = await client.getUrl(uri).timeout(const Duration(seconds: 12));
+        req.headers.set(
+          HttpHeaders.userAgentHeader,
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+        );
+        req.headers.set(HttpHeaders.acceptHeader, 'image/*,*/*;q=0.8');
+        final res = await req.close().timeout(const Duration(seconds: 16));
+        if (res.statusCode < 200 || res.statusCode >= 300) continue;
+        final bytes = await consolidateHttpClientResponseBytes(res);
+        if (bytes.isEmpty) continue;
+        final prepared = await compute(_prepareShareArtworkWorker, bytes);
+        return prepared ?? bytes;
+      } catch (_) {
+        continue;
+      }
+    }
+    return null;
+  } finally {
+    client.close(force: true);
+  }
+}
+
+bool _isPngBytes(Uint8List bytes) {
+  if (bytes.length < 8) return false;
+  return bytes[0] == 0x89 &&
+      bytes[1] == 0x50 &&
+      bytes[2] == 0x4E &&
+      bytes[3] == 0x47 &&
+      bytes[4] == 0x0D &&
+      bytes[5] == 0x0A &&
+      bytes[6] == 0x1A &&
+      bytes[7] == 0x0A;
+}
+
+Uint8List? _prepareShareArtworkWorker(Uint8List sourceBytes) {
+  final decoded = img.decodeImage(sourceBytes);
+  if (decoded == null) return null;
+
+  final side = math.min(decoded.width, decoded.height);
+  if (side <= 0) return null;
+  final cropX = ((decoded.width - side) / 2).round();
+  final cropY = ((decoded.height - side) / 2).round();
+  final square = img.copyCrop(
+    decoded,
+    x: cropX,
+    y: cropY,
+    width: side,
+    height: side,
+  );
+
+  const targetSide = 1024;
+  final prepared = side > targetSide
+      ? img.copyResize(
+          square,
+          width: targetSide,
+          height: targetSide,
+          interpolation: img.Interpolation.cubic,
+        )
+      : square;
+
+  return Uint8List.fromList(img.encodePng(prepared, level: 6));
 }
 
 const String _youtubeiMusicNextEndpointForAlbum =
@@ -310,7 +475,10 @@ Future<_ResolvedAlbumRef?> _resolveAlbumFromSearchFallback(
   Video video,
 ) async {
   final compactTitle = video.title.replaceAll(RegExp(r'\s+'), ' ').trim();
-  final compactArtist = video.author.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final compactArtist = cleanArtistName(video.author).replaceAll(
+    RegExp(r'\s+'),
+    ' ',
+  );
   if (compactTitle.isEmpty && compactArtist.isEmpty) return null;
 
   final queries =
@@ -365,7 +533,7 @@ Future<_ResolvedAlbumRef?> _resolveAlbumFromSearchFallback(
   return _ResolvedAlbumRef(
     playlistId: best.playlist.id.value,
     title: resolvedTitle.isNotEmpty ? resolvedTitle : 'Álbum',
-    artist: compactArtist.isNotEmpty ? compactArtist : video.author,
+    artist: compactArtist.isNotEmpty ? compactArtist : cleanArtistName(video.author),
   );
 }
 
@@ -478,18 +646,25 @@ class _SearchPageState extends State<SearchPage>
   final Map<String, String?> _channelLogoCache = {};
   final FocusNode _searchFocusNode = FocusNode();
   int _searchEpoch = 0;
+  int _autocompleteEpoch = 0;
   bool _showArtists = true;
   _SelectedArtistView? _selectedArtistView;
   int _artistTransitionDirection = 1;
   List<Video> _initialRecommendations = const [];
   bool _initialRecommendationsLoading = false;
   String? _initialRecommendationQuery;
+  bool _initialRecommendationsFromQueue = false;
+  bool _autocompleteLoading = false;
+  List<String> _autocompleteSuggestions = const [];
+  final Map<String, List<String>> _autocompleteCache = {};
+  Timer? _autocompleteDebounce;
   SearchViewState? _searchViewState;
   AnimationController? _searchBarGlowController;
 
   @override
   void initState() {
     super.initState();
+    _textController.addListener(_onSearchTextChanged);
     _ensureSearchBarGlowController();
     _searchFocusNode.addListener(() {
       final glow = _ensureSearchBarGlowController();
@@ -549,10 +724,17 @@ class _SearchPageState extends State<SearchPage>
     _channels = [];
   }
 
-  Future<void> _searchVideos() async {
-    if (_textController.text.trim().isEmpty) return;
+  Future<void> _searchVideos({String? forcedQuery}) async {
+    final query = (forcedQuery ?? _textController.text).trim();
+    if (query.isEmpty) return;
+    if (forcedQuery != null) {
+      _textController.value = TextEditingValue(
+        text: query,
+        selection: TextSelection.collapsed(offset: query.length),
+      );
+    }
     FocusScope.of(context).unfocus();
-    final query = _textController.text.trim();
+    _clearAutocompleteSuggestions();
     final epoch = ++_searchEpoch;
     final cached = _searchCache[query];
     final cachedChannels = await _getCachedChannels(query);
@@ -627,51 +809,220 @@ class _SearchPageState extends State<SearchPage>
       _initialRecommendationsLoading = true;
     });
 
-    final query = await _pickInitialRecommendationQuery();
     try {
+      final queueVideos = await _loadQueueStyleRecommendationVideos();
+      if (!mounted) return;
+      if (queueVideos.isNotEmpty) {
+        setState(() {
+          _initialRecommendationQuery = null;
+          _initialRecommendations = queueVideos.take(12).toList();
+          _initialRecommendationsFromQueue = true;
+          _initialRecommendationsLoading = false;
+        });
+        return;
+      }
+
+      const fallbackQueries = [
+        'Regional mexicano',
+        'musica en ingles',
+        'rels b',
+      ];
+      final query =
+          fallbackQueries[math.Random().nextInt(fallbackQueries.length)];
       final videos = await _searchWithCache(query);
       if (!mounted) return;
       setState(() {
         _initialRecommendationQuery = query;
         _initialRecommendations = _prioritizedVideos(videos).take(12).toList();
+        _initialRecommendationsFromQueue = false;
         _initialRecommendationsLoading = false;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _initialRecommendationQuery = query;
+        _initialRecommendationQuery = null;
         _initialRecommendations = const [];
+        _initialRecommendationsFromQueue = false;
         _initialRecommendationsLoading = false;
       });
     }
   }
 
-  Future<String> _pickInitialRecommendationQuery() async {
-    try {
-      final history = await context.read<HistoryService>().getHistory();
-      final byArtist = history
-          .map((h) => h.channelTitle.trim())
-          .where((artist) => artist.isNotEmpty)
-          .toSet()
-          .toList();
-      if (byArtist.isNotEmpty) {
-        final artist = byArtist[math.Random().nextInt(byArtist.length)];
-        return artist;
+  Future<List<Video>> _loadQueueStyleRecommendationVideos() async {
+    final manager = context.read<VideoPlayerManager>();
+    final historyService = context.read<HistoryService>();
+    var queueItems = await manager.fetchQueueStyleRecommendations(limit: 24);
+    if (queueItems.isEmpty) {
+      final history = await historyService.getHistory();
+      final seed = history
+          .map((item) => item.videoId.trim())
+          .firstWhere((id) => id.isNotEmpty, orElse: () => '');
+      if (seed.isNotEmpty) {
+        queueItems = await manager.fetchQueueStyleRecommendations(
+          limit: 24,
+          seedVideoId: seed,
+        );
       }
+    }
+    if (queueItems.isEmpty) return const <Video>[];
 
-      final byTitle = history
-          .map((h) => h.title.trim())
-          .where((title) => title.isNotEmpty)
-          .toList();
-      if (byTitle.isNotEmpty) {
-        return byTitle[math.Random().nextInt(byTitle.length)];
-      }
+    final orderedIds = <String>[];
+    final seenIds = <String>{};
+    for (final item in queueItems) {
+      if (item.isLocal) continue;
+      final id = item.videoId.trim();
+      if (id.isEmpty) continue;
+      if (seenIds.add(id)) orderedIds.add(id);
+    }
+    if (orderedIds.isEmpty) return const <Video>[];
+
+    final resolved = await Future.wait(
+      orderedIds.take(16).map(_resolveVideoById),
+    );
+    return resolved.whereType<Video>().toList(growable: false);
+  }
+
+  Future<Video?> _resolveVideoById(String videoId) async {
+    try {
+      return await _runYoutubeWithRetry(
+        () => _youtubeExplode.videos.get(videoId),
+        maxAttempts: 1,
+      );
     } catch (_) {
-      // Si falla historial, usamos fallback.
+      return null;
+    }
+  }
+
+  void _onSearchTextChanged() {
+    final raw = _textController.text;
+    final query = raw.trim();
+    _autocompleteDebounce?.cancel();
+    final requestId = ++_autocompleteEpoch;
+
+    if (query.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _autocompleteLoading = false;
+        _autocompleteSuggestions = const [];
+      });
+      return;
     }
 
-    const fallbackQueries = ['Regional mexicano', 'musica en ingles', 'rels b'];
-    return fallbackQueries[math.Random().nextInt(fallbackQueries.length)];
+    _autocompleteDebounce = Timer(const Duration(milliseconds: 240), () async {
+      if (!mounted) return;
+      if (!_searchFocusNode.hasFocus) return;
+      setState(() {
+        _autocompleteLoading = true;
+      });
+
+      final suggestions = await _loadAutocompleteSuggestions(query);
+      if (!mounted || requestId != _autocompleteEpoch) return;
+      setState(() {
+        _autocompleteSuggestions = suggestions;
+        _autocompleteLoading = false;
+      });
+    });
+  }
+
+  Future<List<String>> _loadAutocompleteSuggestions(String query) async {
+    final normalized = query.trim();
+    if (normalized.isEmpty) return const <String>[];
+    final cached = _autocompleteCache[normalized];
+    if (cached != null) return cached;
+
+    List<String> suggestions = await _fetchYoutubeAutocompleteSuggestions(
+      normalized,
+    );
+    if (suggestions.isEmpty) {
+      suggestions = _fallbackAutocompleteSuggestions(normalized);
+    }
+
+    final limited = suggestions.take(10).toList(growable: false);
+    _autocompleteCache[normalized] = limited;
+    return limited;
+  }
+
+  Future<List<String>> _fetchYoutubeAutocompleteSuggestions(String query) async {
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 7);
+    try {
+      final uri = Uri.https('suggestqueries.google.com', '/complete/search', {
+        'client': 'firefox',
+        'ds': 'yt',
+        'q': query,
+      });
+      final req = await client.getUrl(uri).timeout(const Duration(seconds: 7));
+      req.headers.set(
+        HttpHeaders.userAgentHeader,
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+      );
+      final res = await req.close().timeout(const Duration(seconds: 8));
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return const <String>[];
+      }
+      final body = await utf8.decoder.bind(res).join();
+      final decoded = jsonDecode(body);
+      if (decoded is! List || decoded.length < 2 || decoded[1] is! List) {
+        return const <String>[];
+      }
+      final seen = <String>{};
+      final output = <String>[];
+      for (final item in decoded[1] as List) {
+        final suggestion = item.toString().trim();
+        if (suggestion.isEmpty) continue;
+        if (!seen.add(suggestion.toLowerCase())) continue;
+        output.add(suggestion);
+        if (output.length >= 12) break;
+      }
+      return output;
+    } catch (_) {
+      return const <String>[];
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  List<String> _fallbackAutocompleteSuggestions(String query) {
+    final normalized = query.toLowerCase();
+    final seen = <String>{};
+    final output = <String>[];
+    for (final key in _searchCache.keys) {
+      final value = key.trim();
+      if (value.isEmpty) continue;
+      final low = value.toLowerCase();
+      if (!low.startsWith(normalized) && !low.contains(normalized)) continue;
+      if (!seen.add(low)) continue;
+      output.add(value);
+      if (output.length >= 10) break;
+    }
+    return output;
+  }
+
+  void _clearAutocompleteSuggestions() {
+    _autocompleteDebounce?.cancel();
+    _autocompleteEpoch++;
+    if (!mounted) return;
+    setState(() {
+      _autocompleteLoading = false;
+      _autocompleteSuggestions = const [];
+    });
+  }
+
+  Future<void> _clearSearchAndShowInitialRecommendations() async {
+    _textController.clear();
+    _clearAutocompleteSuggestions();
+    if (!mounted) return;
+    setState(() {
+      _videos = const [];
+      _channels = const [];
+      _searchState = SearchState.initial;
+    });
+    if (_initialRecommendations.isEmpty && !_initialRecommendationsLoading) {
+      unawaited(_loadInitialRecommendations());
+    }
+  }
+
+  Future<void> _applySuggestionAndSearch(String suggestion) async {
+    await _searchVideos(forcedQuery: suggestion);
   }
 
   Future<void> _openChannel(SearchChannelWithSubscribers channelData) async {
@@ -741,6 +1092,7 @@ class _SearchPageState extends State<SearchPage>
         artist: local.channelTitle,
         localPlainLyrics: local.plainLyrics,
         localSyncedLyrics: local.syncedLyrics,
+        queueStrategy: LocalPlaybackQueueStrategy.recommendations,
       );
       return;
     }
@@ -749,7 +1101,7 @@ class _SearchPageState extends State<SearchPage>
       video.id.value,
       thumbnailUrl: _bestQualityThumbnail(video),
       title: video.title,
-      artist: video.author,
+      artist: cleanArtistName(video.author),
     );
   }
 
@@ -759,7 +1111,7 @@ class _SearchPageState extends State<SearchPage>
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
-      artist: video.author,
+      artist: cleanArtistName(video.author),
     );
     if (!mounted) return;
     _showIosTopToast(
@@ -817,7 +1169,7 @@ class _SearchPageState extends State<SearchPage>
       return _ResolvedAlbumRef(
         playlistId: playlistId,
         title: title,
-        artist: video.author,
+        artist: cleanArtistName(video.author),
       );
     }
     final bySearch = await _resolveAlbumFromSearchFallback(
@@ -830,7 +1182,7 @@ class _SearchPageState extends State<SearchPage>
     return _ResolvedAlbumRef(
       playlistId: fallbackPlayable,
       title: title,
-      artist: video.author,
+      artist: cleanArtistName(video.author),
     );
   }
 
@@ -952,6 +1304,13 @@ class _SearchPageState extends State<SearchPage>
                             ),
                             const SizedBox(height: 8),
                             _GlassSheetActionRow(
+                              icon: CupertinoIcons.square_arrow_up,
+                              label: 'Compartir',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('share'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
                               icon: CupertinoIcons.person_crop_circle,
                               label: 'Ir al artista',
                               onTap: () =>
@@ -986,6 +1345,13 @@ class _SearchPageState extends State<SearchPage>
       await _showPlaylistPicker(video);
       return;
     }
+    if (action == 'share') {
+      await _shareVideoDeepLink(
+        video,
+        shareOrigin: _shareOriginFromContext(context),
+      );
+      return;
+    }
     if (action == 'artist') {
       await _openArtistFromVideo(video);
       return;
@@ -1017,7 +1383,7 @@ class _SearchPageState extends State<SearchPage>
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
-      channelTitle: video.author,
+      channelTitle: cleanArtistName(video.author),
       watchedAt: DateTime.now(),
     );
     await playlistService.addVideoToPlaylist(playlistName, track);
@@ -1610,6 +1976,8 @@ class _SearchPageState extends State<SearchPage>
 
   @override
   void dispose() {
+    _autocompleteDebounce?.cancel();
+    _textController.removeListener(_onSearchTextChanged);
     _searchViewState?.removeListener(_handleSearchViewStateChanged);
     _searchFocusNode.dispose();
     _searchBarGlowController?.dispose();
@@ -1703,7 +2071,7 @@ class _SearchPageState extends State<SearchPage>
                     fontWeight: FontWeight.w500,
                   ),
                   decoration: InputDecoration(
-                    hintText: 'Buscar en YouTube...',
+                    hintText: 'Buscar en VM Music...',
                     hintStyle: TextStyle(
                       color: Colors.white.withValues(alpha: 0.58),
                       fontSize: 13,
@@ -1724,6 +2092,26 @@ class _SearchPageState extends State<SearchPage>
                       minWidth: 36,
                       minHeight: 42,
                     ),
+                    suffixIcon: _textController.text.trim().isEmpty
+                        ? null
+                        : CupertinoButton(
+                            padding: EdgeInsets.zero,
+                            minimumSize: Size.zero,
+                            onPressed: () {
+                              unawaited(
+                                _clearSearchAndShowInitialRecommendations(),
+                              );
+                            },
+                            child: Icon(
+                              CupertinoIcons.xmark_circle_fill,
+                              size: 17,
+                              color: Colors.white.withValues(alpha: 0.72),
+                            ),
+                          ),
+                    suffixIconConstraints: const BoxConstraints(
+                      minWidth: 36,
+                      minHeight: 42,
+                    ),
                     isDense: true,
                     contentPadding: const EdgeInsets.symmetric(
                       vertical: 12,
@@ -1741,9 +2129,20 @@ class _SearchPageState extends State<SearchPage>
   }
 
   Widget _buildBody() {
+    final query = _textController.text.trim();
+    final showingAutocomplete =
+        query.isNotEmpty &&
+        (_searchFocusNode.hasFocus ||
+            _autocompleteLoading ||
+            _autocompleteSuggestions.isNotEmpty) &&
+        (_autocompleteLoading || _autocompleteSuggestions.isNotEmpty);
+    if (showingAutocomplete) {
+      return _buildAutocompleteBody(query);
+    }
+
     switch (_searchState) {
       case SearchState.loading:
-        return const Center(child: CircularProgressIndicator());
+        return const Center(child: CupertinoActivityIndicator(radius: 14));
       case SearchState.error:
         return const Center(
           child: Text('Error al buscar. Inténtalo de nuevo.'),
@@ -1768,9 +2167,11 @@ class _SearchPageState extends State<SearchPage>
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
-                _initialRecommendationQuery == null
+                _initialRecommendationsFromQueue
                     ? 'Recomendado para ti'
-                    : 'Recomendado para ti • $_initialRecommendationQuery',
+                    : (_initialRecommendationQuery == null
+                          ? 'Recomendado para ti'
+                          : 'Recomendado para ti • $_initialRecommendationQuery'),
                 style: Theme.of(
                   context,
                 ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
@@ -1862,7 +2263,7 @@ class _SearchPageState extends State<SearchPage>
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Text(
-                  'Canciones y videos populares',
+                  'Canciones',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -1885,6 +2286,64 @@ class _SearchPageState extends State<SearchPage>
           ],
         );
     }
+  }
+
+  Widget _buildAutocompleteBody(String query) {
+    final baseTextStyle = CupertinoTheme.of(context).textTheme.textStyle;
+    return ListView(
+      children: [
+        if (_autocompleteLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 18),
+            child: Center(child: CupertinoActivityIndicator(radius: 12)),
+          ),
+        if (!_autocompleteLoading && _autocompleteSuggestions.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 18),
+            child: Center(
+              child: Text('Sin sugerencias por ahora.'),
+            ),
+          ),
+        ..._autocompleteSuggestions.map(
+          (suggestion) => InkWell(
+            onTap: () async {
+              await _applySuggestionAndSearch(suggestion);
+            },
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(
+                    CupertinoIcons.search,
+                    size: 17,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      suggestion,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: baseTextStyle.copyWith(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: CupertinoColors.label.resolveFrom(context),
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    CupertinoIcons.arrow_up_left,
+                    size: 16,
+                    color: CupertinoColors.tertiaryLabel.resolveFrom(context),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   List<SearchChannelWithSubscribers> _orderedChannelsForDisplay({
@@ -2478,7 +2937,7 @@ class _TopArtistFromVideoCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          video.author,
+                          cleanArtistName(video.author),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: CupertinoTheme.of(context).textTheme.textStyle
@@ -2733,7 +3192,7 @@ class VideoCard extends StatelessWidget {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        video.author,
+                        cleanArtistName(video.author),
                         style: CupertinoTheme.of(context).textTheme.textStyle
                             .copyWith(
                               fontSize: 13,
@@ -2936,6 +3395,7 @@ void _showIosTopToast(
   required IconData icon,
 }) {
   final overlay = Overlay.of(context, rootOverlay: true);
+  final isDark = Theme.of(context).brightness == Brightness.dark;
 
   late OverlayEntry entry;
   entry = OverlayEntry(
@@ -2948,7 +3408,11 @@ void _showIosTopToast(
             alignment: Alignment.bottomCenter,
             child: Padding(
               padding: EdgeInsets.only(bottom: bottomInset + 130),
-              child: _IosTopToast(message: message, icon: icon),
+              child: _IosTopToast(
+                message: message,
+                icon: icon,
+                isDark: isDark,
+              ),
             ),
           ),
         ),
@@ -2964,8 +3428,13 @@ void _showIosTopToast(
 class _IosTopToast extends StatefulWidget {
   final String message;
   final IconData icon;
+  final bool isDark;
 
-  const _IosTopToast({required this.message, required this.icon});
+  const _IosTopToast({
+    required this.message,
+    required this.icon,
+    required this.isDark,
+  });
 
   @override
   State<_IosTopToast> createState() => _IosTopToastState();
@@ -3018,12 +3487,12 @@ class _IosTopToastState extends State<_IosTopToast>
               constraints: const BoxConstraints(maxWidth: 330),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? Colors.black.withValues(alpha: 0.72)
+                color: widget.isDark
+                    ? const Color(0xFF0D0F13).withValues(alpha: 0.84)
                     : Colors.white.withValues(alpha: 0.86),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
-                  color: Theme.of(context).brightness == Brightness.dark
+                  color: widget.isDark
                       ? Colors.white.withValues(alpha: 0.14)
                       : Colors.black.withValues(alpha: 0.08),
                   width: 0.6,
@@ -3038,7 +3507,7 @@ class _IosTopToastState extends State<_IosTopToast>
                   fontFamily: '.SF Pro Text',
                   fontWeight: FontWeight.w600,
                   fontSize: 14,
-                  color: Theme.of(context).brightness == Brightness.dark
+                  color: widget.isDark
                       ? Colors.white
                       : Colors.black,
                   decoration: TextDecoration.none,
@@ -3359,6 +3828,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
         artist: local.channelTitle,
         localPlainLyrics: local.plainLyrics,
         localSyncedLyrics: local.syncedLyrics,
+        queueStrategy: LocalPlaybackQueueStrategy.recommendations,
       );
       return;
     }
@@ -3367,7 +3837,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
       video.id.value,
       thumbnailUrl: _bestQualityThumbnail(video),
       title: video.title,
-      artist: video.author,
+      artist: cleanArtistName(video.author),
     );
   }
 
@@ -3377,7 +3847,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
-      artist: video.author,
+      artist: cleanArtistName(video.author),
     );
     if (!mounted) return;
     _showIosTopToast(
@@ -3407,7 +3877,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
       return _ResolvedAlbumRef(
         playlistId: playlistId,
         title: title,
-        artist: video.author,
+        artist: cleanArtistName(video.author),
       );
     }
     final bySearch = await _resolveAlbumFromSearchFallback(_yt, video);
@@ -3417,7 +3887,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     return _ResolvedAlbumRef(
       playlistId: fallbackPlayable,
       title: title,
-      artist: video.author,
+      artist: cleanArtistName(video.author),
     );
   }
 
@@ -3539,6 +4009,13 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
                             ),
                             const SizedBox(height: 8),
                             _GlassSheetActionRow(
+                              icon: CupertinoIcons.square_arrow_up,
+                              label: 'Compartir',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('share'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
                               icon: CupertinoIcons.rectangle_stack_fill,
                               label: 'Ir al álbum',
                               onTap: () =>
@@ -3564,6 +4041,13 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     }
     if (action == 'playlist') {
       await _showPlaylistPicker(video);
+      return;
+    }
+    if (action == 'share') {
+      await _shareVideoDeepLink(
+        video,
+        shareOrigin: _shareOriginFromContext(context),
+      );
       return;
     }
     if (action == 'album') {
@@ -3593,7 +4077,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
-      channelTitle: video.author,
+      channelTitle: cleanArtistName(video.author),
       watchedAt: DateTime.now(),
     );
     await playlistService.addVideoToPlaylist(playlistName, track);
@@ -4068,6 +4552,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
         artist: local.channelTitle,
         localPlainLyrics: local.plainLyrics,
         localSyncedLyrics: local.syncedLyrics,
+        queueStrategy: LocalPlaybackQueueStrategy.recommendations,
       );
       return;
     }
@@ -4080,7 +4565,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       video.id.value,
       preferredThumbnailUrl: _bestQualityThumbnail(video),
       preferredTitle: video.title,
-      preferredArtist: video.author,
+      preferredArtist: cleanArtistName(video.author),
     );
   }
 
@@ -4090,7 +4575,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
-      artist: video.author,
+      artist: cleanArtistName(video.author),
     );
     if (!mounted) return;
     _showIosTopToast(
@@ -4188,6 +4673,13 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
                               onTap: () =>
                                   Navigator.of(sheetContext).pop('playlist'),
                             ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.square_arrow_up,
+                              label: 'Compartir',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('share'),
+                            ),
                           ],
                         ),
                       ),
@@ -4208,6 +4700,13 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
     }
     if (action == 'playlist') {
       await _showPlaylistPicker(video);
+      return;
+    }
+    if (action == 'share') {
+      await _shareVideoDeepLink(
+        video,
+        shareOrigin: _shareOriginFromContext(context),
+      );
       return;
     }
   }
@@ -4234,7 +4733,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
-      channelTitle: video.author,
+      channelTitle: cleanArtistName(video.author),
       watchedAt: DateTime.now(),
     );
     await playlistService.addVideoToPlaylist(playlistName, track);

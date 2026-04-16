@@ -158,6 +158,7 @@ static void vm_bass_tap_process(
     const float alpha = vm_bass_clamp(storage->alpha, 0.0005f, 0.95f);
     const float bassAmount = vm_bass_clamp(storage->bassAmount, 0.0f, 2.2f);
     const float karaokeAmount = vm_bass_clamp(storage->karaokeAmount, 0.0f, 1.8f);
+    const float karaokeOutputGain = vm_bass_clamp(1.0f + (karaokeAmount * 0.56f), 1.0f, 2.0f);
     const BOOL applyBass = bassAmount > 0.0f;
     const BOOL applyKaraoke = karaokeAmount > 0.0f;
     if (!applyBass && !applyKaraoke) return;
@@ -204,8 +205,8 @@ static void vm_bass_tap_process(
                         &outL,
                         &outR
                     );
-                    samples[leftIdx] = outL;
-                    samples[rightIdx] = outR;
+                    samples[leftIdx] = vm_bass_clamp(outL * karaokeOutputGain, -1.0f, 1.0f);
+                    samples[rightIdx] = vm_bass_clamp(outR * karaokeOutputGain, -1.0f, 1.0f);
                 }
             }
             return;
@@ -253,8 +254,8 @@ static void vm_bass_tap_process(
                         &outL,
                         &outR
                     );
-                    leftSamples[frame] = outL;
-                    rightSamples[frame] = outR;
+                    leftSamples[frame] = vm_bass_clamp(outL * karaokeOutputGain, -1.0f, 1.0f);
+                    rightSamples[frame] = vm_bass_clamp(outR * karaokeOutputGain, -1.0f, 1.0f);
                 }
             }
         }
@@ -296,8 +297,8 @@ static void vm_bass_tap_process(
                     &outL,
                     &outR
                 );
-                samples[leftIdx] = (int16_t)(outL * 32767.0f);
-                samples[rightIdx] = (int16_t)(outR * 32767.0f);
+                samples[leftIdx] = (int16_t)(vm_bass_clamp(outL * karaokeOutputGain, -1.0f, 1.0f) * 32767.0f);
+                samples[rightIdx] = (int16_t)(vm_bass_clamp(outR * karaokeOutputGain, -1.0f, 1.0f) * 32767.0f);
             }
         }
         return;
@@ -345,8 +346,8 @@ static void vm_bass_tap_process(
                     &outL,
                     &outR
                 );
-                leftSamples[frame] = (int16_t)(outL * 32767.0f);
-                rightSamples[frame] = (int16_t)(outR * 32767.0f);
+                leftSamples[frame] = (int16_t)(vm_bass_clamp(outL * karaokeOutputGain, -1.0f, 1.0f) * 32767.0f);
+                rightSamples[frame] = (int16_t)(vm_bass_clamp(outR * karaokeOutputGain, -1.0f, 1.0f) * 32767.0f);
             }
         }
     }

@@ -33,14 +33,15 @@ class ArtworkSubjectCutoutService {
               payload,
             );
             if (native != null && native.isNotEmpty) {
-              final nativeUsable = _isLikelyUsefulCutout(native);
+              final normalizedNative = _normalizeSubjectScale(native);
+              final nativeUsable = _isLikelyUsefulCutout(normalizedNative);
               if (kDebugMode) {
                 debugPrint(
-                  '[cutout] iOS native success key=$cacheKey outBytes=${native.length} usable=$nativeUsable',
+                  '[cutout] iOS native success key=$cacheKey outBytes=${normalizedNative.length} usable=$nativeUsable',
                 );
               }
               if (nativeUsable) {
-                return native;
+                return normalizedNative;
               }
               if (kDebugMode) {
                 debugPrint('[cutout] iOS native unusable key=$cacheKey -> fallback dart');
@@ -69,7 +70,9 @@ class ArtworkSubjectCutoutService {
         if (kDebugMode) {
           debugPrint('[cutout] Dart fallback start key=$cacheKey bytes=${sourceBytes.length}');
         }
-        return compute(_buildCutoutWorker, payload);
+        final dartCutout = await compute(_buildCutoutWorker, payload);
+        if (dartCutout == null || dartCutout.isEmpty) return dartCutout;
+        return _normalizeSubjectScale(dartCutout);
       },
     );
   }
@@ -100,14 +103,14 @@ Uint8List? _buildCutoutWorker(Map<String, Object> payload) {
   final src = decoded;
 
   final maxSide = math.max(src.width, src.height);
-  final targetSide = maxSide > 196 ? 196 : maxSide;
+  final targetSide = maxSide > 384 ? 384 : maxSide;
   if (targetSide < 40) return null;
 
   final work = img.copyResize(
     src,
     width: (src.width * targetSide / maxSide).round(),
     height: (src.height * targetSide / maxSide).round(),
-    interpolation: img.Interpolation.average,
+    interpolation: img.Interpolation.cubic,
   );
 
   final w = work.width;
@@ -264,6 +267,72 @@ bool _isLikelyUsefulCutout(Uint8List pngBytes) {
   }
   // Too tiny or almost full-frame masks are usually not visually useful in this UI.
   return ratio >= 0.07 && ratio <= 0.84;
+}
+
+Uint8List _normalizeSubjectScale(Uint8List pngBytes) {
+  final image = img.decodeImage(pngBytes);
+  if (image == null) return pngBytes;
+  final w = image.width;
+  final h = image.height;
+  if (w <= 0 || h <= 0) return pngBytes;
+
+  var minX = w;
+  var minY = h;
+  var maxX = -1;
+  var maxY = -1;
+  var solid = 0;
+
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      final a = image.getPixel(x, y).a;
+      if (a <= 20) continue;
+      solid++;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (solid == 0 || maxX < minX || maxY < minY) return pngBytes;
+
+  final boxW = maxX - minX + 1;
+  final boxH = maxY - minY + 1;
+  final maxBoxSide = math.max(boxW, boxH).toDouble();
+  final canvasSide = math.max(w, h).toDouble();
+  final currentFill = maxBoxSide / canvasSide;
+
+  // Solo ampliamos cuando el sujeto quedó claramente pequeño.
+  if (currentFill >= 0.78) return pngBytes;
+
+  const targetFill = 0.86;
+  final scale = (targetFill / currentFill).clamp(1.0, 1.60);
+  if (scale <= 1.001) return pngBytes;
+
+  final crop = img.copyCrop(
+    image,
+    x: minX,
+    y: minY,
+    width: boxW,
+    height: boxH,
+  );
+
+  final newW = (boxW * scale).round().clamp(1, w);
+  final newH = (boxH * scale).round().clamp(1, h);
+  final resized = img.copyResize(
+    crop,
+    width: newW,
+    height: newH,
+    interpolation: img.Interpolation.cubic,
+  );
+
+  final out = img.Image(width: w, height: h, numChannels: 4);
+  img.fill(out, color: img.ColorRgba8(0, 0, 0, 0));
+  final dstX = ((w - newW) / 2).round();
+  final dstY = ((h - newH) / 2).round();
+  img.compositeImage(out, resized, dstX: dstX, dstY: dstY);
+
+  return Uint8List.fromList(img.encodePng(out, level: 6));
 }
 
 List<_ComponentStats> _extractComponents(Uint8List binary, Float32List saliency, int w, int h) {

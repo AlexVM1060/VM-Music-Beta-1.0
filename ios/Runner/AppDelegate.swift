@@ -11,12 +11,15 @@ import MediaPlayer
   private let liveLyricsAlignmentChannelName = "com.vm.music.beta/ios_live_lyrics_alignment"
   private let lockScreenFavoriteChannelName = "com.vm.music.beta/ios_lock_screen_favorite"
   private let siriPlaybackChannelName = "com.vm.music.beta/siri_playback"
+  private let songShareChannelName = "com.vm.music.beta/song_share"
   private let appleMusicMigrationChannelName = "com.vm.music.beta/apple_music_migration"
   private let siriPlaybackPendingKey = "com.vm.music.beta.pending_siri_playback"
+  private let sharedSongPendingKey = "com.vm.music.beta.pending_shared_song"
   private let ciContext = CIContext(options: nil)
   private var liveLyricsTask: SFSpeechRecognitionTask?
   private var lockScreenFavoriteChannel: FlutterMethodChannel?
   private var siriPlaybackChannel: FlutterMethodChannel?
+  private var songShareChannel: FlutterMethodChannel?
 
   override func application(
     _ application: UIApplication,
@@ -65,6 +68,17 @@ import MediaPlayer
       }
     }
 
+    if let registrar = self.registrar(forPlugin: "SongShareChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: songShareChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      songShareChannel = channel
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleSongShare(call: call, result: result)
+      }
+    }
+
     if let registrar = self.registrar(forPlugin: "AppleMusicMigrationChannelPlugin") {
       let channel = FlutterMethodChannel(
         name: appleMusicMigrationChannelName,
@@ -75,8 +89,23 @@ import MediaPlayer
       }
     }
 
+    if let launchUrl = launchOptions?[.url] as? URL {
+      _ = captureSharedSong(from: launchUrl)
+    }
+
     GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey : Any] = [:]
+  ) -> Bool {
+    if captureSharedSong(from: url) {
+      return true
+    }
+    return super.application(app, open: url, options: options)
   }
 
   private func configureLockScreenFavoriteCommands() {
@@ -142,6 +171,88 @@ import MediaPlayer
       return
     }
     result(FlutterMethodNotImplemented)
+  }
+
+  private func handleSongShare(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    if call.method == "consumePendingSharedSong" {
+      let defaults = UserDefaults.standard
+      let payload = defaults.dictionary(forKey: sharedSongPendingKey)
+      defaults.removeObject(forKey: sharedSongPendingKey)
+      result(payload)
+      return
+    }
+    result(FlutterMethodNotImplemented)
+  }
+
+  private func captureSharedSong(from url: URL) -> Bool {
+    let parsed = parseSharedSongPayload(from: url)
+    guard let payload = parsed else { return false }
+    UserDefaults.standard.set(payload, forKey: sharedSongPendingKey)
+    DispatchQueue.main.async { [weak self] in
+      self?.songShareChannel?.invokeMethod("onSharedSongReceived", arguments: payload)
+    }
+    return true
+  }
+
+  private func parseSharedSongPayload(from url: URL) -> [String: Any]? {
+    if let scheme = url.scheme?.lowercased(),
+       scheme == "vmmusic",
+       url.host?.lowercased() == "song",
+       let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+      let items = comps.queryItems ?? []
+      let map = Dictionary(uniqueKeysWithValues: items.map { ($0.name, $0.value ?? "") })
+      let videoId = (map["videoId"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      if videoId.isEmpty { return nil }
+      let title = (map["title"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      let artist = (map["artist"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      let thumbnailUrl = (map["thumbnailUrl"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      var payload: [String: Any] = [
+        "videoId": videoId,
+        "title": title,
+        "artist": artist,
+        "thumbnailUrl": thumbnailUrl,
+        "timestampMs": Int(Date().timeIntervalSince1970 * 1000)
+      ]
+      if let durationRaw = map["durationMs"],
+         let durationMs = Int(durationRaw),
+         durationMs > 0 {
+        payload["durationMs"] = durationMs
+      }
+      return payload
+    }
+
+    let ext = url.pathExtension.lowercased()
+    guard ext == "vmsong" || ext == "json" else { return nil }
+    let hasAccess = url.startAccessingSecurityScopedResource()
+    defer {
+      if hasAccess {
+        url.stopAccessingSecurityScopedResource()
+      }
+    }
+    guard let data = try? Data(contentsOf: url),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return nil
+    }
+    let type = (json["type"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if !type.isEmpty && type != "vm_music_song" {
+      return nil
+    }
+    let videoId = (json["videoId"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if videoId.isEmpty { return nil }
+    let title = (json["title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let artist = (json["artist"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let thumbnailUrl = (json["thumbnailUrl"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    var payload: [String: Any] = [
+      "videoId": videoId,
+      "title": title,
+      "artist": artist,
+      "thumbnailUrl": thumbnailUrl,
+      "timestampMs": Int(Date().timeIntervalSince1970 * 1000)
+    ]
+    if let durationMs = json["durationMs"] as? NSNumber {
+      payload["durationMs"] = durationMs
+    }
+    return payload
   }
 
   private func handleAppleMusicMigration(call: FlutterMethodCall, result: @escaping FlutterResult) {
