@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/services.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/apple_music_library_service.dart';
 import 'package:myapp/services/playlist_service.dart';
@@ -56,8 +57,13 @@ class AppleMusicPlaylistMigrationService {
   final AppleMusicLibraryService _appleMusicService;
   YoutubeExplode _yt = YoutubeExplode();
   final Map<String, Video?> _queryCache = <String, Video?>{};
+  final MethodChannel _backgroundTaskChannel = const MethodChannel(
+    'com.vm.music.beta/background_task',
+  );
   DateTime? _lastSearchAt;
-  static const Duration _baseSearchGap = Duration(milliseconds: 1100);
+  Future<void> _searchSlotTail = Future<void>.value();
+  static const Duration _baseSearchGap = Duration(milliseconds: 260);
+  static const int _maxTrackWorkers = 4;
 
   AppleMusicPlaylistMigrationService({
     required PlaylistService playlistService,
@@ -81,76 +87,112 @@ class AppleMusicPlaylistMigrationService {
       );
     }
 
-    final existingNames = (await _playlistService.getPlaylists())
-        .map((playlist) => playlist.name.toLowerCase())
-        .toSet();
+    final taskToken = await _beginBackgroundTask();
+    try {
+      final existingNames = (await _playlistService.getPlaylists())
+          .map((playlist) => playlist.name.toLowerCase())
+          .toSet();
 
-    final playlistResults = <AppleMusicPlaylistMigrationItemResult>[];
-    var totalTracks = 0;
-    var importedTracks = 0;
+      final playlistResults = <AppleMusicPlaylistMigrationItemResult>[];
+      var totalTracks = 0;
+      var importedTracks = 0;
 
-    for (var p = 0; p < prepared.length; p++) {
-      final sourcePlaylist = prepared[p];
-      final sourceTracks = await _appleMusicService.fetchPlaylistTracks(
-        sourcePlaylist.id,
+      for (var p = 0; p < prepared.length; p++) {
+        final sourcePlaylist = prepared[p];
+        final sourceTracks = await _appleMusicService.fetchPlaylistTracks(
+          sourcePlaylist.id,
+        );
+        totalTracks += sourceTracks.length;
+
+        final targetName = _resolveUniquePlaylistName(
+          sourceName: sourcePlaylist.name,
+          existingLowercaseNames: existingNames,
+        );
+        await _playlistService.createPlaylist(targetName);
+        existingNames.add(targetName.toLowerCase());
+
+        final matchedEntries = await _resolvePlaylistMatches(
+          sourceTracks: sourceTracks,
+          playlistIndex: p + 1,
+          playlistTotal: prepared.length,
+          playlistName: sourcePlaylist.name,
+          onProgress: onProgress,
+        );
+        final importedInPlaylist = await _playlistService.addVideosToPlaylist(
+          targetName,
+          matchedEntries,
+        );
+        importedTracks += importedInPlaylist;
+
+        playlistResults.add(
+          AppleMusicPlaylistMigrationItemResult(
+            sourcePlaylistName: sourcePlaylist.name,
+            targetPlaylistName: targetName,
+            sourceTrackCount: sourceTracks.length,
+            importedCount: importedInPlaylist,
+          ),
+        );
+      }
+
+      return AppleMusicPlaylistMigrationResult(
+        playlists: playlistResults,
+        totalTracks: totalTracks,
+        importedTracks: importedTracks,
       );
-      totalTracks += sourceTracks.length;
+    } finally {
+      await _endBackgroundTask(taskToken);
+    }
+  }
 
-      final targetName = _resolveUniquePlaylistName(
-        sourceName: sourcePlaylist.name,
-        existingLowercaseNames: existingNames,
-      );
-      await _playlistService.createPlaylist(targetName);
-      existingNames.add(targetName.toLowerCase());
+  Future<List<VideoHistory>> _resolvePlaylistMatches({
+    required List<AppleMusicLibraryTrack> sourceTracks,
+    required int playlistIndex,
+    required int playlistTotal,
+    required String playlistName,
+    Future<void> Function(AppleMusicPlaylistMigrationProgress progress)?
+    onProgress,
+  }) async {
+    if (sourceTracks.isEmpty) return const <VideoHistory>[];
+    final results = List<VideoHistory?>.filled(sourceTracks.length, null);
+    var cursor = 0;
+    var processed = 0;
 
-      var importedInPlaylist = 0;
-      for (var t = 0; t < sourceTracks.length; t++) {
-        final track = sourceTracks[t];
+    Future<void> worker() async {
+      while (true) {
+        final index = cursor++;
+        if (index >= sourceTracks.length) return;
+        final track = sourceTracks[index];
+        final match = await _findBestYoutubeMatch(track);
+        if (match != null) {
+          results[index] = VideoHistory(
+            videoId: match.id.value,
+            title: match.title,
+            thumbnailUrl: _bestThumbnailFromSearchVideo(match),
+            channelTitle: match.author,
+            watchedAt: DateTime.now(),
+          );
+        }
+        processed += 1;
         if (onProgress != null) {
           await onProgress(
             AppleMusicPlaylistMigrationProgress(
-              playlistIndex: p + 1,
-              playlistTotal: prepared.length,
-              playlistName: sourcePlaylist.name,
-              trackIndex: t + 1,
+              playlistIndex: playlistIndex,
+              playlistTotal: playlistTotal,
+              playlistName: playlistName,
+              trackIndex: processed,
               trackTotal: sourceTracks.length,
               trackTitle: track.title,
             ),
           );
         }
-
-        final match = await _findBestYoutubeMatch(track);
-        if (match == null) continue;
-        final thumbnailUrl = _bestThumbnailFromSearchVideo(match);
-        await _playlistService.addVideoToPlaylist(
-          targetName,
-          VideoHistory(
-            videoId: match.id.value,
-            title: match.title,
-            thumbnailUrl: thumbnailUrl,
-            channelTitle: match.author,
-            watchedAt: DateTime.now(),
-          ),
-        );
-        importedInPlaylist += 1;
-        importedTracks += 1;
       }
-
-      playlistResults.add(
-        AppleMusicPlaylistMigrationItemResult(
-          sourcePlaylistName: sourcePlaylist.name,
-          targetPlaylistName: targetName,
-          sourceTrackCount: sourceTracks.length,
-          importedCount: importedInPlaylist,
-        ),
-      );
     }
 
-    return AppleMusicPlaylistMigrationResult(
-      playlists: playlistResults,
-      totalTracks: totalTracks,
-      importedTracks: importedTracks,
+    final workers = math.min(_maxTrackWorkers, sourceTracks.length);
+    await Future.wait(
+      List<Future<void>>.generate(workers, (_) => worker(), growable: false),
     );
+    return results.whereType<VideoHistory>().toList(growable: false);
   }
 
   Future<Video?> _findBestYoutubeMatch(AppleMusicLibraryTrack track) async {
@@ -221,7 +263,7 @@ class AppleMusicPlaylistMigrationService {
       '$base audio',
       base,
     };
-    return set.where((q) => q.isNotEmpty).take(8).toList(growable: false);
+    return set.where((q) => q.isNotEmpty).take(5).toList(growable: false);
   }
 
   Future<List<Video>> _searchVideosWithRetry(
@@ -264,21 +306,51 @@ class AppleMusicPlaylistMigrationService {
   }
 
   Future<void> _waitSearchSlot({required int attempt}) async {
-    final now = DateTime.now();
-    final previous = _lastSearchAt;
-    var effectiveGap = _baseSearchGap;
-    if (attempt > 1) {
-      effectiveGap += Duration(milliseconds: attempt * 380);
-    }
-    if (previous != null) {
-      final elapsed = now.difference(previous);
-      if (elapsed < effectiveGap) {
-        await Future<void>.delayed(effectiveGap - elapsed);
+    final previousTail = _searchSlotTail;
+    final gate = Completer<void>();
+    _searchSlotTail = gate.future;
+    await previousTail;
+    try {
+      final now = DateTime.now();
+      final previous = _lastSearchAt;
+      var effectiveGap = _baseSearchGap;
+      if (attempt > 1) {
+        effectiveGap += Duration(milliseconds: attempt * 170);
       }
+      if (previous != null) {
+        final elapsed = now.difference(previous);
+        if (elapsed < effectiveGap) {
+          await Future<void>.delayed(effectiveGap - elapsed);
+        }
+      }
+      final jitter = 20 + math.Random().nextInt(90);
+      await Future<void>.delayed(Duration(milliseconds: jitter));
+      _lastSearchAt = DateTime.now();
+    } finally {
+      gate.complete();
     }
-    final jitter = 120 + math.Random().nextInt(420);
-    await Future<void>.delayed(Duration(milliseconds: jitter));
-    _lastSearchAt = DateTime.now();
+  }
+
+  Future<String?> _beginBackgroundTask() async {
+    if (!Platform.isIOS) return null;
+    try {
+      return await _backgroundTaskChannel.invokeMethod<String>(
+        'beginTask',
+        <String, dynamic>{'name': 'apple_music_migration'},
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _endBackgroundTask(String? token) async {
+    if (!Platform.isIOS || token == null || token.isEmpty) return;
+    try {
+      await _backgroundTaskChannel.invokeMethod<void>(
+        'endTask',
+        <String, dynamic>{'token': token},
+      );
+    } catch (_) {}
   }
 
   bool _looksLikeYoutubeAbuseRedirect(Object error) {

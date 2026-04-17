@@ -13,6 +13,7 @@ import MediaPlayer
   private let siriPlaybackChannelName = "com.vm.music.beta/siri_playback"
   private let songShareChannelName = "com.vm.music.beta/song_share"
   private let appleMusicMigrationChannelName = "com.vm.music.beta/apple_music_migration"
+  private let backgroundTaskChannelName = "com.vm.music.beta/background_task"
   private let siriPlaybackPendingKey = "com.vm.music.beta.pending_siri_playback"
   private let sharedSongPendingKey = "com.vm.music.beta.pending_shared_song"
   private let ciContext = CIContext(options: nil)
@@ -20,6 +21,7 @@ import MediaPlayer
   private var lockScreenFavoriteChannel: FlutterMethodChannel?
   private var siriPlaybackChannel: FlutterMethodChannel?
   private var songShareChannel: FlutterMethodChannel?
+  private var activeBackgroundTasks: [String: UIBackgroundTaskIdentifier] = [:]
 
   override func application(
     _ application: UIApplication,
@@ -86,6 +88,16 @@ import MediaPlayer
       )
       channel.setMethodCallHandler { [weak self] call, result in
         self?.handleAppleMusicMigration(call: call, result: result)
+      }
+    }
+
+    if let registrar = self.registrar(forPlugin: "BackgroundTaskChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: backgroundTaskChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleBackgroundTask(call: call, result: result)
       }
     }
 
@@ -319,6 +331,46 @@ import MediaPlayer
       return "notDetermined"
     @unknown default:
       return "notDetermined"
+    }
+  }
+
+  private func handleBackgroundTask(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "beginTask":
+      let args = call.arguments as? [String: Any]
+      let requestedName = (args?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+      let taskName = (requestedName?.isEmpty == false) ? requestedName! : "vm_music_background_task"
+      let token = UUID().uuidString
+      var identifier: UIBackgroundTaskIdentifier = .invalid
+      identifier = UIApplication.shared.beginBackgroundTask(withName: taskName) { [weak self] in
+        guard let self else { return }
+        let pending = self.activeBackgroundTasks[token] ?? .invalid
+        if pending != .invalid {
+          UIApplication.shared.endBackgroundTask(pending)
+        }
+        self.activeBackgroundTasks.removeValue(forKey: token)
+      }
+      if identifier == .invalid {
+        result(nil)
+        return
+      }
+      activeBackgroundTasks[token] = identifier
+      result(token)
+    case "endTask":
+      guard let args = call.arguments as? [String: Any],
+            let token = (args["token"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !token.isEmpty else {
+        result(nil)
+        return
+      }
+      let identifier = activeBackgroundTasks[token] ?? .invalid
+      if identifier != .invalid {
+        UIApplication.shared.endBackgroundTask(identifier)
+      }
+      activeBackgroundTasks.removeValue(forKey: token)
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
     }
   }
 

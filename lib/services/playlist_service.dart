@@ -75,6 +75,51 @@ class PlaylistService {
     }
   }
 
+  Future<int> addVideosToPlaylist(
+    String playlistName,
+    List<VideoHistory> videos,
+  ) async {
+    if (videos.isEmpty) return 0;
+    final box = await _box;
+    final normalizedName = _normalizePlaylistName(playlistName);
+    Playlist? playlist;
+    dynamic playlistKey;
+
+    for (final entry in box.toMap().entries) {
+      if (entry.value.name == normalizedName) {
+        playlist = entry.value;
+        playlistKey = entry.key;
+        break;
+      }
+    }
+
+    if (playlist == null) {
+      await createPlaylist(normalizedName);
+      for (final entry in box.toMap().entries) {
+        if (entry.value.name == normalizedName) {
+          playlist = entry.value;
+          playlistKey = entry.key;
+          break;
+        }
+      }
+    }
+
+    if (playlist == null || playlistKey == null) return 0;
+
+    final existingIds = playlist.videos.map((v) => v.videoId).toSet();
+    var added = 0;
+    for (final video in videos) {
+      if (existingIds.add(video.videoId)) {
+        playlist.videos.add(video);
+        added++;
+      }
+    }
+    if (added > 0) {
+      await box.put(playlistKey, playlist);
+    }
+    return added;
+  }
+
   Future<void> removeVideoFromPlaylist(
     String playlistName,
     String videoId,

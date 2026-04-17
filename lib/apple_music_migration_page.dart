@@ -313,8 +313,13 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
                     CupertinoButton(
                       onPressed: _isAuthorized
                           ? null
-                          : (_isRequestingAuthorization ? null : _requestAuthorization),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          : (_isRequestingAuthorization
+                                ? null
+                                : _requestAuthorization),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
                       borderRadius: BorderRadius.circular(16),
                       color: _isAuthorized
                           ? CupertinoColors.systemGreen
@@ -332,8 +337,8 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
                             _isAuthorized
                                 ? 'Conectado'
                                 : (_isRequestingAuthorization
-                                    ? 'Solicitando...'
-                                    : 'Conectar Apple Music'),
+                                      ? 'Solicitando...'
+                                      : 'Conectar Apple Music'),
                             style: TextStyle(
                               color: CupertinoColors.white,
                               fontWeight: FontWeight.w600,
@@ -493,8 +498,13 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
                       ),
                     if (_progress != null) const SizedBox(height: 10),
                     CupertinoButton(
-                      onPressed: _isMigrating ? null : _migrateSelectedPlaylists,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      onPressed: _isMigrating
+                          ? null
+                          : _migrateSelectedPlaylists,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 14,
+                      ),
                       borderRadius: BorderRadius.circular(16),
                       color: CupertinoColors.systemPink,
                       child: Row(
@@ -555,8 +565,8 @@ class _GlassSection extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             color: isDark
-                ? const Color(0xFF1C1C1E).withOpacity(0.85)
-                : CupertinoColors.systemBackground.withOpacity(0.85),
+                ? const Color(0xFF1C1C1E).withValues(alpha: 0.85)
+                : CupertinoColors.systemBackground.withValues(alpha: 0.85),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
               color: isDark
@@ -613,7 +623,7 @@ class _PlaylistSelectionTile extends StatelessWidget {
           boxShadow: selected
               ? [
                   BoxShadow(
-                    color: CupertinoColors.systemPink.withOpacity(0.25),
+                    color: CupertinoColors.systemPink.withValues(alpha: 0.25),
                     blurRadius: 10,
                     offset: Offset(0, 4),
                   ),

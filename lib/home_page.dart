@@ -7,6 +7,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:hive/hive.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
@@ -17,6 +18,7 @@ import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
+import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -402,7 +404,10 @@ class _HomePageState extends State<HomePage> {
     required List<_HomeTrack> trendingSeed,
     required List<_HomeTrack> searchSeed,
   }) {
-    List<_HomeTrack> dedupeTracks(Iterable<_HomeTrack> source, {int take = 12}) {
+    List<_HomeTrack> dedupeTracks(
+      Iterable<_HomeTrack> source, {
+      int take = 12,
+    }) {
       final out = <_HomeTrack>[];
       final seen = <String>{};
       for (final item in source) {
@@ -526,7 +531,10 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<void> _addTrackToQueue(_HomeTrack track) async {
+  Future<void> _addTrackToQueue(
+    _HomeTrack track, {
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
+  }) async {
     final manager = context.read<VideoPlayerManager>();
     final added = track.isLocal && track.localFilePath != null
         ? manager.addLocalTrackToPlaybackQueue(
@@ -537,12 +545,14 @@ class _HomePageState extends State<HomePage> {
             filePath: track.localFilePath!,
             localPlainLyrics: track.localPlainLyrics,
             localSyncedLyrics: track.localSyncedLyrics,
+            insertMode: insertMode,
           )
         : manager.addOnlineTrackToPlaybackQueue(
             videoId: track.videoId,
             title: track.title,
             thumbnailUrl: track.thumbnailUrl,
             artist: track.artist,
+            insertMode: insertMode,
           );
     if (!mounted) return;
     await HapticFeedback.lightImpact();
@@ -550,7 +560,9 @@ class _HomePageState extends State<HomePage> {
     _showQueueIosToast(
       context,
       message: added
-          ? 'Se ha añadido a la cola'
+          ? (insertMode == ManualQueueInsertMode.next
+                ? 'Se añadió como siguiente'
+                : 'Se ha añadido a la cola')
           : 'Esta canción ya está en cola',
       icon: added
           ? CupertinoIcons.check_mark_circled_solid
@@ -853,7 +865,14 @@ class _HomePageState extends State<HomePage> {
                             return _RelistenStackedColumn(
                               items: columnItems,
                               onTap: _playTrack,
-                              onSwipeToQueue: _addTrackToQueue,
+                              onSwipeToQueueNext: (item) => _addTrackToQueue(
+                                item,
+                                insertMode: ManualQueueInsertMode.next,
+                              ),
+                              onSwipeToQueueEnd: (item) => _addTrackToQueue(
+                                item,
+                                insertMode: ManualQueueInsertMode.end,
+                              ),
                               onAddToPlaylist: _addTrackToPlaylist,
                               allowSwipeToQueue: !_relistenListIsDragging,
                             );
@@ -905,7 +924,14 @@ class _HomePageState extends State<HomePage> {
                             return _TrendingRowCard(
                               item: item,
                               onTap: () => _playTrack(item),
-                              onSwipeToQueue: () => _addTrackToQueue(item),
+                              onSwipeToQueueNext: () => _addTrackToQueue(
+                                item,
+                                insertMode: ManualQueueInsertMode.next,
+                              ),
+                              onSwipeToQueueEnd: () => _addTrackToQueue(
+                                item,
+                                insertMode: ManualQueueInsertMode.end,
+                              ),
                               onAddToPlaylist: () => _addTrackToPlaylist(item),
                             );
                           },
@@ -1269,14 +1295,16 @@ class _HomeMixCard extends StatelessWidget {
 class _RelistenStackedColumn extends StatelessWidget {
   final List<_HomeTrack> items;
   final Future<void> Function(_HomeTrack item) onTap;
-  final Future<void> Function(_HomeTrack item) onSwipeToQueue;
+  final Future<void> Function(_HomeTrack item) onSwipeToQueueNext;
+  final Future<void> Function(_HomeTrack item) onSwipeToQueueEnd;
   final Future<void> Function(_HomeTrack item) onAddToPlaylist;
   final bool allowSwipeToQueue;
 
   const _RelistenStackedColumn({
     required this.items,
     required this.onTap,
-    required this.onSwipeToQueue,
+    required this.onSwipeToQueueNext,
+    required this.onSwipeToQueueEnd,
     required this.onAddToPlaylist,
     required this.allowSwipeToQueue,
   });
@@ -1291,7 +1319,8 @@ class _RelistenStackedColumn extends StatelessWidget {
           _CompactReplayCard(
             item: items.first,
             onTap: () => onTap(items.first),
-            onSwipeToQueue: () => onSwipeToQueue(items.first),
+            onSwipeToQueueNext: () => onSwipeToQueueNext(items.first),
+            onSwipeToQueueEnd: () => onSwipeToQueueEnd(items.first),
             onAddToPlaylist: () => onAddToPlaylist(items.first),
             allowSwipeToQueue: allowSwipeToQueue,
           ),
@@ -1300,7 +1329,8 @@ class _RelistenStackedColumn extends StatelessWidget {
             _CompactReplayCard(
               item: items[1],
               onTap: () => onTap(items[1]),
-              onSwipeToQueue: () => onSwipeToQueue(items[1]),
+              onSwipeToQueueNext: () => onSwipeToQueueNext(items[1]),
+              onSwipeToQueueEnd: () => onSwipeToQueueEnd(items[1]),
               onAddToPlaylist: () => onAddToPlaylist(items[1]),
               allowSwipeToQueue: allowSwipeToQueue,
             )
@@ -1315,14 +1345,16 @@ class _RelistenStackedColumn extends StatelessWidget {
 class _CompactReplayCard extends StatelessWidget {
   final _HomeTrack item;
   final VoidCallback onTap;
-  final Future<void> Function() onSwipeToQueue;
+  final Future<void> Function() onSwipeToQueueNext;
+  final Future<void> Function() onSwipeToQueueEnd;
   final VoidCallback onAddToPlaylist;
   final bool allowSwipeToQueue;
 
   const _CompactReplayCard({
     required this.item,
     required this.onTap,
-    required this.onSwipeToQueue,
+    required this.onSwipeToQueueNext,
+    required this.onSwipeToQueueEnd,
     required this.onAddToPlaylist,
     required this.allowSwipeToQueue,
   });
@@ -1398,15 +1430,13 @@ class _CompactReplayCard extends StatelessWidget {
 
     return Expanded(
       child: allowSwipeToQueue
-          ? Dismissible(
+          ? Slidable(
               key: ObjectKey(item),
-              direction: DismissDirection.startToEnd,
-              dismissThresholds: const {DismissDirection.startToEnd: 0.28},
-              confirmDismiss: (_) async {
-                await onSwipeToQueue();
-                return false;
-              },
-              background: _queueSwipeBackground(context),
+              startActionPane: _queueActionPane(
+                context,
+                onNext: onSwipeToQueueNext,
+                onEnd: onSwipeToQueueEnd,
+              ),
               child: card,
             )
           : card,
@@ -1417,13 +1447,15 @@ class _CompactReplayCard extends StatelessWidget {
 class _TrendingRowCard extends StatelessWidget {
   final _HomeTrack item;
   final VoidCallback onTap;
-  final Future<void> Function() onSwipeToQueue;
+  final Future<void> Function() onSwipeToQueueNext;
+  final Future<void> Function() onSwipeToQueueEnd;
   final VoidCallback onAddToPlaylist;
 
   const _TrendingRowCard({
     required this.item,
     required this.onTap,
-    required this.onSwipeToQueue,
+    required this.onSwipeToQueueNext,
+    required this.onSwipeToQueueEnd,
     required this.onAddToPlaylist,
   });
 
@@ -1441,15 +1473,13 @@ class _TrendingRowCard extends StatelessWidget {
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Dismissible(
+      child: Slidable(
         key: ObjectKey(item),
-        direction: DismissDirection.startToEnd,
-        dismissThresholds: const {DismissDirection.startToEnd: 0.28},
-        confirmDismiss: (_) async {
-          await onSwipeToQueue();
-          return false;
-        },
-        background: _queueSwipeBackground(context),
+        startActionPane: _queueActionPane(
+          context,
+          onNext: onSwipeToQueueNext,
+          onEnd: onSwipeToQueueEnd,
+        ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(14),
           child: Material(
@@ -1575,38 +1605,36 @@ class _QueueAddButton extends StatelessWidget {
   }
 }
 
-Widget _queueSwipeBackground(BuildContext context) {
-  return Container(
-    alignment: Alignment.centerLeft,
-    padding: const EdgeInsets.symmetric(horizontal: 18),
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(14),
-      color: CupertinoColors.systemGreen.withValues(alpha: 0.18),
-      border: Border.all(
-        color: CupertinoColors.systemGreen.withValues(alpha: 0.36),
-        width: 0.8,
+ActionPane _queueActionPane(
+  BuildContext context, {
+  required Future<void> Function() onNext,
+  required Future<void> Function() onEnd,
+}) {
+  return ActionPane(
+    motion: const StretchMotion(),
+    extentRatio: 0.46,
+    dismissible: DismissiblePane(
+      onDismissed: () {},
+      closeOnCancel: true,
+      confirmDismiss: () async {
+        unawaited(onNext());
+        return false;
+      },
+    ),
+    children: [
+      QueueSwipeActionButton(
+        onTap: onNext,
+        baseColor: CupertinoColors.systemPink.resolveFrom(context),
+        icon: CupertinoIcons.text_insert,
+        label: 'Siguiente',
       ),
-    ),
-    child: const Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(
-          CupertinoIcons.add_circled_solid,
-          color: CupertinoColors.systemGreen,
-          size: 18,
-        ),
-        SizedBox(width: 8),
-        Text(
-          'Añadir a la cola',
-          style: TextStyle(
-            fontFamily: '.SF Pro Text',
-            fontWeight: FontWeight.w700,
-            fontSize: 13,
-            color: CupertinoColors.systemGreen,
-          ),
-        ),
-      ],
-    ),
+      QueueSwipeActionButton(
+        onTap: onEnd,
+        baseColor: CupertinoColors.systemBlue.resolveFrom(context),
+        icon: CupertinoIcons.text_append,
+        label: 'Al final',
+      ),
+    ],
   );
 }
 

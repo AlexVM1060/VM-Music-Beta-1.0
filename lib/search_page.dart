@@ -7,6 +7,7 @@ import 'dart:ui' show ImageFilter, Rect;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:image/image.dart' as img;
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/search_view_state.dart';
@@ -17,6 +18,7 @@ import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
+import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -126,7 +128,9 @@ Future<Uint8List?> _loadShareArtworkBytes({
       final uri = Uri.tryParse(candidate);
       if (uri == null) continue;
       try {
-        final req = await client.getUrl(uri).timeout(const Duration(seconds: 12));
+        final req = await client
+            .getUrl(uri)
+            .timeout(const Duration(seconds: 12));
         req.headers.set(
           HttpHeaders.userAgentHeader,
           'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
@@ -475,10 +479,9 @@ Future<_ResolvedAlbumRef?> _resolveAlbumFromSearchFallback(
   Video video,
 ) async {
   final compactTitle = video.title.replaceAll(RegExp(r'\s+'), ' ').trim();
-  final compactArtist = cleanArtistName(video.author).replaceAll(
-    RegExp(r'\s+'),
-    ' ',
-  );
+  final compactArtist = cleanArtistName(
+    video.author,
+  ).replaceAll(RegExp(r'\s+'), ' ');
   if (compactTitle.isEmpty && compactArtist.isEmpty) return null;
 
   final queries =
@@ -533,7 +536,9 @@ Future<_ResolvedAlbumRef?> _resolveAlbumFromSearchFallback(
   return _ResolvedAlbumRef(
     playlistId: best.playlist.id.value,
     title: resolvedTitle.isNotEmpty ? resolvedTitle : 'Álbum',
-    artist: compactArtist.isNotEmpty ? compactArtist : cleanArtistName(video.author),
+    artist: compactArtist.isNotEmpty
+        ? compactArtist
+        : cleanArtistName(video.author),
   );
 }
 
@@ -942,7 +947,9 @@ class _SearchPageState extends State<SearchPage>
     return limited;
   }
 
-  Future<List<String>> _fetchYoutubeAutocompleteSuggestions(String query) async {
+  Future<List<String>> _fetchYoutubeAutocompleteSuggestions(
+    String query,
+  ) async {
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 7);
     try {
       final uri = Uri.https('suggestqueries.google.com', '/complete/search', {
@@ -1105,19 +1112,25 @@ class _SearchPageState extends State<SearchPage>
     );
   }
 
-  void _queueVideo(Video video) {
+  void _queueVideo(
+    Video video, {
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
+  }) {
     final manager = context.read<VideoPlayerManager>();
     final added = manager.addOnlineTrackToPlaybackQueue(
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
       artist: cleanArtistName(video.author),
+      insertMode: insertMode,
     );
     if (!mounted) return;
     _showIosTopToast(
       context,
       message: added
-          ? 'Se ha añadido a la cola'
+          ? (insertMode == ManualQueueInsertMode.next
+                ? 'Se añadió como siguiente'
+                : 'Se ha añadido a la cola')
           : 'Esta canción ya está en cola',
       icon: added
           ? CupertinoIcons.check_mark_circled_solid
@@ -2184,7 +2197,10 @@ class _SearchPageState extends State<SearchPage>
                     downloadService.getDownloadStatus(video.id.value) ==
                     DownloadStatus.downloaded,
                 onPlay: () => _playVideoPreferLocal(video),
-                onQueue: () => _queueVideo(video),
+                onQueueNext: () =>
+                    _queueVideo(video, insertMode: ManualQueueInsertMode.next),
+                onQueueEnd: () =>
+                    _queueVideo(video, insertMode: ManualQueueInsertMode.end),
                 onMenuTap: () => _showVideoOptionsMenu(video),
               ),
             ),
@@ -2279,7 +2295,14 @@ class _SearchPageState extends State<SearchPage>
                         downloadService.getDownloadStatus(video.id.value) ==
                         DownloadStatus.downloaded,
                     onPlay: () => _playVideoPreferLocal(video),
-                    onQueue: () => _queueVideo(video),
+                    onQueueNext: () => _queueVideo(
+                      video,
+                      insertMode: ManualQueueInsertMode.next,
+                    ),
+                    onQueueEnd: () => _queueVideo(
+                      video,
+                      insertMode: ManualQueueInsertMode.end,
+                    ),
                     onMenuTap: () => _showVideoOptionsMenu(video),
                   ),
                 ),
@@ -2300,9 +2323,7 @@ class _SearchPageState extends State<SearchPage>
         if (!_autocompleteLoading && _autocompleteSuggestions.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 18),
-            child: Center(
-              child: Text('Sin sugerencias por ahora.'),
-            ),
+            child: Center(child: Text('Sin sugerencias por ahora.')),
           ),
         ..._autocompleteSuggestions.map(
           (suggestion) => InkWell(
@@ -3106,7 +3127,8 @@ class _ArtistVideosActionButtonState extends State<_ArtistVideosActionButton>
 class VideoCard extends StatelessWidget {
   final Video video;
   final VoidCallback onPlay;
-  final VoidCallback? onQueue;
+  final VoidCallback? onQueueNext;
+  final VoidCallback? onQueueEnd;
   final VoidCallback onMenuTap;
   final bool isDownloaded;
   final bool highlightTop;
@@ -3115,7 +3137,8 @@ class VideoCard extends StatelessWidget {
     super.key,
     required this.video,
     required this.onPlay,
-    this.onQueue,
+    this.onQueueNext,
+    this.onQueueEnd,
     required this.onMenuTap,
     this.isDownloaded = false,
     this.highlightTop = false,
@@ -3248,47 +3271,35 @@ class VideoCard extends StatelessWidget {
       ),
     );
 
-    final swipeCard = onQueue == null
+    final swipeCard = (onQueueNext == null || onQueueEnd == null)
         ? card
-        : Dismissible(
+        : Slidable(
             key: ObjectKey(video),
-            direction: DismissDirection.startToEnd,
-            dismissThresholds: const {DismissDirection.startToEnd: 0.28},
-            confirmDismiss: (_) async {
-              onQueue?.call();
-              return false;
-            },
-            background: Container(
-              alignment: Alignment.centerLeft,
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              decoration: BoxDecoration(
-                borderRadius: borderRadius,
-                color: CupertinoColors.systemGreen.withValues(alpha: 0.18),
-                border: Border.all(
-                  color: CupertinoColors.systemGreen.withValues(alpha: 0.36),
-                  width: 0.8,
+            startActionPane: ActionPane(
+              motion: const StretchMotion(),
+              extentRatio: 0.46,
+              dismissible: DismissiblePane(
+                onDismissed: () {},
+                closeOnCancel: true,
+                confirmDismiss: () async {
+                  onQueueNext?.call();
+                  return false;
+                },
+              ),
+              children: [
+                QueueSwipeActionButton(
+                  onTap: () => onQueueNext?.call(),
+                  baseColor: CupertinoColors.systemPink.resolveFrom(context),
+                  icon: CupertinoIcons.text_insert,
+                  label: 'Siguiente',
                 ),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    CupertinoIcons.add_circled_solid,
-                    color: CupertinoColors.systemGreen,
-                    size: 18,
-                  ),
-                  SizedBox(width: 8),
-                  Text(
-                    'Añadir a la cola',
-                    style: TextStyle(
-                      fontFamily: '.SF Pro Text',
-                      fontWeight: FontWeight.w700,
-                      fontSize: 13,
-                      color: CupertinoColors.systemGreen,
-                    ),
-                  ),
-                ],
-              ),
+                QueueSwipeActionButton(
+                  onTap: () => onQueueEnd?.call(),
+                  baseColor: CupertinoColors.systemBlue.resolveFrom(context),
+                  icon: CupertinoIcons.text_append,
+                  label: 'Al final',
+                ),
+              ],
             ),
             child: card,
           );
@@ -3408,11 +3419,7 @@ void _showIosTopToast(
             alignment: Alignment.bottomCenter,
             child: Padding(
               padding: EdgeInsets.only(bottom: bottomInset + 130),
-              child: _IosTopToast(
-                message: message,
-                icon: icon,
-                isDark: isDark,
-              ),
+              child: _IosTopToast(message: message, icon: icon, isDark: isDark),
             ),
           ),
         ),
@@ -3507,9 +3514,7 @@ class _IosTopToastState extends State<_IosTopToast>
                   fontFamily: '.SF Pro Text',
                   fontWeight: FontWeight.w600,
                   fontSize: 14,
-                  color: widget.isDark
-                      ? Colors.white
-                      : Colors.black,
+                  color: widget.isDark ? Colors.white : Colors.black,
                   decoration: TextDecoration.none,
                 ),
               ),
@@ -3841,18 +3846,26 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
     );
   }
 
-  void _queueVideo(Video video) {
+  void _queueVideo(
+    Video video, {
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
+  }) {
     final manager = context.read<VideoPlayerManager>();
     final added = manager.addOnlineTrackToPlaybackQueue(
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
       artist: cleanArtistName(video.author),
+      insertMode: insertMode,
     );
     if (!mounted) return;
     _showIosTopToast(
       context,
-      message: added ? 'Añadida a la cola' : 'Esta canción ya está en cola',
+      message: added
+          ? (insertMode == ManualQueueInsertMode.next
+                ? 'Se añadió como siguiente'
+                : 'Añadida a la cola')
+          : 'Esta canción ya está en cola',
       icon: added
           ? CupertinoIcons.check_mark_circled_solid
           : CupertinoIcons.info_circle_fill,
@@ -4276,7 +4289,14 @@ class _ChannelVideosPageState extends State<ChannelVideosPage>
                           DownloadStatus.downloaded,
                       highlightTop: index < 3,
                       onPlay: () => _playVideoPreferLocal(video),
-                      onQueue: () => _queueVideo(video),
+                      onQueueNext: () => _queueVideo(
+                        video,
+                        insertMode: ManualQueueInsertMode.next,
+                      ),
+                      onQueueEnd: () => _queueVideo(
+                        video,
+                        insertMode: ManualQueueInsertMode.end,
+                      ),
                       onMenuTap: () => _showVideoOptionsMenu(video),
                     );
                   },
@@ -4569,18 +4589,26 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
     );
   }
 
-  void _queueVideo(Video video) {
+  void _queueVideo(
+    Video video, {
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
+  }) {
     final manager = context.read<VideoPlayerManager>();
     final added = manager.addOnlineTrackToPlaybackQueue(
       videoId: video.id.value,
       title: video.title,
       thumbnailUrl: _bestQualityThumbnail(video),
       artist: cleanArtistName(video.author),
+      insertMode: insertMode,
     );
     if (!mounted) return;
     _showIosTopToast(
       context,
-      message: added ? 'Añadida a la cola' : 'Esta canción ya está en cola',
+      message: added
+          ? (insertMode == ManualQueueInsertMode.next
+                ? 'Se añadió como siguiente'
+                : 'Añadida a la cola')
+          : 'Esta canción ya está en cola',
       icon: added
           ? CupertinoIcons.check_mark_circled_solid
           : CupertinoIcons.info_circle_fill,
@@ -4986,7 +5014,14 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
                           DownloadStatus.downloaded,
                       highlightTop: index < 3,
                       onPlay: () => _playVideoPreferLocal(video),
-                      onQueue: () => _queueVideo(video),
+                      onQueueNext: () => _queueVideo(
+                        video,
+                        insertMode: ManualQueueInsertMode.next,
+                      ),
+                      onQueueEnd: () => _queueVideo(
+                        video,
+                        insertMode: ManualQueueInsertMode.end,
+                      ),
                       onMenuTap: () => _showTrackOptionsMenu(video),
                     );
                   },

@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:ui' show ImageFilter;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/playlist.dart';
@@ -11,6 +12,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -193,81 +195,80 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   horizontal: 12,
                   vertical: 2,
                 ),
-                child: Dismissible(
+                child: Slidable(
                   key: ValueKey('playlist_track_${video.videoId}_$videoIndex'),
-                  direction: DismissDirection.startToEnd,
-                  dismissThresholds: const {DismissDirection.startToEnd: 0.28},
-                  confirmDismiss: (_) async {
-                    final added = downloadedVideo != null
-                        ? videoManager.addLocalTrackToPlaybackQueue(
-                            videoId: downloadedVideo.videoId,
-                            title: downloadedVideo.title,
-                            thumbnailUrl:
-                                (downloadedVideo.localThumbnailPath != null &&
-                                    downloadedVideo
-                                        .localThumbnailPath!
-                                        .isNotEmpty)
-                                ? downloadedVideo.localThumbnailPath!
-                                : downloadedVideo.thumbnailUrl,
-                            artist: downloadedVideo.channelTitle,
-                            filePath: downloadedVideo.filePath,
-                            localPlainLyrics: downloadedVideo.plainLyrics,
-                            localSyncedLyrics: downloadedVideo.syncedLyrics,
-                          )
-                        : videoManager.addOnlineTrackToPlaybackQueue(
-                            videoId: video.videoId,
-                            title: video.title,
-                            thumbnailUrl: video.thumbnailUrl,
-                            artist: video.channelTitle,
+                  startActionPane: ActionPane(
+                    motion: const StretchMotion(),
+                    extentRatio: 0.46,
+                    dismissible: DismissiblePane(
+                      onDismissed: () {},
+                      closeOnCancel: true,
+                      confirmDismiss: () async {
+                        final added = _queuePlaylistVideo(
+                          video,
+                          downloadedVideo: downloadedVideo,
+                          insertMode: ManualQueueInsertMode.next,
+                        );
+                        _showQueueIosToast(
+                          context,
+                          message: added
+                              ? 'Se añadió como siguiente'
+                              : 'Esta canción ya está en cola',
+                          icon: added
+                              ? CupertinoIcons.check_mark_circled_solid
+                              : CupertinoIcons.info_circle_fill,
+                        );
+                        return false;
+                      },
+                    ),
+                    children: [
+                      QueueSwipeActionButton(
+                        onTap: () {
+                          final added = _queuePlaylistVideo(
+                            video,
+                            downloadedVideo: downloadedVideo,
+                            insertMode: ManualQueueInsertMode.next,
                           );
-                    if (context.mounted) {
-                      _showQueueIosToast(
-                        context,
-                        message: added
-                            ? 'Se ha añadido a la cola'
-                            : 'Esta canción ya está en cola',
-                        icon: added
-                            ? CupertinoIcons.check_mark_circled_solid
-                            : CupertinoIcons.info_circle_fill,
-                      );
-                    }
-                    return false;
-                  },
-                  background: Container(
-                    alignment: Alignment.centerLeft,
-                    padding: const EdgeInsets.symmetric(horizontal: 18),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(14),
-                      color: CupertinoColors.systemGreen.withValues(
-                        alpha: 0.18,
+                          _showQueueIosToast(
+                            context,
+                            message: added
+                                ? 'Se añadió como siguiente'
+                                : 'Esta canción ya está en cola',
+                            icon: added
+                                ? CupertinoIcons.check_mark_circled_solid
+                                : CupertinoIcons.info_circle_fill,
+                          );
+                        },
+                        baseColor: CupertinoColors.systemPink.resolveFrom(
+                          context,
+                        ),
+                        icon: CupertinoIcons.text_insert,
+                        label: 'Siguiente',
                       ),
-                      border: Border.all(
-                        color: CupertinoColors.systemGreen.withValues(
-                          alpha: 0.36,
+                      QueueSwipeActionButton(
+                        onTap: () {
+                          final added = _queuePlaylistVideo(
+                            video,
+                            downloadedVideo: downloadedVideo,
+                            insertMode: ManualQueueInsertMode.end,
+                          );
+                          _showQueueIosToast(
+                            context,
+                            message: added
+                                ? 'Se ha añadido a la cola'
+                                : 'Esta canción ya está en cola',
+                            icon: added
+                                ? CupertinoIcons.check_mark_circled_solid
+                                : CupertinoIcons.info_circle_fill,
+                          );
+                        },
+                        baseColor: CupertinoColors.systemBlue.resolveFrom(
+                          context,
                         ),
-                        width: 0.8,
+                        icon: CupertinoIcons.text_append,
+                        label: 'Al final',
                       ),
-                    ),
-                    child: const Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          CupertinoIcons.add_circled_solid,
-                          color: CupertinoColors.systemGreen,
-                          size: 18,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'Añadir a la cola',
-                          style: TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontWeight: FontWeight.w700,
-                            fontSize: 13,
-                            color: CupertinoColors.systemGreen,
-                          ),
-                        ),
-                      ],
-                    ),
+                    ],
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(14),
@@ -337,16 +338,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                   children: [
                                     Text(
                                       video.title,
-                                      style: CupertinoTheme.of(
-                                        context,
-                                      ).textTheme.textStyle.copyWith(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w700,
-                                        color: CupertinoColors.label.resolveFrom(
-                                          context,
-                                        ),
-                                        letterSpacing: -0.1,
-                                      ),
+                                      style: CupertinoTheme.of(context)
+                                          .textTheme
+                                          .textStyle
+                                          .copyWith(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w700,
+                                            color: CupertinoColors.label
+                                                .resolveFrom(context),
+                                            letterSpacing: -0.1,
+                                          ),
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -355,14 +356,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                       video.channelTitle,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: CupertinoTheme.of(
-                                        context,
-                                      ).textTheme.textStyle.copyWith(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w500,
-                                        color: CupertinoColors.secondaryLabel
-                                            .resolveFrom(context),
-                                      ),
+                                      style: CupertinoTheme.of(context)
+                                          .textTheme
+                                          .textStyle
+                                          .copyWith(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w500,
+                                            color: CupertinoColors
+                                                .secondaryLabel
+                                                .resolveFrom(context),
+                                          ),
                                     ),
                                   ],
                                 ),
@@ -394,39 +397,41 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                 padding: EdgeInsets.zero,
                                 minimumSize: const Size(32, 32),
                                 onPressed: () async {
-                                  final action = await showCupertinoModalPopup<
-                                    String
-                                  >(
-                                    context: context,
-                                    builder: (sheetContext) {
-                                      return CupertinoActionSheet(
-                                        title: Text(
-                                          video.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                        actions: [
-                                          CupertinoActionSheetAction(
-                                            isDestructiveAction: true,
-                                            onPressed: () {
-                                              Navigator.of(
-                                                sheetContext,
-                                              ).pop('remove');
-                                            },
-                                            child: const Text(
-                                              'Eliminar de la playlist',
+                                  final action =
+                                      await showCupertinoModalPopup<String>(
+                                        context: context,
+                                        builder: (sheetContext) {
+                                          return CupertinoActionSheet(
+                                            title: Text(
+                                              video.title,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
                                             ),
-                                          ),
-                                        ],
-                                        cancelButton: CupertinoActionSheetAction(
-                                          onPressed: () {
-                                            Navigator.of(sheetContext).pop();
-                                          },
-                                          child: const Text('Cancelar'),
-                                        ),
+                                            actions: [
+                                              CupertinoActionSheetAction(
+                                                isDestructiveAction: true,
+                                                onPressed: () {
+                                                  Navigator.of(
+                                                    sheetContext,
+                                                  ).pop('remove');
+                                                },
+                                                child: const Text(
+                                                  'Eliminar de la playlist',
+                                                ),
+                                              ),
+                                            ],
+                                            cancelButton:
+                                                CupertinoActionSheetAction(
+                                                  onPressed: () {
+                                                    Navigator.of(
+                                                      sheetContext,
+                                                    ).pop();
+                                                  },
+                                                  child: const Text('Cancelar'),
+                                                ),
+                                          );
+                                        },
                                       );
-                                    },
-                                  );
                                   if (!context.mounted || action != 'remove') {
                                     return;
                                   }
@@ -754,6 +759,36 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     );
   }
 
+  bool _queuePlaylistVideo(
+    VideoHistory video, {
+    required DownloadedVideo? downloadedVideo,
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
+  }) {
+    final videoManager = context.read<VideoPlayerManager>();
+    return downloadedVideo != null
+        ? videoManager.addLocalTrackToPlaybackQueue(
+            videoId: downloadedVideo.videoId,
+            title: downloadedVideo.title,
+            thumbnailUrl:
+                (downloadedVideo.localThumbnailPath != null &&
+                    downloadedVideo.localThumbnailPath!.isNotEmpty)
+                ? downloadedVideo.localThumbnailPath!
+                : downloadedVideo.thumbnailUrl,
+            artist: downloadedVideo.channelTitle,
+            filePath: downloadedVideo.filePath,
+            localPlainLyrics: downloadedVideo.plainLyrics,
+            localSyncedLyrics: downloadedVideo.syncedLyrics,
+            insertMode: insertMode,
+          )
+        : videoManager.addOnlineTrackToPlaybackQueue(
+            videoId: video.videoId,
+            title: video.title,
+            thumbnailUrl: video.thumbnailUrl,
+            artist: video.channelTitle,
+            insertMode: insertMode,
+          );
+  }
+
   Future<List<PlaybackQueueItem>> _buildPlaylistQueueItems({
     required DownloadService downloadService,
     required List<VideoHistory> displayVideos,
@@ -867,7 +902,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     required PlaylistService playlistService,
     required DownloadService downloadService,
   }) async {
-    final wasDownloaded = await downloadService.isVideoDownloaded(video.videoId);
+    final wasDownloaded = await downloadService.isVideoDownloaded(
+      video.videoId,
+    );
     await downloadService.deleteVideo(video.videoId);
     await playlistService.removeVideoFromPlaylist(
       _currentPlaylist.name,

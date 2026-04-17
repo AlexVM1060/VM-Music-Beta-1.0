@@ -49,6 +49,8 @@ class PlaybackQueueItem {
 
 enum LocalPlaybackQueueStrategy { downloads, recommendations }
 
+enum ManualQueueInsertMode { next, end }
+
 class DownloadSourceInfo {
   final String sourceUrl;
   final bool isVideoSource;
@@ -105,6 +107,8 @@ class _YouTubeMusicQueueCandidate {
 
 // Mantiene el nombre para no romper imports, pero ahora gestiona audio estilo app musical.
 class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+  static const String _playerSessionBoxName = 'player_session';
+  static const String _lastTrackSessionKey = 'last_track_session_v1';
   static const MethodChannel _iosAudioEffectsChannel = MethodChannel(
     'com.vm.music.beta/ios_bass_boost',
   );
@@ -219,6 +223,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _iosLockScreenFavoriteBound = false;
   bool _iosSiriPlaybackBound = false;
   bool _songShareBound = false;
+  Box? _playerSessionBox;
+  bool _didAttemptSessionRestore = false;
+  int _sessionRestoreEpoch = 0;
+  DateTime _lastSessionPersistAt = DateTime.fromMillisecondsSinceEpoch(0);
+  int _lastSessionPersistedPositionMs = -1;
   static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
@@ -271,6 +280,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _bindSharedSongChannel();
     WidgetsBinding.instance.addObserver(this);
     _attachActivePlayerSubscriptions();
+    unawaited(_initPlayerSessionPersistence());
   }
 
   void _attachActivePlayerSubscriptions() {
@@ -281,6 +291,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_maybePreloadUpcomingQueueTrack());
       unawaited(_maybeTriggerCrossfadeAdvance());
       _syncSystemPlaybackState();
+      _persistPlaybackSessionThrottled();
       notifyListeners();
     });
 
@@ -333,6 +344,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final artist = cleanArtistName(_trackArtist);
     return artist.isEmpty ? null : artist;
   }
+
   Duration get trackDuration => _trackDuration;
   Duration get position => _position;
   Duration get bufferedPosition => _bufferedPosition;
@@ -416,9 +428,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required int limit,
   }) async {
     try {
-      final seedVideo = await _getVideoWithRetry(videoId).timeout(
-        const Duration(seconds: 10),
-      );
+      final seedVideo = await _getVideoWithRetry(
+        videoId,
+      ).timeout(const Duration(seconds: 10));
       final related = await _getRelatedQueueWithRetry(seedVideo);
       if (related.isNotEmpty) {
         _rememberRecommendedQueue(related);
@@ -745,15 +757,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final artist = cleanArtistName(_trackArtist);
     final thumb = _trackThumbnailUrl;
     if (videoId == null || videoId.isEmpty || title.isEmpty) return;
-    final isIos = !kIsWeb && Platform.isIOS;
     final fallbackArtUri = _buildArtUri(thumb);
     final cachedArtUri = _cachedSystemArtUri(
       videoId: videoId,
       thumbnailSource: thumb,
     );
-    // En iOS evitamos enviar el thumbnail crudo de YouTube al lockscreen.
-    // Solo usamos artwork ya procesado/recortado.
-    final initialArtUri = cachedArtUri ?? (isIos ? null : fallbackArtUri);
+    // Enviamos una carátula inmediata (cacheada o fallback) para que el
+    // lockscreen en iOS no se quede sin imagen cuando la canción cambia en
+    // background. Si luego existe versión procesada, la reemplazamos.
+    final initialArtUri = cachedArtUri ?? fallbackArtUri;
     handler.syncNowPlaying(
       id: videoId,
       title: title,
@@ -1111,6 +1123,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _usingHiddenVideo) {
       unawaited(_switchHiddenVideoToAudioEngine());
     }
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      unawaited(_persistPlaybackSession(force: true));
+    }
   }
 
   // Compatibilidad con pantallas legadas de video.
@@ -1136,6 +1153,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     bool isRecoveryAttempt = false,
     bool preserveExistingQueue = false,
   }) async {
+    _sessionRestoreEpoch++;
     _rememberCurrentForHistory();
     _isAiStemsLoading = false;
     _usingAiInstrumental = false;
@@ -1191,6 +1209,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _resetLyricsState();
     _syncSystemNowPlaying();
     _syncSystemPlaybackState(force: true);
+    unawaited(_persistPlaybackSession(force: true));
     notifyListeners();
 
     try {
@@ -1428,6 +1447,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       _isLoading = false;
       _syncSystemPlaybackState(force: true);
+      unawaited(_persistPlaybackSession(force: true));
       notifyListeners();
     }
   }
@@ -4323,6 +4343,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     LocalPlaybackQueueStrategy queueStrategy =
         LocalPlaybackQueueStrategy.downloads,
   }) async {
+    _sessionRestoreEpoch++;
     _rememberCurrentForHistory();
     _isAiStemsLoading = false;
     _usingAiInstrumental = false;
@@ -4376,6 +4397,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     );
     _syncSystemNowPlaying();
     _syncSystemPlaybackState(force: true);
+    unawaited(_persistPlaybackSession(force: true));
     notifyListeners();
 
     final localFile = File(filePath);
@@ -4423,6 +4445,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     } finally {
       _isLoading = false;
       _syncSystemPlaybackState(force: true);
+      unawaited(_persistPlaybackSession(force: true));
       notifyListeners();
     }
   }
@@ -4471,6 +4494,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required String title,
     required String thumbnailUrl,
     required String artist,
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
   }) {
     if (videoId.trim().isEmpty) return false;
     final item = PlaybackQueueItem(
@@ -4480,7 +4504,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       artist: cleanArtistName(artist),
       isLocal: false,
     );
-    return _enqueueManualQueueItem(item);
+    return _enqueueManualQueueItem(item, insertMode: insertMode);
   }
 
   bool addLocalTrackToPlaybackQueue({
@@ -4491,6 +4515,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required String filePath,
     String? localPlainLyrics,
     String? localSyncedLyrics,
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
   }) {
     if (videoId.trim().isEmpty || filePath.trim().isEmpty) return false;
     final item = PlaybackQueueItem(
@@ -4503,15 +4528,22 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       localPlainLyrics: localPlainLyrics,
       localSyncedLyrics: localSyncedLyrics,
     );
-    return _enqueueManualQueueItem(item);
+    return _enqueueManualQueueItem(item, insertMode: insertMode);
   }
 
-  bool _enqueueManualQueueItem(PlaybackQueueItem item) {
+  bool _enqueueManualQueueItem(
+    PlaybackQueueItem item, {
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
+  }) {
     final alreadyInManual = _manualPlaybackQueue.any(
       (entry) => entry.videoId == item.videoId && entry.isLocal == item.isLocal,
     );
     if (alreadyInManual) return false;
-    _manualPlaybackQueue = [..._manualPlaybackQueue, item];
+    if (insertMode == ManualQueueInsertMode.next) {
+      _manualPlaybackQueue = [item, ..._manualPlaybackQueue];
+    } else {
+      _manualPlaybackQueue = [..._manualPlaybackQueue, item];
+    }
     unawaited(
       _prepareSystemArtwork(
         videoId: item.videoId,
@@ -5074,6 +5106,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           final value = controller.value;
           _isPlaying = value.isPlaying;
           _isBuffering = value.isBuffering;
+          unawaited(_persistPlaybackSession(force: true));
           notifyListeners();
         }
         return;
@@ -5107,6 +5140,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
         _isPlaying = _player.playing;
         _isBuffering = false;
+        unawaited(_persistPlaybackSession(force: true));
         notifyListeners();
       }
     } finally {
@@ -5124,6 +5158,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (_usingHiddenVideo && hidden != null) {
       try {
         await hidden.seekTo(clamped);
+        _position = clamped;
+        unawaited(_persistPlaybackSession(force: true));
       } catch (e, s) {
         log('seekTo en hidden video falló', error: e, stackTrace: s);
       }
@@ -5131,6 +5167,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
     try {
       await _player.seek(clamped);
+      _position = clamped;
+      unawaited(_persistPlaybackSession(force: true));
     } catch (e, s) {
       log('seekTo en audio falló', error: e, stackTrace: s);
     }
@@ -5139,6 +5177,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   void minimize() {
     if (!_isMinimized) {
       _isMinimized = true;
+      unawaited(_persistPlaybackSession(force: true));
       notifyListeners();
     }
   }
@@ -5181,6 +5220,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _queueTitle = 'Siguiente';
     _queueSeedVideoId = null;
     _completionHandledForCurrent = false;
+    await _clearPersistedPlaybackSession();
 
     _clearSystemNowPlaying();
     notifyListeners();
@@ -5199,6 +5239,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    unawaited(_persistPlaybackSession(force: true));
     _settingsService.removeListener(_onSettingsChanged);
     WidgetsBinding.instance.removeObserver(this);
     _positionSub?.cancel();
@@ -5213,6 +5254,199 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _clearSystemNowPlaying();
     _audioHandler.stop();
     super.dispose();
+  }
+
+  Future<void> _initPlayerSessionPersistence() async {
+    if (_didAttemptSessionRestore) return;
+    _didAttemptSessionRestore = true;
+    try {
+      _playerSessionBox = await Hive.openBox(_playerSessionBoxName);
+      await _restoreLastPlaybackSession();
+    } catch (e, s) {
+      log(
+        'No se pudo inicializar persistencia del reproductor',
+        error: e,
+        stackTrace: s,
+      );
+    }
+  }
+
+  void _persistPlaybackSessionThrottled() {
+    if (_currentVideoId == null) return;
+    final now = DateTime.now();
+    final currentPosMs = _position.inMilliseconds;
+    final movedEnough =
+        (currentPosMs - _lastSessionPersistedPositionMs).abs() >= 1500;
+    final elapsedEnough =
+        now.difference(_lastSessionPersistAt) >= const Duration(seconds: 3);
+    if (!movedEnough && !elapsedEnough) return;
+    _lastSessionPersistAt = now;
+    _lastSessionPersistedPositionMs = currentPosMs;
+    unawaited(_persistPlaybackSession());
+  }
+
+  Future<void> _persistPlaybackSession({bool force = false}) async {
+    final box = _playerSessionBox;
+    if (box == null) return;
+    final currentId = _currentVideoId?.trim() ?? '';
+    if (currentId.isEmpty) {
+      await _clearPersistedPlaybackSession();
+      return;
+    }
+
+    final now = DateTime.now();
+    if (!force &&
+        now.difference(_lastSessionPersistAt) <
+            const Duration(milliseconds: 800)) {
+      return;
+    }
+    _lastSessionPersistAt = now;
+    _lastSessionPersistedPositionMs = _position.inMilliseconds;
+
+    final payload = <String, dynamic>{
+      'videoId': currentId,
+      'isLocal': _isLocal,
+      'title': _trackTitle ?? '',
+      'thumbnailUrl': _trackThumbnailUrl ?? '',
+      'artist': _trackArtist ?? '',
+      'streamUrl': _currentStreamUrl ?? '',
+      'positionMs': _position.inMilliseconds,
+      'savedAtMs': now.millisecondsSinceEpoch,
+    };
+    try {
+      await box.put(_lastTrackSessionKey, payload);
+    } catch (e, s) {
+      log(
+        'No se pudo persistir sesion del reproductor',
+        error: e,
+        stackTrace: s,
+      );
+    }
+  }
+
+  Future<void> _clearPersistedPlaybackSession() async {
+    final box = _playerSessionBox;
+    if (box == null) return;
+    try {
+      await box.delete(_lastTrackSessionKey);
+    } catch (_) {}
+  }
+
+  Future<void> _restoreLastPlaybackSession() async {
+    final box = _playerSessionBox;
+    if (box == null) return;
+    final raw = box.get(_lastTrackSessionKey);
+    if (raw is! Map) return;
+
+    final videoId = (raw['videoId'] ?? '').toString().trim();
+    if (videoId.isEmpty) return;
+
+    final isLocal = raw['isLocal'] == true;
+    final title = (raw['title'] ?? '').toString().trim();
+    final thumbnailUrl = (raw['thumbnailUrl'] ?? '').toString().trim();
+    final artist = cleanArtistName((raw['artist'] ?? '').toString());
+    final streamUrl = (raw['streamUrl'] ?? '').toString().trim();
+    final rawPositionMs = (raw['positionMs'] as num?)?.toInt() ?? 0;
+    final targetPosition = Duration(
+      milliseconds: rawPositionMs.clamp(0, 1000 * 60 * 60 * 24),
+    );
+    final restoreEpoch = ++_sessionRestoreEpoch;
+    bool isStale() => restoreEpoch != _sessionRestoreEpoch;
+
+    try {
+      await _resetEngines();
+      if (isStale()) return;
+      await _applyPlaybackVolumeSetting();
+      if (isStale()) return;
+
+      _isLoading = true;
+      _errorMessage = null;
+      _currentVideoId = videoId;
+      _isLocal = isLocal;
+      _isMinimized = true;
+      _isFullScreen = false;
+      _trackTitle = title.isNotEmpty ? title : null;
+      _trackThumbnailUrl = thumbnailUrl.isNotEmpty ? thumbnailUrl : null;
+      _trackArtist = artist.isNotEmpty ? artist : null;
+      _position = Duration.zero;
+      _bufferedPosition = Duration.zero;
+      _isPlaying = false;
+      _isBuffering = false;
+      _completionHandledForCurrent = false;
+      _crossfadeTriggeredForCurrent = false;
+      _isCrossfadeTransitioning = false;
+      _crossfadeFailedForCurrentVideoId = null;
+      _crossfadeFailedQueueKey = null;
+      _clearPreloadedNextTrack();
+      _resetLyricsState();
+      if (isStale()) return;
+      notifyListeners();
+
+      if (isLocal) {
+        final filePath = streamUrl;
+        if (filePath.isEmpty || !await File(filePath).exists()) {
+          if (isStale()) return;
+          await _clearPersistedPlaybackSession();
+          _isLoading = false;
+          return;
+        }
+        _currentStreamUrl = filePath;
+        await _player.setAudioSource(AudioSource.file(filePath));
+      } else {
+        final manifest = await _getManifestWithRetry(
+          videoId,
+        ).timeout(const Duration(seconds: 6));
+        if (isStale()) return;
+        final audioStreams = _prioritizeAudioStreams(
+          manifest.audioOnly.toList(),
+        );
+        if (audioStreams.isEmpty) {
+          if (isStale()) return;
+          await _clearPersistedPlaybackSession();
+          _isLoading = false;
+          return;
+        }
+        final stream = audioStreams.first;
+        _currentStreamUrl = stream.url.toString();
+        await _player.setAudioSource(
+          AudioSource.uri(stream.url, headers: _youtubeHeaders),
+        );
+      }
+
+      await _player.seek(targetPosition);
+      if (isStale()) return;
+      await _player.pause();
+      if (isStale()) return;
+      _position = targetPosition;
+      _isPlaying = false;
+      _isBuffering = false;
+      _syncSystemNowPlaying();
+      _syncSystemPlaybackState(force: true);
+      await _persistPlaybackSession(force: true);
+    } catch (e, s) {
+      if (isStale()) return;
+      log(
+        'No se pudo restaurar la ultima reproduccion',
+        error: e,
+        stackTrace: s,
+      );
+      await _clearPersistedPlaybackSession();
+      _currentVideoId = null;
+      _isMinimized = false;
+      _trackTitle = null;
+      _trackThumbnailUrl = null;
+      _trackArtist = null;
+      _position = Duration.zero;
+      _bufferedPosition = Duration.zero;
+      _isPlaying = false;
+      _isBuffering = false;
+      _currentStreamUrl = null;
+    } finally {
+      _isLoading = false;
+      if (!isStale()) {
+        notifyListeners();
+      }
+    }
   }
 
   List<MuxedStreamInfo> _prioritizeMuxedStreams(List<MuxedStreamInfo> streams) {
@@ -6453,10 +6687,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     LyricsResult? result;
     try {
-      result = await _lyricsService.fetchLyrics(
-        title: title,
-        artist: artist,
-      );
+      result = await _lyricsService.fetchLyrics(title: title, artist: artist);
     } catch (e, s) {
       if (requestId != _lyricsEpoch) return;
       if ((_currentVideoId ?? '').trim() != requestVideoId) return;

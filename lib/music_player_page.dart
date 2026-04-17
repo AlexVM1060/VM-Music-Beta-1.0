@@ -182,7 +182,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.of(context).padding.bottom;
     const miniPlayerHeight = 56.0;
-    const miniPlayerBottomNavReserve = 54.0;
+    const miniPlayerBottomNavReserve = 75.0;
     final progress = _dragProgress;
     final dynamicRadius = 22 - (4 * progress);
     final dynamicShadowOpacity = 0.08 + (0.12 * progress);

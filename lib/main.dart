@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/cupertino.dart';
@@ -574,11 +575,9 @@ class _CupertinoRootTabBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final shellBackground = isDark
-        ? Colors.black
-        : CupertinoColors.systemGroupedBackground.resolveFrom(context);
+    final inactive = CupertinoColors.secondaryLabel.resolveFrom(context);
+    final active = CupertinoColors.systemPink.resolveFrom(context);
     const items = <({IconData icon, String label})>[
       (icon: CupertinoIcons.home, label: 'Inicio'),
       (icon: CupertinoIcons.search, label: 'Buscar'),
@@ -586,26 +585,127 @@ class _CupertinoRootTabBar extends StatelessWidget {
       (icon: CupertinoIcons.person_crop_circle, label: 'Cuenta'),
     ];
 
-    return CupertinoTabBar(
-      currentIndex: currentIndex,
-      onTap: onTap,
-      iconSize: 24,
-      activeColor: CupertinoColors.systemPink.resolveFrom(context),
-      inactiveColor: CupertinoColors.secondaryLabel.resolveFrom(context),
-      border: Border(
-        top: BorderSide(
-          color: isDark
-              ? Colors.white.withValues(alpha: 0.12)
-              : colorScheme.outlineVariant.withValues(alpha: 0.35),
-          width: 0.0,
+    return SafeArea(
+      top: false,
+      minimum: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(24),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: isDark
+                    ? [
+                        Colors.white.withValues(alpha: 0.11),
+                        Colors.white.withValues(alpha: 0.06),
+                      ]
+                    : [
+                        Colors.white.withValues(alpha: 0.70),
+                        Colors.white.withValues(alpha: 0.50),
+                      ],
+              ),
+              border: Border.all(
+                color: isDark
+                    ? Colors.white.withValues(alpha: 0.16)
+                    : Colors.white.withValues(alpha: 0.72),
+                width: 0.9,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.14),
+                  blurRadius: 24,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Row(
+              children: List.generate(items.length, (index) {
+                final selected = index == currentIndex;
+                return Expanded(
+                  child: _LiquidTabButton(
+                    icon: items[index].icon,
+                    label: items[index].label,
+                    selected: selected,
+                    activeColor: active,
+                    inactiveColor: inactive,
+                    onPressed: () => onTap(index),
+                  ),
+                );
+              }),
+            ),
+          ),
         ),
       ),
-      backgroundColor: shellBackground,
-      items: List.generate(
-        items.length,
-        (index) => BottomNavigationBarItem(
-          icon: Icon(items[index].icon),
-          label: items[index].label,
+    );
+  }
+}
+
+class _LiquidTabButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final Color activeColor;
+  final Color inactiveColor;
+  final VoidCallback onPressed;
+
+  const _LiquidTabButton({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.activeColor,
+    required this.inactiveColor,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final selectedBg = isDark
+        ? Colors.white.withValues(alpha: 0.13)
+        : Colors.white.withValues(alpha: 0.58);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      margin: const EdgeInsets.symmetric(horizontal: 3),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        color: selected ? selectedBg : Colors.transparent,
+        border: selected
+            ? Border.all(
+                color: isDark
+                    ? Colors.white.withValues(alpha: 0.20)
+                    : Colors.white.withValues(alpha: 0.74),
+                width: 0.7,
+              )
+            : null,
+      ),
+      child: CupertinoButton(
+        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 6),
+        minimumSize: Size.zero,
+        onPressed: onPressed,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 22, color: selected ? activeColor : inactiveColor),
+            const SizedBox(height: 3),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: '.SF Pro Text',
+                fontSize: 11.5,
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                color: selected ? activeColor : inactiveColor,
+                letterSpacing: -0.1,
+              ),
+            ),
+          ],
         ),
       ),
     );
