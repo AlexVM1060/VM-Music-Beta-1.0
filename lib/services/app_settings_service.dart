@@ -15,6 +15,7 @@ class AppSettingsService extends ChangeNotifier {
   static const String _explicitContentKey = 'explicit_content';
   static const String _animatedCutoutCoversKey = 'animated_cutout_covers';
   static const String _liveLyricsKey = 'live_lyrics';
+  static const String _vmMusicSingEnabledKey = 'vm_music_sing_enabled';
   static const String _dataSaverModeKey = 'data_saver_mode';
 
   late final Box _box;
@@ -28,6 +29,7 @@ class AppSettingsService extends ChangeNotifier {
   bool _allowExplicitContent = true;
   bool _animatedCutoutCovers = true;
   bool _liveLyrics = true;
+  bool _vmMusicSingEnabled = false;
   bool _dataSaverMode = false;
 
   bool get initialized => _initialized;
@@ -45,6 +47,7 @@ class AppSettingsService extends ChangeNotifier {
   bool get allowExplicitContent => _allowExplicitContent;
   bool get animatedCutoutCovers => _animatedCutoutCovers;
   bool get liveLyrics => _liveLyrics;
+  bool get vmMusicSingEnabled => _vmMusicSingEnabled;
   bool get dataSaverMode => _dataSaverMode;
 
   Future<void> init() async {
@@ -71,6 +74,8 @@ class AppSettingsService extends ChangeNotifier {
     _animatedCutoutCovers =
         _box.get(_animatedCutoutCoversKey, defaultValue: true) == true;
     _liveLyrics = _box.get(_liveLyricsKey, defaultValue: true) == true;
+    _vmMusicSingEnabled =
+        _box.get(_vmMusicSingEnabledKey, defaultValue: false) == true;
     _dataSaverMode = _box.get(_dataSaverModeKey, defaultValue: false) == true;
     _initialized = true;
   }
@@ -153,6 +158,13 @@ class AppSettingsService extends ChangeNotifier {
     if (_liveLyrics == value) return;
     _liveLyrics = value;
     await _box.put(_liveLyricsKey, value);
+    notifyListeners();
+  }
+
+  Future<void> setVmMusicSingEnabled(bool value) async {
+    if (_vmMusicSingEnabled == value) return;
+    _vmMusicSingEnabled = value;
+    await _box.put(_vmMusicSingEnabledKey, value);
     notifyListeners();
   }
 

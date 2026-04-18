@@ -205,6 +205,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, String> _systemArtworkSourceByVideoId = {};
   final MyAudioHandler? _appAudioHandler;
   DateTime _lastSystemPlaybackSync = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastPlaybackUiNotifyAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastPlaybackOpsTickAt = DateTime.fromMillisecondsSinceEpoch(0);
+  Duration _lastNotifiedPosition = Duration.zero;
+  Duration _lastNotifiedBufferedPosition = Duration.zero;
+  bool _lastNotifiedPlaying = false;
+  bool _lastNotifiedBuffering = false;
   int _nowPlayingArtworkEpoch = 0;
   int _volumeFadeEpoch = 0;
   bool _crossfadeTriggeredForCurrent = false;
@@ -231,6 +237,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
+  static const Duration _playbackUiNotifyMinInterval = Duration(
+    milliseconds: 320,
+  );
+  static const Duration _playbackUiNotifyMinPositionDelta = Duration(
+    milliseconds: 260,
+  );
+  static const Duration _playbackUiNotifyMinBufferedDelta = Duration(
+    milliseconds: 700,
+  );
+  static const Duration _playbackOpsTickInterval = Duration(milliseconds: 420);
   static const Duration _searchVideosCacheTtl = Duration(minutes: 12);
   static const int _searchVideosCacheMaxEntries = 220;
   static const double _defaultPlaybackVolume = 3;
@@ -285,20 +301,37 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   void _attachActivePlayerSubscriptions() {
     _detachActivePlayerSubscriptions();
+    _lastPlaybackUiNotifyAt = DateTime.fromMillisecondsSinceEpoch(0);
+    _lastPlaybackOpsTickAt = DateTime.fromMillisecondsSinceEpoch(0);
+    _lastNotifiedPosition = _position;
+    _lastNotifiedBufferedPosition = _bufferedPosition;
+    _lastNotifiedPlaying = _isPlaying;
+    _lastNotifiedBuffering = _isBuffering;
 
-    _positionSub = _player.positionStream.listen((position) {
-      _position = position;
-      unawaited(_maybePreloadUpcomingQueueTrack());
-      unawaited(_maybeTriggerCrossfadeAdvance());
-      _syncSystemPlaybackState();
-      _persistPlaybackSessionThrottled();
-      notifyListeners();
-    });
+    _positionSub = _player
+        .createPositionStream(
+          steps: 800,
+          minPeriod: const Duration(milliseconds: 220),
+          maxPeriod: const Duration(milliseconds: 900),
+        )
+        .listen((position) {
+          _position = position;
+          final now = DateTime.now();
+          if (now.difference(_lastPlaybackOpsTickAt) >=
+              _playbackOpsTickInterval) {
+            _lastPlaybackOpsTickAt = now;
+            unawaited(_maybePreloadUpcomingQueueTrack());
+            unawaited(_maybeTriggerCrossfadeAdvance());
+          }
+          _syncSystemPlaybackState();
+          _persistPlaybackSessionThrottled();
+          _notifyPlaybackUiListenersThrottled();
+        });
 
     _bufferedSub = _player.bufferedPositionStream.listen((buffered) {
       _bufferedPosition = buffered;
       _syncSystemPlaybackState();
-      notifyListeners();
+      _notifyPlaybackUiListenersThrottled();
     });
 
     _durationSub = _player.durationStream.listen((duration) {
@@ -306,7 +339,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _trackDuration = duration;
         _syncSystemNowPlaying();
         _syncSystemPlaybackState(force: true);
-        notifyListeners();
+        _notifyPlaybackUiListenersThrottled(force: true);
       }
     });
 
@@ -320,8 +353,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _onTrackCompleted();
       }
       _syncSystemPlaybackState(force: true);
-      notifyListeners();
+      _notifyPlaybackUiListenersThrottled(force: true);
     });
+  }
+
+  void _notifyPlaybackUiListenersThrottled({bool force = false}) {
+    final now = DateTime.now();
+    final positionChangedEnough =
+        (_position - _lastNotifiedPosition).abs() >=
+        _playbackUiNotifyMinPositionDelta;
+    final bufferedChangedEnough =
+        (_bufferedPosition - _lastNotifiedBufferedPosition).abs() >=
+        _playbackUiNotifyMinBufferedDelta;
+    final flagsChanged =
+        _isPlaying != _lastNotifiedPlaying ||
+        _isBuffering != _lastNotifiedBuffering;
+
+    final intervalElapsed =
+        now.difference(_lastPlaybackUiNotifyAt) >= _playbackUiNotifyMinInterval;
+    if (!force && !flagsChanged && !intervalElapsed) return;
+    if (!force &&
+        !flagsChanged &&
+        !positionChangedEnough &&
+        !bufferedChangedEnough) {
+      return;
+    }
+
+    _lastPlaybackUiNotifyAt = now;
+    _lastNotifiedPosition = _position;
+    _lastNotifiedBufferedPosition = _bufferedPosition;
+    _lastNotifiedPlaying = _isPlaying;
+    _lastNotifiedBuffering = _isBuffering;
+    notifyListeners();
   }
 
   void _detachActivePlayerSubscriptions() {
@@ -354,10 +417,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool get isLocal => _isLocal;
   bool get isUsingVideoFallback => _usingHiddenVideo;
   bool get autoplayEnabled => _autoplayEnabled;
-  bool get karaokeModeEnabled => _karaokeModeEnabled;
-  bool get isAiStemsLoading => _isAiStemsLoading;
+  bool get karaokeModeEnabled => _karaokeModeEnabled && isKaraokeSupported;
+  bool get isAiStemsLoading => isKaraokeSupported ? _isAiStemsLoading : false;
   bool get isKaraokeSupported =>
-      !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+      _settingsService.vmMusicSingEnabled &&
+      !kIsWeb &&
+      (Platform.isAndroid || Platform.isIOS);
   bool get isLyricsLayout => _isLyricsLayout;
   bool get isLyricsLoading => _isLyricsLoading;
   String? get lyricsText => _lyricsText;
@@ -367,15 +432,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   int get currentSyncedLyricIndex {
     if (_syncedLyrics.isEmpty) return -1;
     final current = _position;
-    var idx = -1;
-    for (var i = 0; i < _syncedLyrics.length; i++) {
-      if (current >= _syncedLyrics[i].timestamp) {
-        idx = i;
+    if (current < _syncedLyrics.first.timestamp) return -1;
+    final lastIdx = _syncedLyrics.length - 1;
+    if (current >= _syncedLyrics[lastIdx].timestamp) return lastIdx;
+
+    var low = 0;
+    var high = lastIdx;
+    var answer = -1;
+    while (low <= high) {
+      final mid = low + ((high - low) >> 1);
+      final ts = _syncedLyrics[mid].timestamp;
+      if (ts <= current) {
+        answer = mid;
+        low = mid + 1;
       } else {
-        break;
+        high = mid - 1;
       }
     }
-    return idx;
+    return answer;
   }
 
   String? get currentStreamUrl => _currentStreamUrl;
@@ -1497,8 +1571,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _manifestRequests.remove(videoId);
     }
   }
-
-  Future<Video> _getVideoWithRetry(String videoId) async {
+Future<Video> _getVideoWithRetry(String videoId) async {
     final cached = _videoCache[videoId];
     if (cached != null) return cached;
     final inFlight = _videoRequests[videoId];
@@ -4636,7 +4709,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   void toggleKaraokeMode() {
     if (!isKaraokeSupported) {
+      final wasUsingAi = _usingAiInstrumental;
       _karaokeModeEnabled = false;
+      if (wasUsingAi) {
+        unawaited(_restoreOriginalAudioIfUsingAiStems());
+      } else {
+        _volumeFadeEpoch++;
+        unawaited(_applyPlaybackVolumeSetting());
+        unawaited(_applyAudioEffects());
+      }
       notifyListeners();
       return;
     }
@@ -4653,14 +4734,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _applyAudioEffects() async {
+    final singAvailable = isKaraokeSupported;
     if (kIsWeb) return;
     if (Platform.isIOS) {
       try {
-        await _iosAudioEffectsChannel
-            .invokeMethod<void>('setKaraokeMode', <String, Object>{
-              'enabled': _karaokeModeEnabled && !_usingAiInstrumental,
-              'amount': _karaokeModeEnabled ? 1.8 : 0.0,
-            });
+        final effectsEnabled =
+            singAvailable && _karaokeModeEnabled && !_usingAiInstrumental;
+        await _iosAudioEffectsChannel.invokeMethod<void>(
+          'setKaraokeMode',
+          <String, Object>{
+            'enabled': effectsEnabled,
+            'amount': effectsEnabled ? 1.8 : 0.0,
+          },
+        );
         _audioEffectsConfigured = true;
       } catch (e, s) {
         log(
@@ -4680,7 +4766,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (enhancer == null || equalizer == null) return;
 
     try {
-      final effectsEnabled = _karaokeModeEnabled && !_usingAiInstrumental;
+      final effectsEnabled =
+          singAvailable && _karaokeModeEnabled && !_usingAiInstrumental;
       await enhancer.setEnabled(effectsEnabled);
       await equalizer.setEnabled(effectsEnabled);
 
@@ -4725,6 +4812,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _tryActivateAiInstrumentalKaraoke() async {
+    if (!isKaraokeSupported) return;
     if (!_karaokeModeEnabled) return;
     if (_isLocal || _usingHiddenVideo) return;
     if (_isAiStemsLoading) return;
@@ -4751,7 +4839,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
       if (instrumental == null || instrumental.isEmpty) return;
       _aiInstrumentalCache[cacheKey] = instrumental;
-      if (!_karaokeModeEnabled || _currentVideoId != videoId) return;
+      if (!isKaraokeSupported ||
+          !_karaokeModeEnabled ||
+          _currentVideoId != videoId) {
+        return;
+      }
       await _switchToAiInstrumental(instrumental);
     } catch (e, s) {
       log('No se pudo generar stem instrumental AI', error: e, stackTrace: s);
@@ -4762,6 +4854,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _switchToAiInstrumental(String instrumentalUrl) async {
+    if (!isKaraokeSupported) return;
     if (_usingHiddenVideo) return;
     final current = _currentStreamUrl?.trim() ?? '';
     if (_karaokeOriginalStreamUrl == null && current.isNotEmpty) {
@@ -4835,7 +4928,28 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _onSettingsChanged() {
+    unawaited(_syncKaraokeAvailabilityWithSettings());
     unawaited(_applyUserAudioPreferences());
+  }
+
+  Future<void> _syncKaraokeAvailabilityWithSettings() async {
+    if (isKaraokeSupported) return;
+    final hadKaraokeState =
+        _karaokeModeEnabled || _usingAiInstrumental || _isAiStemsLoading;
+    if (!hadKaraokeState) return;
+
+    _karaokeModeEnabled = false;
+    _isAiStemsLoading = false;
+    if (_usingAiInstrumental) {
+      await _restoreOriginalAudioIfUsingAiStems();
+      return;
+    }
+    _usingAiInstrumental = false;
+    _karaokeOriginalStreamUrl = null;
+    _volumeFadeEpoch++;
+    await _applyPlaybackVolumeSetting();
+    await _applyAudioEffects();
+    notifyListeners();
   }
 
   Future<void> _applyUserAudioPreferences() async {
@@ -5044,7 +5158,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final baseVolume = _settingsService.normalizeVolume
         ? 1.0
         : _defaultPlaybackVolume;
-    if (!_karaokeModeEnabled) return baseVolume;
+    if (!_karaokeModeEnabled || !isKaraokeSupported) return baseVolume;
     return baseVolume * _karaokeVolumeBoostMultiplier;
   }
 
@@ -5571,8 +5685,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         remaining <= const Duration(milliseconds: 350)) {
       _onTrackCompleted();
     }
-    _syncSystemPlaybackState(force: true);
-    notifyListeners();
+    final now = DateTime.now();
+    final forceSync =
+        now.difference(_lastPlaybackOpsTickAt) >= _playbackOpsTickInterval;
+    if (forceSync) {
+      _lastPlaybackOpsTickAt = now;
+      _syncSystemPlaybackState(force: true);
+    } else {
+      _syncSystemPlaybackState();
+    }
+    _notifyPlaybackUiListenersThrottled();
   }
 
   Future<void> _switchHiddenVideoToAudioEngine() async {

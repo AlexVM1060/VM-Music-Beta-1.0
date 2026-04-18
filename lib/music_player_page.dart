@@ -234,7 +234,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                 clipBehavior: Clip.antiAlias,
                 borderRadius: BorderRadius.circular(dynamicRadius),
                 child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 34, sigmaY: 34),
+                  filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                   child: CupertinoButton(
                     padding: EdgeInsets.zero,
                     onPressed: widget.manager.maximize,
@@ -549,9 +549,8 @@ class _FullPlayerState extends State<_FullPlayer> {
                         ),
                         _TopGlassIconButton(
                           icon: CupertinoIcons.square_arrow_up,
-                          onPressed: () => unawaited(
-                            _shareCurrentSongLink(context),
-                          ),
+                          onPressed: () =>
+                              unawaited(_shareCurrentSongLink(context)),
                         ),
                         if (canDownload)
                           _DownloadButton(
@@ -1014,8 +1013,7 @@ class _FullPlayerState extends State<_FullPlayer> {
 
   Future<void> _shareCurrentSongLink(BuildContext context) async {
     final renderBox = context.findRenderObject() as RenderBox?;
-    final shareOrigin =
-        renderBox != null && renderBox.hasSize
+    final shareOrigin = renderBox != null && renderBox.hasSize
         ? renderBox.localToGlobal(Offset.zero) & renderBox.size
         : const Rect.fromLTWH(1, 1, 1, 1);
 
@@ -1104,7 +1102,8 @@ class _FullPlayerState extends State<_FullPlayer> {
       if (uri != null) candidates.add(source);
     }
 
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 12);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 12);
     try {
       for (final candidate in candidates) {
         final uri = Uri.tryParse(candidate);
@@ -2124,9 +2123,7 @@ class _IosTopToastState extends State<_IosTopToast>
                   fontFamily: '.SF Pro Text',
                   fontWeight: FontWeight.w600,
                   fontSize: 14,
-                  color: widget.isDark
-                      ? Colors.white
-                      : Colors.black,
+                  color: widget.isDark ? Colors.white : Colors.black,
                   decoration: TextDecoration.none,
                 ),
               ),
@@ -3253,8 +3250,12 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   double _immersivePullAccumulated = 0;
   bool _didRequestImmersiveInGesture = false;
   Timer? _resumeAutoFollowTimer;
+  Timer? _lyricsVisualTicker;
   bool _autoFollowCurrentLyric = true;
   int _latestResolvedCurrentIndex = -1;
+  Duration _visualLyricsPosition = Duration.zero;
+  DateTime _visualLyricsWallClock = DateTime.fromMillisecondsSinceEpoch(0);
+  static const Duration _lyricsVisualTickInterval = Duration(milliseconds: 110);
 
   void _pauseAutoFollowForManualScroll() {
     _resumeAutoFollowTimer?.cancel();
@@ -3407,6 +3408,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
 
   @override
   void dispose() {
+    _lyricsVisualTicker?.cancel();
     _resumeAutoFollowTimer?.cancel();
     _syncedScrollController.dispose();
     super.dispose();
@@ -3426,6 +3428,10 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         liveLyricsEnabled: liveLyricsEnabled,
       ),
     );
+    _syncVisualLyricsClock(
+      manager: manager,
+      liveLyricsEnabled: liveLyricsEnabled,
+    );
     if (_lastVideoId != manager.currentVideoId) {
       _lastVideoId = manager.currentVideoId;
       _lastSyncedIndex = -1;
@@ -3434,6 +3440,8 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       _latestResolvedCurrentIndex = -1;
       _autoFollowCurrentLyric = true;
       _resumeAutoFollowTimer?.cancel();
+      _visualLyricsPosition = manager.position;
+      _visualLyricsWallClock = DateTime.now();
     }
     final textStyle = CupertinoTheme.of(context).textTheme.textStyle.copyWith(
       fontSize: baseFontSize,
@@ -3467,6 +3475,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         _latestResolvedCurrentIndex = -1;
         content = Text(manager.lyricsText ?? '', style: textStyle);
       } else {
+        final lyricsNow = _effectiveLyricsNow(manager);
         if (_lastSyncedLength != syncedLyrics.length) {
           _lastSyncedLength = syncedLyrics.length;
           _syncedLineKeys.clear();
@@ -3475,7 +3484,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         final currentIndex = _resolveDisplayedCurrentIndex(
           baseIndex: rawCurrentIndex.clamp(-1, syncedLyrics.length - 1),
           lyrics: syncedLyrics,
-          now: manager.position,
+          now: lyricsNow,
           trackDuration: manager.trackDuration,
           liveLyricsEnabled: liveLyricsEnabled,
         );
@@ -3506,7 +3515,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
               final temporalProgress = _temporalProgressForLine(
                 lineStart: lineStart,
                 lineEnd: lineEnd,
-                now: manager.position,
+                now: lyricsNow,
               );
               liveProgress = temporalProgress;
               if (liveLyricsEnabled) {
@@ -3514,7 +3523,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                   lineText: line.text,
                   lineStart: lineStart,
                   lineEnd: lineEnd,
-                  now: manager.position,
+                  now: lyricsNow,
                   fallbackProgress: temporalProgress,
                 );
                 if (wordBased != null) {
@@ -3657,6 +3666,77 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         ),
       ),
     );
+  }
+
+  Duration _effectiveLyricsNow(VideoPlayerManager manager) {
+    if (_lyricsVisualTicker == null) {
+      return manager.position;
+    }
+    final duration = manager.trackDuration;
+    if (duration > Duration.zero && _visualLyricsPosition > duration) {
+      return duration;
+    }
+    return _visualLyricsPosition;
+  }
+
+  bool _isVisualLyricsClockActive({
+    required VideoPlayerManager manager,
+    required bool liveLyricsEnabled,
+  }) {
+    return liveLyricsEnabled &&
+        manager.hasSyncedLyrics &&
+        manager.isLyricsLayout &&
+        manager.isPlaying;
+  }
+
+  void _syncVisualLyricsClock({
+    required VideoPlayerManager manager,
+    required bool liveLyricsEnabled,
+  }) {
+    final shouldRun = _isVisualLyricsClockActive(
+      manager: manager,
+      liveLyricsEnabled: liveLyricsEnabled,
+    );
+    if (!shouldRun) {
+      _lyricsVisualTicker?.cancel();
+      _lyricsVisualTicker = null;
+      _visualLyricsPosition = manager.position;
+      _visualLyricsWallClock = DateTime.now();
+      return;
+    }
+
+    if ((_visualLyricsPosition - manager.position).abs() >
+        const Duration(milliseconds: 420)) {
+      _visualLyricsPosition = manager.position;
+      _visualLyricsWallClock = DateTime.now();
+    }
+
+    _lyricsVisualTicker ??= Timer.periodic(_lyricsVisualTickInterval, (_) {
+      if (!mounted) return;
+      final m = widget.manager;
+      if (!_isVisualLyricsClockActive(manager: m, liveLyricsEnabled: true)) {
+        _lyricsVisualTicker?.cancel();
+        _lyricsVisualTicker = null;
+        _visualLyricsPosition = m.position;
+        _visualLyricsWallClock = DateTime.now();
+        return;
+      }
+      final now = DateTime.now();
+      final elapsed = now.difference(_visualLyricsWallClock);
+      _visualLyricsWallClock = now;
+      if (elapsed <= Duration.zero) return;
+      var next = _visualLyricsPosition + elapsed;
+      final duration = m.trackDuration;
+      if (duration > Duration.zero && next > duration) {
+        next = duration;
+      }
+      if ((next - _visualLyricsPosition).abs() <
+          const Duration(milliseconds: 35)) {
+        return;
+      }
+      _visualLyricsPosition = next;
+      setState(() {});
+    });
   }
 
   Duration _resolveLineEnd({
@@ -4407,6 +4487,10 @@ class _LiveLyricSweepText extends StatelessWidget {
 
   static const Duration _sweepAnimationDuration = Duration(milliseconds: 280);
   static const double _sweepFeather = 0.11;
+  static const int _lineWrapCacheMaxEntries = 260;
+  static final Map<String, List<String>> _lineWrapCache =
+      <String, List<String>>{};
+  static final List<String> _lineWrapCacheOrder = <String>[];
 
   @override
   Widget build(BuildContext context) {
@@ -4473,6 +4557,16 @@ class _LiveLyricSweepText extends StatelessWidget {
   }) {
     final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (normalized.isEmpty) return const [];
+    final cacheKey = _lineWrapCacheKey(
+      text: normalized,
+      style: style,
+      maxWidth: maxWidth,
+      textDirection: textDirection,
+    );
+    final cached = _lineWrapCache[cacheKey];
+    if (cached != null) {
+      return cached;
+    }
     final words = normalized.split(' ').where((w) => w.isNotEmpty).toList();
     if (words.isEmpty) return const [];
 
@@ -4506,7 +4600,37 @@ class _LiveLyricSweepText extends StatelessWidget {
     if (current.isNotEmpty) {
       lines.add(current);
     }
+    _storeLineWrapCache(cacheKey, lines);
     return lines;
+  }
+
+  String _lineWrapCacheKey({
+    required String text,
+    required TextStyle style,
+    required double maxWidth,
+    required TextDirection textDirection,
+  }) {
+    final widthKey = maxWidth.round();
+    final fontSize = (style.fontSize ?? 0).toStringAsFixed(2);
+    final weight = style.fontWeight?.index ?? -1;
+    final letterSpacing = (style.letterSpacing ?? 0).toStringAsFixed(2);
+    final family = style.fontFamily ?? '';
+    return '$textDirection|$widthKey|$fontSize|$weight|$letterSpacing|$family|$text';
+  }
+
+  void _storeLineWrapCache(String key, List<String> lines) {
+    final stored = List<String>.unmodifiable(lines);
+    if (_lineWrapCache.containsKey(key)) {
+      _lineWrapCache[key] = stored;
+      _lineWrapCacheOrder.remove(key);
+      _lineWrapCacheOrder.add(key);
+      return;
+    }
+    _lineWrapCache[key] = stored;
+    _lineWrapCacheOrder.add(key);
+    if (_lineWrapCacheOrder.length <= _lineWrapCacheMaxEntries) return;
+    final oldest = _lineWrapCacheOrder.removeAt(0);
+    _lineWrapCache.remove(oldest);
   }
 
   Widget _buildSweepLine({
@@ -5686,6 +5810,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
     }
     if (resolved == _lastSubjectUrl) return;
     _lastSubjectUrl = resolved;
+    final dataSaverMode = settings?.dataSaverMode ?? false;
 
     if (_subjectCutoutCache.containsKey(resolved)) {
       final cached = _subjectCutoutCache[resolved];
@@ -5718,6 +5843,8 @@ class _ArtworkImageState extends State<_ArtworkImage>
               cacheKey: 'v14:$resolved:player-cropped',
               sourceBytes: preparedBytes,
               viewportZoom: 1.0,
+              usePersistentCache: true,
+              persistResult: !dataSaverMode,
             );
             _rememberSubjectCutout(resolved, cutout);
             return cutout;

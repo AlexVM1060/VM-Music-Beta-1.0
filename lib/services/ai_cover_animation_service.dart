@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 
 class AiCoverAnimationService {
   AiCoverAnimationService({Dio? dio}) : _dio = dio ?? Dio();
@@ -43,6 +46,11 @@ class AiCoverAnimationService {
 
   final Map<String, String?> _cache = <String, String?>{};
   final Map<String, Future<String?>> _requests = <String, Future<String?>>{};
+  final Map<String, Future<String?>> _persistRequests =
+      <String, Future<String?>>{};
+  static const String _cacheDirName = 'ai_cover_animation_cache';
+  static const String _cacheVersion = 'v2';
+  static const int _maxCachedFiles = 80;
 
   bool get isConfigured =>
       _baseUrl.trim().isNotEmpty ||
@@ -65,6 +73,11 @@ class AiCoverAnimationService {
     if (_cache.containsKey(cacheKey)) {
       return _cache[cacheKey];
     }
+    final persisted = await _readPersistedAnimatedCover(cacheKey);
+    if (persisted != null && persisted.isNotEmpty) {
+      _cache[cacheKey] = persisted;
+      return persisted;
+    }
     final inFlight = _requests[cacheKey];
     if (inFlight != null) return inFlight;
 
@@ -77,8 +90,12 @@ class AiCoverAnimationService {
     _requests[cacheKey] = request;
     try {
       final resolved = await request;
-      _cache[cacheKey] = resolved;
-      return resolved;
+      final persistedResult = await _persistAnimatedCoverIfNeeded(
+        cacheKey,
+        resolved,
+      );
+      _cache[cacheKey] = persistedResult;
+      return persistedResult;
     } finally {
       if (identical(_requests[cacheKey], request)) {
         _requests.remove(cacheKey);
@@ -130,7 +147,11 @@ class AiCoverAnimationService {
 
     final response = await _dio.post<dynamic>(
       endpoint,
-      data: <String, dynamic>{'trackId': trackId, 'sourceUrl': sourceUrl},
+      data: <String, dynamic>{
+        'trackId': trackId,
+        'sourceUrl': sourceUrl,
+        'loopMode': 'boomerang',
+      },
       options: Options(
         headers: headers,
         sendTimeout: const Duration(seconds: 20),
@@ -515,5 +536,130 @@ class AiCoverAnimationService {
     if (value.endsWith('.bmp')) return DioMediaType.parse('image/bmp');
     if (value.endsWith('.avif')) return DioMediaType.parse('image/avif');
     return DioMediaType.parse('image/jpeg');
+  }
+
+  Future<String?> _readPersistedAnimatedCover(String cacheKey) async {
+    try {
+      final file = await _persistedFileFor(cacheKey);
+      if (!await file.exists()) return null;
+      final length = await file.length();
+      if (length <= 0) {
+        try {
+          await file.delete();
+        } catch (_) {}
+        return null;
+      }
+      return file.path;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _persistAnimatedCoverIfNeeded(
+    String cacheKey,
+    String? resolved,
+  ) async {
+    final normalized = (resolved ?? '').trim();
+    if (normalized.isEmpty) return null;
+    if (normalized.startsWith('/')) return normalized;
+    if (!_looksLikeHttpUrl(normalized)) return normalized;
+
+    final inFlight = _persistRequests[cacheKey];
+    if (inFlight != null) return inFlight;
+
+    final request = _downloadAndPersistAnimatedCover(cacheKey, normalized);
+    _persistRequests[cacheKey] = request;
+    try {
+      return await request;
+    } finally {
+      if (identical(_persistRequests[cacheKey], request)) {
+        _persistRequests.remove(cacheKey);
+      }
+    }
+  }
+
+  Future<String?> _downloadAndPersistAnimatedCover(
+    String cacheKey,
+    String remoteUrl,
+  ) async {
+    try {
+      final file = await _persistedFileFor(cacheKey);
+      if (await file.exists() && await file.length() > 0) {
+        return file.path;
+      }
+      final uri = Uri.tryParse(remoteUrl);
+      if (uri == null) return remoteUrl;
+
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 18);
+      try {
+        final req = await client
+            .getUrl(uri)
+            .timeout(const Duration(seconds: 18));
+        req.headers.set(
+          HttpHeaders.userAgentHeader,
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+        );
+        final res = await req.close().timeout(const Duration(seconds: 45));
+        if (res.statusCode < 200 || res.statusCode >= 300) return remoteUrl;
+        final bytes = await consolidateHttpClientResponseBytes(res);
+        if (bytes.isEmpty) return remoteUrl;
+        await file.writeAsBytes(bytes, flush: true);
+      } finally {
+        client.close(force: true);
+      }
+      unawaited(_trimCache());
+      return file.path;
+    } catch (_) {
+      return remoteUrl;
+    }
+  }
+
+  Future<File> _persistedFileFor(String cacheKey) async {
+    final dir = await _cacheDir();
+    final key = _hashKey('$cacheKey|$_cacheVersion');
+    return File('${dir.path}/$key.mp4');
+  }
+
+  Future<Directory> _cacheDir() async {
+    final base = await getApplicationSupportDirectory();
+    final dir = Directory('${base.path}/$_cacheDirName');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return dir;
+  }
+
+  String _hashKey(String payload) {
+    var hash = 0xcbf29ce484222325;
+    const prime = 0x100000001b3;
+    for (final unit in payload.codeUnits) {
+      hash ^= unit;
+      hash = (hash * prime) & 0xFFFFFFFFFFFFFFFF;
+    }
+    return hash.toRadixString(16);
+  }
+
+  Future<void> _trimCache() async {
+    try {
+      final dir = await _cacheDir();
+      final files = await dir
+          .list()
+          .where((entity) => entity is File)
+          .cast<File>()
+          .toList();
+      if (files.length <= _maxCachedFiles) return;
+      files.sort(
+        (a, b) => a.statSync().modified.compareTo(b.statSync().modified),
+      );
+      final deleteCount = files.length - _maxCachedFiles;
+      for (var i = 0; i < deleteCount; i++) {
+        try {
+          await files[i].delete();
+        } catch (_) {}
+      }
+    } catch (_) {
+      // Best effort.
+    }
   }
 }

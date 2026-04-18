@@ -109,6 +109,15 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     ),
                     const _SectionDivider(),
                     _SettingSwitchRow(
+                      title: 'VM Music Sing',
+                      subtitle:
+                          'Activa modo karaoke con separación instrumental por IA\nSi está apagado, no se carga esa lógica para ahorrar recursos',
+                      value: settings.vmMusicSingEnabled,
+                      onChanged: (value) =>
+                          settings.setVmMusicSingEnabled(value),
+                    ),
+                    const _SectionDivider(),
+                    _SettingSwitchRow(
                       title: 'Carátula animada',
                       subtitle:
                           'Activa una animación natural con procesamiento IA en la carátula durante la reproducción',
@@ -128,8 +137,7 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                       title: 'Modo oscuro',
                       subtitle: 'Activa el tema oscuro en toda la app',
                       value: themeProvider?.isDarkMode ?? isDark,
-                      onChanged: (value) =>
-                          themeProvider?.setDarkMode(value),
+                      onChanged: (value) => themeProvider?.setDarkMode(value),
                     ),
                   ],
                 ),

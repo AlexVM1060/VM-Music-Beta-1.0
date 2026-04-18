@@ -1,80 +1,114 @@
+import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
 
 class ArtworkSubjectCutoutService {
   static final Map<String, Future<Uint8List?>> _cutoutCache = {};
-  static const MethodChannel _nativeChannel = MethodChannel('com.vm.music.beta/artwork_cutout');
+  static const MethodChannel _nativeChannel = MethodChannel(
+    'com.vm.music.beta/artwork_cutout',
+  );
+  static const String _persistentCacheDirName = 'artwork_subject_cutouts';
+  static const String _persistentCacheVersion = 'v1';
+  static const int _maxPersistentCacheFiles = 220;
+  static final Map<String, Future<Uint8List?>> _persistentReadRequests =
+      <String, Future<Uint8List?>>{};
+  static bool _isTrimmingPersistentCache = false;
 
   static Future<Uint8List?> buildCutout({
     required String cacheKey,
     required Uint8List sourceBytes,
     double viewportZoom = 1.0,
+    bool usePersistentCache = true,
+    bool persistResult = true,
   }) {
-    return _cutoutCache.putIfAbsent(
-      cacheKey,
-      () async {
-        final payload = <String, Object>{
-          'bytes': sourceBytes,
-          'viewportZoom': viewportZoom,
-        };
+    return _cutoutCache.putIfAbsent(cacheKey, () async {
+      if (usePersistentCache) {
+        final persisted = await _loadPersistentCutout(cacheKey);
+        if (persisted != null && persisted.isNotEmpty) {
+          return persisted;
+        }
+      }
 
-        if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
-          try {
-            if (kDebugMode) {
-              debugPrint(
-                '[cutout] iOS native request start key=$cacheKey bytes=${sourceBytes.length} zoom=$viewportZoom',
-              );
-            }
-            final native = await _nativeChannel.invokeMethod<Uint8List>(
-              'extractSubjectCutout',
-              payload,
+      final payload = <String, Object>{
+        'bytes': sourceBytes,
+        'viewportZoom': viewportZoom,
+      };
+
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+        try {
+          if (kDebugMode) {
+            debugPrint(
+              '[cutout] iOS native request start key=$cacheKey bytes=${sourceBytes.length} zoom=$viewportZoom',
             );
-            if (native != null && native.isNotEmpty) {
-              final normalizedNative = _normalizeSubjectScale(native);
-              final nativeUsable = _isLikelyUsefulCutout(normalizedNative);
-              if (kDebugMode) {
-                debugPrint(
-                  '[cutout] iOS native success key=$cacheKey outBytes=${normalizedNative.length} usable=$nativeUsable',
-                );
-              }
-              if (nativeUsable) {
-                return normalizedNative;
-              }
-              if (kDebugMode) {
-                debugPrint('[cutout] iOS native unusable key=$cacheKey -> fallback dart');
-              }
-            }
-            if (kDebugMode) {
-              debugPrint('[cutout] iOS native empty result key=$cacheKey -> fallback dart');
-            }
-          } on MissingPluginException catch (e) {
-            if (kDebugMode) {
-              debugPrint('[cutout] iOS native missing plugin key=$cacheKey error=$e');
-            }
-          } on PlatformException catch (e) {
+          }
+          final native = await _nativeChannel.invokeMethod<Uint8List>(
+            'extractSubjectCutout',
+            payload,
+          );
+          if (native != null && native.isNotEmpty) {
+            final normalizedNative = _normalizeSubjectScale(native);
+            final nativeUsable = _isLikelyUsefulCutout(normalizedNative);
             if (kDebugMode) {
               debugPrint(
-                '[cutout] iOS native platform error key=$cacheKey code=${e.code} message=${e.message}',
+                '[cutout] iOS native success key=$cacheKey outBytes=${normalizedNative.length} usable=$nativeUsable',
               );
             }
-          } catch (_) {
+            if (nativeUsable) {
+              if (persistResult) {
+                unawaited(_savePersistentCutout(cacheKey, normalizedNative));
+              }
+              return normalizedNative;
+            }
             if (kDebugMode) {
-              debugPrint('[cutout] iOS native unknown error key=$cacheKey -> fallback dart');
+              debugPrint(
+                '[cutout] iOS native unusable key=$cacheKey -> fallback dart',
+              );
             }
           }
+          if (kDebugMode) {
+            debugPrint(
+              '[cutout] iOS native empty result key=$cacheKey -> fallback dart',
+            );
+          }
+        } on MissingPluginException catch (e) {
+          if (kDebugMode) {
+            debugPrint(
+              '[cutout] iOS native missing plugin key=$cacheKey error=$e',
+            );
+          }
+        } on PlatformException catch (e) {
+          if (kDebugMode) {
+            debugPrint(
+              '[cutout] iOS native platform error key=$cacheKey code=${e.code} message=${e.message}',
+            );
+          }
+        } catch (_) {
+          if (kDebugMode) {
+            debugPrint(
+              '[cutout] iOS native unknown error key=$cacheKey -> fallback dart',
+            );
+          }
         }
+      }
 
-        if (kDebugMode) {
-          debugPrint('[cutout] Dart fallback start key=$cacheKey bytes=${sourceBytes.length}');
-        }
-        final dartCutout = await compute(_buildCutoutWorker, payload);
-        if (dartCutout == null || dartCutout.isEmpty) return dartCutout;
-        return _normalizeSubjectScale(dartCutout);
-      },
-    );
+      if (kDebugMode) {
+        debugPrint(
+          '[cutout] Dart fallback start key=$cacheKey bytes=${sourceBytes.length}',
+        );
+      }
+      final dartCutout = await compute(_buildCutoutWorker, payload);
+      if (dartCutout == null || dartCutout.isEmpty) return null;
+      final normalized = _normalizeSubjectScale(dartCutout);
+      if (persistResult) {
+        unawaited(_savePersistentCutout(cacheKey, normalized));
+      }
+      return normalized;
+    });
   }
 
   static void evict(String cacheKey) {
@@ -83,6 +117,113 @@ class ArtworkSubjectCutoutService {
 
   static void clear() {
     _cutoutCache.clear();
+  }
+
+  static Future<Uint8List?> _loadPersistentCutout(String cacheKey) {
+    final inFlight = _persistentReadRequests[cacheKey];
+    if (inFlight != null) return inFlight;
+    final request = _readPersistentCutout(cacheKey);
+    _persistentReadRequests[cacheKey] = request;
+    return request.whenComplete(() {
+      if (identical(_persistentReadRequests[cacheKey], request)) {
+        _persistentReadRequests.remove(cacheKey);
+      }
+    });
+  }
+
+  static Future<Uint8List?> _readPersistentCutout(String cacheKey) async {
+    try {
+      final file = await _persistentCacheFile(cacheKey);
+      if (!await file.exists()) return null;
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) {
+        try {
+          await file.delete();
+        } catch (_) {}
+        return null;
+      }
+      final usable = _isLikelyUsefulCutout(bytes);
+      if (!usable) {
+        try {
+          await file.delete();
+        } catch (_) {}
+        return null;
+      }
+      return bytes;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> _savePersistentCutout(
+    String cacheKey,
+    Uint8List bytes,
+  ) async {
+    if (bytes.isEmpty) return;
+    if (!_isLikelyUsefulCutout(bytes)) return;
+    try {
+      final file = await _persistentCacheFile(cacheKey);
+      await file.writeAsBytes(bytes, flush: true);
+      unawaited(_trimPersistentCache());
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  static Future<File> _persistentCacheFile(String cacheKey) async {
+    final baseDir = await getApplicationSupportDirectory();
+    final dir = Directory('${baseDir.path}/$_persistentCacheDirName');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    final normalizedKey = _persistentFilenameFor(cacheKey);
+    return File('${dir.path}/$normalizedKey.png');
+  }
+
+  static String _persistentFilenameFor(String cacheKey) {
+    final payload = '$cacheKey|$_persistentCacheVersion';
+    return _fnv1a64(payload).toRadixString(16);
+  }
+
+  static int _fnv1a64(String input) {
+    const int fnvOffsetBasis = 0xcbf29ce484222325;
+    const int fnvPrime = 0x100000001b3;
+    var hash = fnvOffsetBasis;
+    final bytes = input.codeUnits;
+    for (final b in bytes) {
+      hash ^= b;
+      hash = (hash * fnvPrime) & 0xFFFFFFFFFFFFFFFF;
+    }
+    return hash;
+  }
+
+  static Future<void> _trimPersistentCache() async {
+    if (_isTrimmingPersistentCache) return;
+    _isTrimmingPersistentCache = true;
+    try {
+      final baseDir = await getApplicationSupportDirectory();
+      final dir = Directory('${baseDir.path}/$_persistentCacheDirName');
+      if (!await dir.exists()) return;
+      final files = await dir
+          .list()
+          .where((entity) => entity is File)
+          .cast<File>()
+          .toList();
+      if (files.length <= _maxPersistentCacheFiles) return;
+      files.sort(
+        (a, b) => a.statSync().modified.compareTo(b.statSync().modified),
+      );
+      final removeCount = files.length - _maxPersistentCacheFiles;
+      for (var i = 0; i < removeCount; i++) {
+        try {
+          await files[i].delete();
+        } catch (_) {}
+      }
+    } catch (_) {
+      // Best effort.
+    } finally {
+      _isTrimmingPersistentCache = false;
+    }
   }
 }
 
@@ -130,7 +271,9 @@ Uint8List? _buildCutoutWorker(Map<String, Object> payload) {
       final minRgb = math.min(r, math.min(g, b));
       final idx = y * w + x;
       luminance[idx] = (0.2126 * r + 0.7152 * g + 0.0722 * b).toDouble();
-      saturation[idx] = maxRgb <= 0 ? 0 : ((maxRgb - minRgb) / maxRgb).toDouble();
+      saturation[idx] = maxRgb <= 0
+          ? 0
+          : ((maxRgb - minRgb) / maxRgb).toDouble();
     }
   }
 
@@ -148,9 +291,19 @@ Uint8List? _buildCutoutWorker(Map<String, Object> payload) {
       final i22 = (y + 1) * w + (x + 1);
 
       final gx =
-          -luminance[i00] + luminance[i02] - 2 * luminance[i10] + 2 * luminance[i12] - luminance[i20] + luminance[i22];
+          -luminance[i00] +
+          luminance[i02] -
+          2 * luminance[i10] +
+          2 * luminance[i12] -
+          luminance[i20] +
+          luminance[i22];
       final gy =
-          luminance[i00] + 2 * luminance[i01] + luminance[i02] - luminance[i20] - 2 * luminance[i21] - luminance[i22];
+          luminance[i00] +
+          2 * luminance[i01] +
+          luminance[i02] -
+          luminance[i20] -
+          2 * luminance[i21] -
+          luminance[i22];
       final mag = math.sqrt((gx * gx) + (gy * gy));
       final idx = y * w + x;
       edge[idx] = mag.toDouble();
@@ -171,9 +324,15 @@ Uint8List? _buildCutoutWorker(Map<String, Object> payload) {
       final ny = (y + 0.5) / h - 0.5;
       final centerPrior = math.exp(-((nx * nx) / 0.13 + (ny * ny) / 0.20));
       // Person prior: usually centered, with face/torso slightly above the midline.
-      final personPrior = math.exp(-((nx * nx) / 0.10 + ((ny + 0.09) * (ny + 0.09)) / 0.15));
+      final personPrior = math.exp(
+        -((nx * nx) / 0.10 + ((ny + 0.09) * (ny + 0.09)) / 0.15),
+      );
       final edgeNorm = (edge[idx] / maxEdge).clamp(0, 1).toDouble();
-      final s = 0.50 * edgeNorm + 0.18 * saturation[idx] + 0.16 * centerPrior + 0.16 * personPrior;
+      final s =
+          0.50 * edgeNorm +
+          0.18 * saturation[idx] +
+          0.16 * centerPrior +
+          0.16 * personPrior;
       saliency[idx] = s.toDouble();
       sum += s;
     }
@@ -233,14 +392,7 @@ Uint8List? _buildCutoutWorker(Map<String, Object> payload) {
       if (cleanedAlpha == 0) {
         out.setPixelRgba(x, y, 0, 0, 0, 0);
       } else {
-        out.setPixelRgba(
-          x,
-          y,
-          sp.r,
-          sp.g,
-          sp.b,
-          cleanedAlpha,
-        );
+        out.setPixelRgba(x, y, sp.r, sp.g, sp.b, cleanedAlpha);
       }
     }
   }
@@ -309,13 +461,7 @@ Uint8List _normalizeSubjectScale(Uint8List pngBytes) {
   final scale = (targetFill / currentFill).clamp(1.0, 1.60);
   if (scale <= 1.001) return pngBytes;
 
-  final crop = img.copyCrop(
-    image,
-    x: minX,
-    y: minY,
-    width: boxW,
-    height: boxH,
-  );
+  final crop = img.copyCrop(image, x: minX, y: minY, width: boxW, height: boxH);
 
   final newW = (boxW * scale).round().clamp(1, w);
   final newH = (boxH * scale).round().clamp(1, h);
@@ -335,7 +481,12 @@ Uint8List _normalizeSubjectScale(Uint8List pngBytes) {
   return Uint8List.fromList(img.encodePng(out, level: 6));
 }
 
-List<_ComponentStats> _extractComponents(Uint8List binary, Float32List saliency, int w, int h) {
+List<_ComponentStats> _extractComponents(
+  Uint8List binary,
+  Float32List saliency,
+  int w,
+  int h,
+) {
   final visited = Uint8List(binary.length);
   final queue = List<int>.filled(binary.length, 0, growable: false);
   final components = <_ComponentStats>[];
@@ -417,14 +568,19 @@ Uint8List _composeSubjectMask(List<_ComponentStats> components, int w, int h) {
   double scoreOf(_ComponentStats c) {
     final nx = ((c.cx - cx).abs() / (w * 0.5)).clamp(0.0, 1.0);
     final ny = ((c.cy - cy).abs() / (h * 0.5)).clamp(0.0, 1.0);
-    final centerScore = 1.0 - ((nx * nx) * 0.58 + (ny * ny) * 0.42).clamp(0.0, 1.0);
+    final centerScore =
+        1.0 - ((nx * nx) * 0.58 + (ny * ny) * 0.42).clamp(0.0, 1.0);
     final upperCenterCy = h * 0.45;
-    final personCenter = 1.0 - ((c.cy - upperCenterCy).abs() / (h * 0.5)).clamp(0.0, 1.0);
+    final personCenter =
+        1.0 - ((c.cy - upperCenterCy).abs() / (h * 0.5)).clamp(0.0, 1.0);
     final areaScore = (c.area / (size * 0.18)).clamp(0.0, 1.0);
     final compW = (c.maxX - c.minX + 1).toDouble();
     final compH = (c.maxY - c.minY + 1).toDouble();
     final aspect = (compH / compW).clamp(0.2, 3.2);
-    final portraitShape = (1.0 - ((aspect - 1.45).abs() / 1.45)).clamp(0.0, 1.0);
+    final portraitShape = (1.0 - ((aspect - 1.45).abs() / 1.45)).clamp(
+      0.0,
+      1.0,
+    );
     return c.meanSaliency * 0.40 +
         centerScore * 0.22 +
         areaScore * 0.14 +
@@ -435,8 +591,10 @@ Uint8List _composeSubjectMask(List<_ComponentStats> components, int w, int h) {
   filtered.sort((a, b) => scoreOf(b).compareTo(scoreOf(a)));
   final primary = filtered.first;
   final primaryDiag = math.sqrt(
-    ((primary.maxX - primary.minX + 1) * (primary.maxX - primary.minX + 1)).toDouble() +
-        ((primary.maxY - primary.minY + 1) * (primary.maxY - primary.minY + 1)).toDouble(),
+    ((primary.maxX - primary.minX + 1) * (primary.maxX - primary.minX + 1))
+            .toDouble() +
+        ((primary.maxY - primary.minY + 1) * (primary.maxY - primary.minY + 1))
+            .toDouble(),
   );
   final primaryScore = scoreOf(primary);
 
@@ -449,7 +607,8 @@ Uint8List _composeSubjectMask(List<_ComponentStats> components, int w, int h) {
     final dist = math.sqrt(dx * dx + dy * dy);
 
     final scoreNear = s >= primaryScore * 0.74;
-    final closeEnough = dist <= math.max(primaryDiag * 0.98, math.min(w, h) * 0.26);
+    final closeEnough =
+        dist <= math.max(primaryDiag * 0.98, math.min(w, h) * 0.26);
     final meaningfulPiece = c.area >= primary.area * 0.06;
     final verticalBridge = (c.cy - primary.cy).abs() <= h * 0.30;
     if ((scoreNear && closeEnough) ||
@@ -493,7 +652,12 @@ Uint8List _refineMask(Uint8List source, int w, int h) {
   return current;
 }
 
-Uint8List _majorityPass(Uint8List source, int w, int h, {required int minNeighbors}) {
+Uint8List _majorityPass(
+  Uint8List source,
+  int w,
+  int h, {
+  required int minNeighbors,
+}) {
   final out = Uint8List(source.length);
 
   for (var y = 0; y < h; y++) {
@@ -512,7 +676,12 @@ Uint8List _majorityPass(Uint8List source, int w, int h, {required int minNeighbo
   return out;
 }
 
-Uint8List _removeSmallForegroundIslands(Uint8List mask, int w, int h, {required int minArea}) {
+Uint8List _removeSmallForegroundIslands(
+  Uint8List mask,
+  int w,
+  int h, {
+  required int minArea,
+}) {
   final out = Uint8List.fromList(mask);
   final visited = Uint8List(mask.length);
   final queue = List<int>.filled(mask.length, 0, growable: false);
@@ -554,7 +723,12 @@ Uint8List _removeSmallForegroundIslands(Uint8List mask, int w, int h, {required 
   return out;
 }
 
-Uint8List _fillSmallBackgroundHoles(Uint8List mask, int w, int h, {required int maxHoleArea}) {
+Uint8List _fillSmallBackgroundHoles(
+  Uint8List mask,
+  int w,
+  int h, {
+  required int maxHoleArea,
+}) {
   final out = Uint8List.fromList(mask);
   final visited = Uint8List(mask.length);
   final queue = List<int>.filled(mask.length, 0, growable: false);
@@ -622,14 +796,7 @@ Uint8List? _fallbackEllipseCutout(img.Image src) {
       if (a == 0) {
         out.setPixelRgba(x, y, 0, 0, 0, 0);
       } else {
-        out.setPixelRgba(
-          x,
-          y,
-          p.r,
-          p.g,
-          p.b,
-          a,
-        );
+        out.setPixelRgba(x, y, p.r, p.g, p.b, a);
       }
     }
   }
