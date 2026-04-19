@@ -4,6 +4,6 @@
   "force": false,
   "title": "Nueva versión disponible",
   "message": "Mejoras de rendimiento, se han disminuido transparencias y actualizaciones en segundo plano para optimizar rendimiento\nVM Music by AlexVM",
-  "storeUrlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist",
+  "storeUrlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/e5f5d0289532.plist",
   "storeUrlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete"
 }
