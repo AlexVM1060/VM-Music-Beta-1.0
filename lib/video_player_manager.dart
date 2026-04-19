@@ -105,6 +105,26 @@ class _YouTubeMusicQueueCandidate {
   });
 }
 
+class _DjTransitionPlan {
+  final Duration preferredMixDuration;
+  final Duration preferredTriggerLeadTime;
+  final Duration? preferredIncomingStartOffset;
+  final double? preferredOutgoingSpeed;
+  final double? preferredIncomingSpeed;
+  final double incomingCurvePower;
+  final double outgoingCurvePower;
+
+  const _DjTransitionPlan({
+    required this.preferredMixDuration,
+    required this.preferredTriggerLeadTime,
+    required this.preferredIncomingStartOffset,
+    required this.preferredOutgoingSpeed,
+    required this.preferredIncomingSpeed,
+    required this.incomingCurvePower,
+    required this.outgoingCurvePower,
+  });
+}
+
 // Mantiene el nombre para no romper imports, pero ahora gestiona audio estilo app musical.
 class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const String _playerSessionBoxName = 'player_session';
@@ -192,6 +212,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final Map<String, String> _aiInstrumentalCache = {};
   final Map<String, Duration?> _djFirstLyricOffsetCache = {};
   final Map<String, Future<Duration?>> _djFirstLyricOffsetRequests = {};
+  final Map<String, _DjTransitionPlan> _djTransitionPlanCache = {};
   final Map<String, String> _searchThumbnailOverrides = {};
   final Map<String, _SearchVideosCacheEntry> _searchVideosCache = {};
   final Map<String, Future<List<Video>>> _searchVideosRequests = {};
@@ -4983,8 +5004,22 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required Duration outgoingDuration,
     required Duration outgoingPosition,
     required Duration incomingDuration,
+    Duration? preferredDuration,
   }) {
     if (!_settingsService.djMode) return _crossfadeDuration;
+
+    if (preferredDuration != null && preferredDuration > Duration.zero) {
+      final remainingMs = (outgoingDuration - outgoingPosition).inMilliseconds;
+      final safeMaxMs = math.max(
+        2200,
+        remainingMs - const Duration(milliseconds: 700).inMilliseconds,
+      );
+      final preferredMs = preferredDuration.inMilliseconds.clamp(
+        _djMinMixDuration.inMilliseconds,
+        _djMaxMixDuration.inMilliseconds,
+      );
+      return Duration(milliseconds: math.min(preferredMs, safeMaxMs));
+    }
 
     final outgoingBasedMs = outgoingDuration > Duration.zero
         ? (outgoingDuration.inMilliseconds * 0.065).round()
@@ -5007,8 +5042,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return Duration(milliseconds: safeMs);
   }
 
-  Duration _effectiveCrossfadeTriggerLeadTime() {
+  Duration _effectiveCrossfadeTriggerLeadTime({Duration? preferred}) {
     if (!_settingsService.djMode) return _crossfadeTriggerLeadTime;
+    if (preferred != null && preferred > Duration.zero) {
+      final ms = preferred.inMilliseconds.clamp(6500, 14000);
+      return Duration(milliseconds: ms);
+    }
     if (_trackDuration <= Duration.zero) return const Duration(seconds: 9);
     final dynamicSeconds = (_trackDuration.inSeconds * 0.055).round().clamp(
       8,
@@ -5064,7 +5103,42 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     // Queremos que la primera línea caiga cerca del cierre de la mezcla.
     final desiredHitMs = math.max(300, mixDuration.inMilliseconds - 260);
     final requiredSpeed = remainingToLyric.inMilliseconds / desiredHitMs;
-    return requiredSpeed.clamp(0.94, 1.08);
+    return requiredSpeed.clamp(0.97, 1.04);
+  }
+
+  Future<double> _setPlayerSpeedSmooth(
+    AudioPlayer player,
+    double target, {
+    required double minSpeed,
+    required double maxSpeed,
+  }) async {
+    final safeTarget = target.clamp(minSpeed, maxSpeed).toDouble();
+    double current = 1.0;
+    try {
+      current = player.speed;
+    } catch (_) {}
+
+    final delta = (safeTarget - current).abs();
+    if (delta < 0.004) {
+      try {
+        await player.setSpeed(safeTarget);
+      } catch (_) {}
+      return safeTarget;
+    }
+
+    final steps = ((delta / 0.01).ceil()).clamp(3, 7);
+    for (var i = 1; i <= steps; i++) {
+      final ratio = i / steps;
+      final eased = 1 - math.pow(1 - ratio, 2).toDouble();
+      final nextSpeed = current + ((safeTarget - current) * eased);
+      try {
+        await player.setSpeed(nextSpeed);
+      } catch (_) {
+        return current;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 42));
+    }
+    return safeTarget;
   }
 
   Future<void> _applyTrackStartFadeInIfEnabled() async {
@@ -6262,6 +6336,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         unawaited(
           _resolveFirstLyricOffsetForQueueItem(next, allowNetwork: true),
         );
+        unawaited(
+          _resolveDjTransitionPlanForQueueItem(
+            next,
+            allowNetwork: true,
+            incomingDuration: _crossfadePlayer.duration ?? Duration.zero,
+            outgoingDuration: _trackDuration,
+            outgoingPosition: _position,
+          ),
+        );
       }
       unawaited(
         _prepareSystemArtwork(
@@ -6289,7 +6372,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) return;
 
     final remaining = _trackDuration - _position;
-    final triggerLeadTime = _effectiveCrossfadeTriggerLeadTime();
+    Duration? preferredTriggerLead;
+    if (_settingsService.djMode) {
+      final next = _peekNextQueueItem();
+      if (next != null) {
+        final plan = await _resolveDjTransitionPlanForQueueItem(
+          next,
+          allowNetwork: false,
+          incomingDuration: _crossfadePlayer.duration ?? Duration.zero,
+          outgoingDuration: _trackDuration,
+          outgoingPosition: _position,
+        );
+        preferredTriggerLead = plan?.preferredTriggerLeadTime;
+      }
+    }
+    final triggerLeadTime = _effectiveCrossfadeTriggerLeadTime(
+      preferred: preferredTriggerLead,
+    );
     final lyricDrivenTrigger = _shouldTriggerDjFromLastLyric();
     if (!lyricDrivenTrigger && remaining > triggerLeadTime) return;
     if (!_crossfadePreparedPrimed) {
@@ -6381,23 +6480,73 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       _isCrossfadeTransitioning = true;
       final incomingDuration = nextPlayer.duration ?? Duration.zero;
-      final mixDuration = _resolveMixDuration(
+      final incomingFirstLyricOffset = _settingsService.djMode
+          ? await _resolveFirstLyricOffsetForQueueItem(next, allowNetwork: false)
+          : null;
+      final djPlan = _settingsService.djMode
+          ? await _resolveDjTransitionPlanForQueueItem(
+              next,
+              allowNetwork: false,
+              incomingDuration: incomingDuration,
+              outgoingDuration: outgoingDurationSnapshot,
+              outgoingPosition: outgoingPositionSnapshot,
+              incomingFirstLyricOffset: incomingFirstLyricOffset,
+            )
+          : null;
+      var mixDuration = _resolveMixDuration(
         outgoingDuration: outgoingDurationSnapshot,
         outgoingPosition: outgoingPositionSnapshot,
         incomingDuration: incomingDuration,
+        preferredDuration: djPlan?.preferredMixDuration,
       );
-      Duration incomingStartOffset = Duration.zero;
-      Duration? incomingFirstLyricOffset;
-      if (_settingsService.djMode) {
-        incomingFirstLyricOffset = await _resolveFirstLyricOffsetForQueueItem(
-          next,
-          allowNetwork: false,
+      if (_settingsService.djMode && mixDuration > Duration.zero) {
+        // Evita forzar time-stretch agresivo: ampliamos un poco la mezcla
+        // antes de tener que acelerar de forma audible.
+        const maxNaturalOutgoingSpeed = 1.045;
+        final remainingMs = math.max(
+          1,
+          (outgoingDurationSnapshot - outgoingPositionSnapshot).inMilliseconds,
         );
+        final currentMixMs = mixDuration.inMilliseconds;
+        final neededMixMs = (remainingMs / maxNaturalOutgoingSpeed).round();
+        final safeUpperMixMs = math.min(
+          _djMaxMixDuration.inMilliseconds,
+          math.max(
+            _djMinMixDuration.inMilliseconds,
+            remainingMs - const Duration(milliseconds: 700).inMilliseconds,
+          ),
+        );
+        if (neededMixMs > currentMixMs && neededMixMs <= safeUpperMixMs) {
+          mixDuration = Duration(milliseconds: neededMixMs);
+        }
+      }
+      Duration incomingStartOffset = Duration.zero;
+      if (_settingsService.djMode) {
         incomingStartOffset = _resolveDjIncomingStartOffset(
           firstLyricOffset: incomingFirstLyricOffset,
           incomingDuration: incomingDuration,
           mixDuration: mixDuration,
         );
+        final plannedOffset = djPlan?.preferredIncomingStartOffset;
+        if (plannedOffset != null && plannedOffset > Duration.zero) {
+          if (incomingStartOffset <= Duration.zero) {
+            incomingStartOffset = plannedOffset;
+          } else {
+            final blendedMs =
+                (incomingStartOffset.inMilliseconds * 0.72 +
+                        plannedOffset.inMilliseconds * 0.28)
+                    .round();
+            incomingStartOffset = Duration(
+              milliseconds: math.max(0, blendedMs),
+            );
+          }
+        }
+        if (incomingDuration > Duration.zero) {
+          final maxOffset = incomingDuration - const Duration(milliseconds: 900);
+          if (maxOffset > Duration.zero && incomingStartOffset > maxOffset) {
+            incomingStartOffset = maxOffset;
+          }
+        }
         if (incomingStartOffset > Duration.zero) {
           try {
             await nextPlayer.seek(incomingStartOffset);
@@ -6432,19 +6581,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
       double outgoingSpeed = 1.0;
       double incomingSpeed = 1.0;
+      var outgoingStoppedEarly = false;
+      var outgoingCutEndMs = (totalMs * 0.87).round();
+      var outgoingCutStartMs = math.max(0, outgoingCutEndMs - 220);
       if (_settingsService.djMode && totalMs > 0) {
         final remainingMs = math.max(
           1,
           (outgoingDurationSnapshot - outgoingPositionSnapshot).inMilliseconds,
         );
         final requiredSpeed = remainingMs / totalMs;
-        outgoingSpeed = requiredSpeed.clamp(1.0, 1.12);
-        if (outgoingSpeed > 1.01) {
-          try {
-            await currentPlayer.setSpeed(outgoingSpeed);
-          } catch (_) {
-            outgoingSpeed = 1.0;
-          }
+        outgoingSpeed = requiredSpeed.clamp(1.0, 1.055);
+        if (outgoingSpeed > 1.005) {
+          outgoingSpeed = await _setPlayerSpeedSmooth(
+            currentPlayer,
+            outgoingSpeed,
+            minSpeed: 1.0,
+            maxSpeed: 1.06,
+          );
         }
 
         incomingSpeed = _resolveDjIncomingSpeed(
@@ -6452,40 +6605,123 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           incomingStartOffset: incomingStartOffset,
           mixDuration: mixDuration,
         );
-        if ((incomingSpeed - 1.0).abs() > 0.01) {
-          try {
-            await nextPlayer.setSpeed(incomingSpeed);
-          } catch (_) {
-            incomingSpeed = 1.0;
+        final preferredOutgoingSpeed = djPlan?.preferredOutgoingSpeed;
+        if (preferredOutgoingSpeed != null && preferredOutgoingSpeed > 0) {
+          outgoingSpeed = ((outgoingSpeed * 0.62) + (preferredOutgoingSpeed * 0.38))
+              .clamp(1.0, 1.06);
+          if (outgoingSpeed > 1.005) {
+            outgoingSpeed = await _setPlayerSpeedSmooth(
+              currentPlayer,
+              outgoingSpeed,
+              minSpeed: 1.0,
+              maxSpeed: 1.06,
+            );
           }
+        }
+        final preferredIncomingSpeed = djPlan?.preferredIncomingSpeed;
+        if (preferredIncomingSpeed != null && preferredIncomingSpeed > 0) {
+          incomingSpeed = ((incomingSpeed * 0.6) + (preferredIncomingSpeed * 0.4))
+              .clamp(0.97, 1.05);
+        }
+        if ((incomingSpeed - 1.0).abs() > 0.005) {
+          incomingSpeed = await _setPlayerSpeedSmooth(
+            nextPlayer,
+            incomingSpeed,
+            minSpeed: 0.97,
+            maxSpeed: 1.05,
+          );
+        }
+
+        final lyricDistanceMs =
+            incomingFirstLyricOffset == null || incomingFirstLyricOffset <= Duration.zero
+            ? null
+            : (incomingFirstLyricOffset - incomingStartOffset).inMilliseconds;
+        if (lyricDistanceMs != null && lyricDistanceMs > 0) {
+          final lyricHitMs = (lyricDistanceMs / incomingSpeed).round();
+          final clampedHitMs = lyricHitMs.clamp(
+            (totalMs * 0.45).round(),
+            (totalMs * 0.94).round(),
+          );
+          outgoingCutEndMs = (clampedHitMs + 140).clamp(
+            (totalMs * 0.58).round(),
+            (totalMs * 0.95).round(),
+          );
+          outgoingCutStartMs = math.max(
+            (totalMs * 0.46).round(),
+            outgoingCutEndMs - 260,
+          );
         }
       }
       for (var step = 1; step <= steps; step++) {
         final ratio = step / steps;
+        final incomingCurvePower = djPlan?.incomingCurvePower ?? 1.0;
+        final outgoingCurvePower = djPlan?.outgoingCurvePower ?? 1.0;
+        final curvedInRatio = math.pow(ratio, incomingCurvePower).toDouble();
+        final curvedOutRatio = math.pow(ratio, outgoingCurvePower).toDouble();
         final inGain = _settingsService.djMode
-            ? math.sin(ratio * math.pi / 2)
+            ? math.sin(curvedInRatio * math.pi / 2)
             : ratio;
         final outGain = _settingsService.djMode
-            ? math.cos(ratio * math.pi / 2)
+            ? math.cos(curvedOutRatio * math.pi / 2)
             : (1.0 - ratio);
         final inVol = targetVolume * inGain;
-        final outVol = targetVolume * outGain;
+        var outVol = targetVolume * outGain;
+        if (_settingsService.djMode) {
+          // En modo DJ mantenemos el track saliente al mismo volumen
+          // durante casi toda la mezcla para una transición más "overlay".
+          // Solo aplicamos un micro fade-out al final para evitar corte brusco.
+          outVol = targetVolume;
+          final elapsedMs = (ratio * totalMs).round();
+          if (elapsedMs >= outgoingCutStartMs) {
+            final fadeWindowMs = math.max(1, outgoingCutEndMs - outgoingCutStartMs);
+            final fadeProgress =
+                ((elapsedMs - outgoingCutStartMs) / fadeWindowMs).clamp(0.0, 1.0);
+            final fadeGain = math.cos(fadeProgress * math.pi / 2);
+            outVol *= fadeGain;
+          }
+          if (!outgoingStoppedEarly && elapsedMs >= outgoingCutEndMs) {
+            try {
+              await currentPlayer.stop();
+            } catch (_) {}
+            try {
+              await currentPlayer.seek(Duration.zero);
+            } catch (_) {}
+            try {
+              await currentPlayer.setVolume(0.0);
+            } catch (_) {}
+            outgoingStoppedEarly = true;
+          }
+        }
         await nextPlayer.setVolume(inVol);
-        await currentPlayer.setVolume(outVol);
+        if (!outgoingStoppedEarly) {
+          await currentPlayer.setVolume(outVol);
+        }
         await Future<void>.delayed(stepDelay);
       }
 
-      await currentPlayer.stop();
-      await currentPlayer.seek(Duration.zero);
-      await currentPlayer.setVolume(0.0);
+      if (!outgoingStoppedEarly) {
+        await currentPlayer.stop();
+        await currentPlayer.seek(Duration.zero);
+        await currentPlayer.setVolume(0.0);
+      }
       if (outgoingSpeed > 1.0) {
         try {
-          await currentPlayer.setSpeed(1.0);
+          await _setPlayerSpeedSmooth(
+            currentPlayer,
+            1.0,
+            minSpeed: 0.95,
+            maxSpeed: 1.08,
+          );
         } catch (_) {}
       }
       if ((incomingSpeed - 1.0).abs() > 0.01) {
         try {
-          await nextPlayer.setSpeed(1.0);
+          await _setPlayerSpeedSmooth(
+            nextPlayer,
+            1.0,
+            minSpeed: 0.95,
+            maxSpeed: 1.08,
+          );
         } catch (_) {}
       }
 
@@ -6898,6 +7134,160 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     return null;
+  }
+
+  String _djTransitionPairKey(PlaybackQueueItem next) {
+    final currentId = _currentVideoId?.trim();
+    final currentScope = _isLocal ? 'local' : 'online';
+    final current = currentId == null || currentId.isEmpty
+        ? 'unknown'
+        : '$currentScope:$currentId';
+    final upcoming = _queueItemKey(next);
+    return '$current=>$upcoming';
+  }
+
+  double _estimateTrackEnergyScore({
+    required String title,
+    required String artist,
+  }) {
+    final haystack = '$title $artist'.toLowerCase();
+    const highEnergyHints = <String>{
+      'remix',
+      'club',
+      'dance',
+      'edm',
+      'house',
+      'techno',
+      'dnb',
+      'drum and bass',
+      'hardstyle',
+      'trap',
+      'party',
+      'mix',
+      'radio edit',
+    };
+    const lowEnergyHints = <String>{
+      'acoustic',
+      'piano',
+      'live',
+      'ballad',
+      'orchestral',
+      'unplugged',
+      'lofi',
+      'chill',
+      'instrumental',
+      'version',
+      'slow',
+    };
+
+    var score = 1.0;
+    for (final hint in highEnergyHints) {
+      if (haystack.contains(hint)) {
+        score += 0.12;
+      }
+    }
+    for (final hint in lowEnergyHints) {
+      if (haystack.contains(hint)) {
+        score -= 0.11;
+      }
+    }
+    return score.clamp(0.72, 1.38);
+  }
+
+  _DjTransitionPlan _buildHeuristicDjTransitionPlan({
+    required PlaybackQueueItem next,
+    required Duration incomingDuration,
+    required Duration outgoingDuration,
+    required Duration outgoingPosition,
+    required Duration? incomingFirstLyricOffset,
+  }) {
+    final currentTitle = _trackTitle ?? '';
+    final currentArtist = cleanArtistName(_trackArtist);
+    final outgoingEnergy = _estimateTrackEnergyScore(
+      title: currentTitle,
+      artist: currentArtist,
+    );
+    final incomingEnergy = _estimateTrackEnergyScore(
+      title: next.title,
+      artist: next.artist,
+    );
+    final energyDelta = incomingEnergy - outgoingEnergy;
+    final hasLyricAnchor = incomingFirstLyricOffset != null &&
+        incomingFirstLyricOffset > Duration.zero;
+
+    final baseMix = _resolveMixDuration(
+      outgoingDuration: outgoingDuration,
+      outgoingPosition: outgoingPosition,
+      incomingDuration: incomingDuration,
+    );
+    final adjustedMixMs = (baseMix.inMilliseconds + (energyDelta * 820).round())
+        .clamp(
+          _djMinMixDuration.inMilliseconds,
+          _djMaxMixDuration.inMilliseconds,
+        );
+    final mixDuration = Duration(milliseconds: adjustedMixMs);
+
+    var triggerMs = mixDuration.inMilliseconds + (hasLyricAnchor ? 1900 : 2400);
+    if (energyDelta > 0.22) triggerMs += 450;
+    if (energyDelta < -0.2) triggerMs -= 450;
+    final triggerLeadTime = Duration(milliseconds: triggerMs.clamp(7000, 14000));
+
+    final incomingOffset = _resolveDjIncomingStartOffset(
+      firstLyricOffset: incomingFirstLyricOffset,
+      incomingDuration: incomingDuration,
+      mixDuration: mixDuration,
+    );
+
+    final incomingCurvePower = (1.0 - (energyDelta * 0.33)).clamp(0.78, 1.22);
+    final outgoingCurvePower = (1.0 + (energyDelta * 0.28)).clamp(0.78, 1.22);
+
+    return _DjTransitionPlan(
+      preferredMixDuration: mixDuration,
+      preferredTriggerLeadTime: triggerLeadTime,
+      preferredIncomingStartOffset:
+          incomingOffset > Duration.zero ? incomingOffset : null,
+      preferredOutgoingSpeed: null,
+      preferredIncomingSpeed: null,
+      incomingCurvePower: incomingCurvePower,
+      outgoingCurvePower: outgoingCurvePower,
+    );
+  }
+
+  Future<_DjTransitionPlan?> _resolveDjTransitionPlanForQueueItem(
+    PlaybackQueueItem next, {
+    required bool allowNetwork,
+    required Duration incomingDuration,
+    required Duration outgoingDuration,
+    required Duration outgoingPosition,
+    Duration? incomingFirstLyricOffset,
+  }) async {
+    if (!_settingsService.djMode) return null;
+    final pairKey = _djTransitionPairKey(next);
+    final cached = _djTransitionPlanCache[pairKey];
+    if (cached != null) return cached;
+
+    final resolvedIncomingFirstLyric = incomingFirstLyricOffset ??
+        await _resolveFirstLyricOffsetForQueueItem(
+          next,
+          allowNetwork: allowNetwork,
+        );
+    final fallback = _buildHeuristicDjTransitionPlan(
+      next: next,
+      incomingDuration: incomingDuration,
+      outgoingDuration: outgoingDuration,
+      outgoingPosition: outgoingPosition,
+      incomingFirstLyricOffset: resolvedIncomingFirstLyric,
+    );
+    _storeDjTransitionPlan(pairKey, fallback);
+    return fallback;
+  }
+
+  void _storeDjTransitionPlan(String key, _DjTransitionPlan value) {
+    _djTransitionPlanCache[key] = value;
+    while (_djTransitionPlanCache.length > 260) {
+      final oldest = _djTransitionPlanCache.keys.first;
+      _djTransitionPlanCache.remove(oldest);
+    }
   }
 
   Future<Duration?> _resolveFirstLyricOffsetForQueueItem(
