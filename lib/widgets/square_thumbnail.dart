@@ -46,8 +46,6 @@ class SquareThumbnail extends StatelessWidget {
         height: size,
         fit: BoxFit.cover,
         alignment: Alignment.center,
-        filterQuality: FilterQuality.high,
-        errorBuilder: (context, error, stackTrace) => fallback,
       );
     } else if (hasUrl) {
       image = _NetworkThumbnailWithFallback(
@@ -117,8 +115,8 @@ class _NetworkThumbnailWithFallbackState
       fit: BoxFit.cover,
       alignment: Alignment.center,
       filterQuality: widget.preferLowResolution
-          ? FilterQuality.medium
-          : FilterQuality.high,
+          ? FilterQuality.low
+          : FilterQuality.medium,
       errorBuilder: (context, error, stackTrace) {
         if (_index < widget.urls.length - 1) {
           WidgetsBinding.instance.addPostFrameCallback((_) {

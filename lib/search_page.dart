@@ -3626,115 +3626,130 @@ class TopArtistCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final thumb = _thumbnailUrl(channel);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark
+        ? const Color(0xFF0B0B0B)
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final cardBorder = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.14);
+    final avatarCachePx = (72 * MediaQuery.devicePixelRatioOf(context))
+        .round()
+        .clamp(96, 512)
+        .toInt();
     return ClipRRect(
       borderRadius: BorderRadius.circular(18),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Material(
-          color: Colors.white.withValues(alpha: 0.04),
-          child: InkWell(
-            onTap: onOpenChannel,
-            child: Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.16),
-                  width: 0.8,
-                ),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.10),
-                    Colors.white.withValues(alpha: 0.03),
-                  ],
-                ),
+      child: Material(
+        color: cardColor,
+        surfaceTintColor: Colors.transparent,
+        child: InkWell(
+          onTap: onOpenChannel,
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: cardBorder, width: 0.8),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  (isDark ? Colors.white : Colors.black).withValues(
+                    alpha: 0.06,
+                  ),
+                  (isDark ? Colors.white : Colors.black).withValues(
+                    alpha: 0.02,
+                  ),
+                ],
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(999),
-                        child: Transform.scale(
-                          scale: 1.05,
-                          child: Image.network(
-                            thumb,
-                            width: 72,
-                            height: 72,
-                            fit: BoxFit.cover,
-                            alignment: Alignment.center,
-                            errorBuilder: (context, error, stackTrace) =>
-                                const SizedBox(
-                                  width: 72,
-                                  height: 72,
-                                  child: Icon(
-                                    Icons.account_circle_outlined,
-                                    size: 38,
-                                    color: Colors.grey,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(999),
+                      child: Transform.scale(
+                        scale: 1.05,
+                        child: Image.network(
+                          thumb,
+                          width: 72,
+                          height: 72,
+                          fit: BoxFit.cover,
+                          alignment: Alignment.center,
+                          cacheWidth: avatarCachePx,
+                          cacheHeight: avatarCachePx,
+                          filterQuality: FilterQuality.medium,
+                          errorBuilder: (context, error, stackTrace) =>
+                              const SizedBox(
+                                width: 72,
+                                height: 72,
+                                child: Icon(
+                                  Icons.account_circle_outlined,
+                                  size: 38,
+                                  color: Colors.grey,
+                                ),
+                              ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            channel.channel.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: CupertinoTheme.of(context)
+                                .textTheme
+                                .textStyle
+                                .copyWith(
+                                  fontSize: 26,
+                                  fontWeight: FontWeight.w700,
+                                  color: CupertinoColors.label.resolveFrom(
+                                    context,
                                   ),
                                 ),
                           ),
-                        ),
+                          const SizedBox(height: 4),
+                          Text(
+                            subscriberLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: CupertinoTheme.of(context)
+                                .textTheme
+                                .textStyle
+                                .copyWith(
+                                  fontSize: 14,
+                                  color: CupertinoColors.secondaryLabel
+                                      .resolveFrom(context),
+                                ),
+                          ),
+                          Text(
+                            '${channel.channel.videoCount} videos',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: CupertinoTheme.of(context)
+                                .textTheme
+                                .textStyle
+                                .copyWith(
+                                  fontSize: 13,
+                                  color: CupertinoColors.secondaryLabel
+                                      .resolveFrom(context),
+                                ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              channel.channel.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context)
-                                  .textTheme
-                                  .textStyle
-                                  .copyWith(
-                                    fontSize: 26,
-                                    fontWeight: FontWeight.w700,
-                                    color: CupertinoColors.label.resolveFrom(
-                                      context,
-                                    ),
-                                  ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              subscriberLabel,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context)
-                                  .textTheme
-                                  .textStyle
-                                  .copyWith(
-                                    fontSize: 14,
-                                    color: CupertinoColors.secondaryLabel
-                                        .resolveFrom(context),
-                                  ),
-                            ),
-                            Text(
-                              '${channel.channel.videoCount} videos',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context)
-                                  .textTheme
-                                  .textStyle
-                                  .copyWith(
-                                    fontSize: 13,
-                                    color: CupertinoColors.secondaryLabel
-                                        .resolveFrom(context),
-                                  ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  _ArtistVideosActionButton(onPressed: onOpenChannel),
-                ],
-              ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _ArtistVideosActionButton(onPressed: onOpenChannel),
+              ],
             ),
           ),
         ),
@@ -3771,96 +3786,110 @@ class _TopArtistFromVideoCard extends StatelessWidget {
         (channelThumbnailUrl != null && channelThumbnailUrl!.isNotEmpty)
         ? channelThumbnailUrl!
         : bestThumbnailForVideo(video);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark
+        ? const Color(0xFF0B0B0B)
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final cardBorder = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.14);
+    final avatarCachePx = (72 * MediaQuery.devicePixelRatioOf(context))
+        .round()
+        .clamp(96, 512)
+        .toInt();
     return ClipRRect(
       borderRadius: BorderRadius.circular(18),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Material(
-          color: Colors.white.withValues(alpha: 0.04),
-          child: InkWell(
-            onTap: onOpen,
-            child: Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.16),
-                  width: 0.8,
-                ),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.10),
-                    Colors.white.withValues(alpha: 0.03),
-                  ],
-                ),
-              ),
-              child: Row(
-                children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(999),
-                    child: Transform.scale(
-                      scale: 1.05,
-                      child: Image.network(
-                        thumb,
-                        width: 72,
-                        height: 72,
-                        fit: BoxFit.cover,
-                        alignment: Alignment.center,
-                        errorBuilder: (context, error, stackTrace) =>
-                            const SizedBox(
-                              width: 72,
-                              height: 72,
-                              child: Icon(
-                                Icons.account_circle_outlined,
-                                size: 38,
-                                color: Colors.grey,
-                              ),
-                            ),
-                      ),
-                    ),
+      child: Material(
+        color: cardColor,
+        surfaceTintColor: Colors.transparent,
+        child: InkWell(
+          onTap: onOpen,
+          child: Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: cardBorder, width: 0.8),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  (isDark ? Colors.white : Colors.black).withValues(
+                    alpha: 0.06,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          cleanArtistName(video.author),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 24,
-                                fontWeight: FontWeight.w700,
-                                color: CupertinoColors.label.resolveFrom(
-                                  context,
-                                ),
-                              ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Del primer resultado',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 13,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
-                              ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Icon(
-                    Icons.chevron_right_rounded,
-                    color: CupertinoColors.tertiaryLabel.resolveFrom(context),
+                  (isDark ? Colors.white : Colors.black).withValues(
+                    alpha: 0.02,
                   ),
                 ],
               ),
+            ),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: Transform.scale(
+                    scale: 1.05,
+                    child: Image.network(
+                      thumb,
+                      width: 72,
+                      height: 72,
+                      fit: BoxFit.cover,
+                      alignment: Alignment.center,
+                      cacheWidth: avatarCachePx,
+                      cacheHeight: avatarCachePx,
+                      filterQuality: FilterQuality.medium,
+                      errorBuilder: (context, error, stackTrace) =>
+                          const SizedBox(
+                            width: 72,
+                            height: 72,
+                            child: Icon(
+                              Icons.account_circle_outlined,
+                              size: 38,
+                              color: Colors.grey,
+                            ),
+                          ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        cleanArtistName(video.author),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: CupertinoTheme.of(context).textTheme.textStyle
+                            .copyWith(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                              color: CupertinoColors.label.resolveFrom(context),
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Del primer resultado',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: CupertinoTheme.of(context).textTheme.textStyle
+                            .copyWith(
+                              fontSize: 13,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(
+                                context,
+                              ),
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: CupertinoColors.tertiaryLabel.resolveFrom(context),
+                ),
+              ],
             ),
           ),
         ),
@@ -3935,54 +3964,51 @@ class _ArtistVideosActionButtonState extends State<_ArtistVideosActionButton>
             ),
             child: ClipRRect(
               borderRadius: borderRadius,
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
-                child: Container(
-                  height: 36,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        const Color(0xFFEABF81).withValues(alpha: 0.50),
-                        const Color(0xFFE5AE6D).withValues(alpha: 0.56),
-                        const Color(0xFFDF995A).withValues(alpha: 0.54),
-                      ],
-                    ),
-                    borderRadius: borderRadius,
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.14),
-                      width: 0.45,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFDDA15F).withValues(alpha: 0.10),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
+              child: Container(
+                height: 36,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      const Color(0xFFEABF81).withValues(alpha: 0.74),
+                      const Color(0xFFE5AE6D).withValues(alpha: 0.78),
+                      const Color(0xFFDF995A).withValues(alpha: 0.76),
                     ],
                   ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: const [
-                      Icon(
-                        Icons.music_note_rounded,
-                        size: 16,
+                  borderRadius: borderRadius,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.14),
+                    width: 0.45,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFFDDA15F).withValues(alpha: 0.10),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(
+                      Icons.music_note_rounded,
+                      size: 16,
+                      color: Colors.white,
+                    ),
+                    SizedBox(width: 7),
+                    Text(
+                      'Ver videos musicales',
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
                         color: Colors.white,
                       ),
-                      SizedBox(width: 7),
-                      Text(
-                        'Ver videos musicales',
-                        style: TextStyle(
-                          fontFamily: '.SF Pro Text',
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -6906,17 +6932,26 @@ class _AlbumAnimatedCoverState extends State<_AlbumAnimatedCover>
   Widget build(BuildContext context) {
     final url = widget.imageUrl.trim();
     final hasLocal = url.startsWith('/');
+    final coverCachePx =
+        (widget.size * MediaQuery.devicePixelRatioOf(context) * widget.zoom)
+            .round()
+            .clamp(96, 2048)
+            .toInt();
     final baseImage = hasLocal
         ? Image.file(
             File(url),
             fit: BoxFit.cover,
-            filterQuality: FilterQuality.high,
+            cacheWidth: coverCachePx,
+            cacheHeight: coverCachePx,
+            filterQuality: FilterQuality.medium,
             errorBuilder: (context, error, stackTrace) => widget.fallback,
           )
         : Image.network(
             url,
             fit: BoxFit.cover,
-            filterQuality: FilterQuality.high,
+            cacheWidth: coverCachePx,
+            cacheHeight: coverCachePx,
+            filterQuality: FilterQuality.medium,
             gaplessPlayback: true,
             errorBuilder: (context, error, stackTrace) => widget.fallback,
           );
@@ -6944,7 +6979,9 @@ class _AlbumAnimatedCoverState extends State<_AlbumAnimatedCover>
                       child: Image.memory(
                         _cutoutBytes!,
                         fit: BoxFit.contain,
-                        filterQuality: FilterQuality.high,
+                        cacheWidth: coverCachePx,
+                        cacheHeight: coverCachePx,
+                        filterQuality: FilterQuality.medium,
                       ),
                     ),
                   );

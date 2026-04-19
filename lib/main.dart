@@ -453,6 +453,11 @@ class _MainTabsState extends State<MainTabs> {
         ? Colors.black
         : CupertinoColors.systemGroupedBackground.resolveFrom(context);
     final hideMainAppBar = selectedIndex == 3;
+    final pagesWithTickerMode = List<Widget>.generate(
+      _pages.length,
+      (index) => TickerMode(enabled: index == selectedIndex, child: _pages[index]),
+      growable: false,
+    );
 
     if (_displayedPageIndex != selectedIndex) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -531,7 +536,7 @@ class _MainTabsState extends State<MainTabs> {
           body: PageView(
             controller: controller,
             physics: const NeverScrollableScrollPhysics(),
-            children: _pages,
+            children: pagesWithTickerMode,
           ),
         ),
         const Positioned.fill(child: OverlayVideoPlayer()),
@@ -595,7 +600,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(24),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
           child: Container(
             padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
             decoration: BoxDecoration(

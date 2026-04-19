@@ -238,15 +238,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
   static const Duration _playbackUiNotifyMinInterval = Duration(
-    milliseconds: 320,
+    milliseconds: 420,
   );
   static const Duration _playbackUiNotifyMinPositionDelta = Duration(
-    milliseconds: 260,
+    milliseconds: 360,
   );
   static const Duration _playbackUiNotifyMinBufferedDelta = Duration(
-    milliseconds: 700,
+    milliseconds: 950,
   );
-  static const Duration _playbackOpsTickInterval = Duration(milliseconds: 420);
+  static const Duration _playbackOpsTickInterval = Duration(milliseconds: 620);
   static const Duration _searchVideosCacheTtl = Duration(minutes: 12);
   static const int _searchVideosCacheMaxEntries = 220;
   static const double _defaultPlaybackVolume = 3;
@@ -310,9 +310,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     _positionSub = _player
         .createPositionStream(
-          steps: 800,
-          minPeriod: const Duration(milliseconds: 220),
-          maxPeriod: const Duration(milliseconds: 900),
+          steps: 320,
+          minPeriod: const Duration(milliseconds: 340),
+          maxPeriod: const Duration(milliseconds: 1400),
         )
         .listen((position) {
           _position = position;
@@ -880,7 +880,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     if (!force &&
         now.difference(_lastSystemPlaybackSync) <
-            const Duration(milliseconds: 700)) {
+            const Duration(milliseconds: 1200)) {
       return;
     }
     _lastSystemPlaybackSync = now;
@@ -1386,6 +1386,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       _sessionPlayedVideoIds.add(videoId);
+      _warmUpNextTrackPreloadNow();
 
       // Metadata/cola/historial en segundo plano para no bloquear inicio de reproducción.
       unawaited(() async {
@@ -1520,6 +1521,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _syncSystemPlaybackState(force: true);
     } finally {
       _isLoading = false;
+      if (_errorMessage == null &&
+          _currentVideoId == videoId &&
+          _hasQueuedItems()) {
+        _warmUpNextTrackPreloadNow();
+      }
       _syncSystemPlaybackState(force: true);
       unawaited(_persistPlaybackSession(force: true));
       notifyListeners();
@@ -4488,6 +4494,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
       // No esperamos a que termine la reproducción para no bloquear la UI.
       unawaited(_playInBackgroundSafely(isLocalPlayback: true, fadeIn: true));
       _sessionPlayedVideoIds.add(id);
+      _warmUpNextTrackPreloadNow();
       _usingHiddenVideo = false;
       if (_autoplayEnabled) {
         if (_shouldRefreshQueueForVideo(
@@ -4517,6 +4524,9 @@ Future<Video> _getVideoWithRetry(String videoId) async {
       _syncSystemPlaybackState(force: true);
     } finally {
       _isLoading = false;
+      if (_errorMessage == null && _currentVideoId == id && _hasQueuedItems()) {
+        _warmUpNextTrackPreloadNow();
+      }
       _syncSystemPlaybackState(force: true);
       unawaited(_persistPlaybackSession(force: true));
       notifyListeners();
@@ -5940,6 +5950,15 @@ Future<Video> _getVideoWithRetry(String videoId) async {
     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) return;
     _isAdvancingQueue = true;
     try {
+      if (!triggeredByCrossfade) {
+        try {
+          await _player.pause();
+        } catch (_) {}
+        _isPlaying = false;
+        _isBuffering = true;
+        _syncSystemPlaybackState(force: true);
+        notifyListeners();
+      }
       final PlaybackQueueItem next;
       final bool tookFromManualQueue;
       if (_manualPlaybackQueue.isNotEmpty) {
@@ -5949,10 +5968,10 @@ Future<Video> _getVideoWithRetry(String videoId) async {
         next = _playbackQueue.first;
         tookFromManualQueue = false;
       }
-      final crossfaded = triggeredByCrossfade
+      final transitionedToPrepared = triggeredByCrossfade
           ? await _tryCrossfadeTransitionToPreparedItem(next)
-          : false;
-      if (crossfaded) {
+          : await _tryInstantTransitionToPreparedItem(next);
+      if (transitionedToPrepared) {
         if (tookFromManualQueue) {
           _manualPlaybackQueue = _manualPlaybackQueue.sublist(1);
         } else {
@@ -5978,6 +5997,169 @@ Future<Video> _getVideoWithRetry(String videoId) async {
       }
     } finally {
       _isAdvancingQueue = false;
+    }
+  }
+
+  Future<bool> _tryInstantTransitionToPreparedItem(PlaybackQueueItem next) async {
+    final currentVideoId = _currentVideoId;
+    if (currentVideoId == null) return false;
+
+    final queueKey = _queueItemKey(next);
+    var isPrepared =
+        _crossfadePreparedQueueKey == queueKey &&
+        _preloadedForCurrentVideoId == currentVideoId &&
+        _preloadedNextQueueKey == queueKey &&
+        (_preloadedNextStreamUrl?.isNotEmpty ?? false);
+    if (!isPrepared) {
+      final prepared = await _prepareCrossfadePlayerForQueueItem(
+        next,
+        currentVideoId: currentVideoId,
+      );
+      if (!prepared) return false;
+      isPrepared =
+          _crossfadePreparedQueueKey == queueKey &&
+          _preloadedForCurrentVideoId == currentVideoId &&
+          _preloadedNextQueueKey == queueKey &&
+          (_preloadedNextStreamUrl?.isNotEmpty ?? false);
+      if (!isPrepared) return false;
+    }
+    if (!_crossfadePreparedPrimed) {
+      final primed = await _primeCrossfadePlayerBuffer();
+      if (!primed) return false;
+    }
+
+    final previousTitle = _trackTitle;
+    final previousArtist = _trackArtist;
+    final previousThumbnail = _trackThumbnailUrl;
+    final previousDuration = _trackDuration;
+    final previousStreamUrl = _currentStreamUrl;
+    final previousIsPlaying = _isPlaying;
+    final previousIsBuffering = _isBuffering;
+
+    final currentPlayer = _player;
+    final nextPlayer = _crossfadePlayer;
+    try {
+      _isCrossfadeTransitioning = true;
+      await nextPlayer.setVolume(_targetPlaybackVolume());
+      unawaited(nextPlayer.play());
+      unawaited(() async {
+        try {
+          await currentPlayer.stop();
+          await currentPlayer.seek(Duration.zero);
+          await currentPlayer.setVolume(0.0);
+        } catch (_) {}
+      }());
+
+      _rememberCurrentForHistory();
+      _player = nextPlayer;
+      _crossfadePlayer = currentPlayer;
+      _attachActivePlayerSubscriptions();
+
+      _currentVideoId = next.videoId;
+      _isLocal = next.isLocal;
+      _isMinimized = false;
+      _isFullScreen = false;
+      _trackTitle = next.title;
+      _trackArtist = cleanArtistName(next.artist);
+      _trackThumbnailUrl = next.thumbnailUrl;
+      _trackDuration = Duration.zero;
+      _currentStreamUrl = _preloadedNextStreamUrl ?? next.localFilePath;
+      _position = Duration.zero;
+      _bufferedPosition = Duration.zero;
+      _completionHandledForCurrent = false;
+      _crossfadeTriggeredForCurrent = false;
+      _isPlaying = true;
+      _isBuffering = false;
+      _usingHiddenVideo = false;
+      _resetLyricsState();
+      final hasAppliedLocalLyrics = next.isLocal
+          ? _applyLocalLyrics(
+              plainLyrics: next.localPlainLyrics,
+              syncedLyrics: next.localSyncedLyrics,
+            )
+          : false;
+      _sessionPlayedVideoIds.add(next.videoId);
+      _crossfadeFailedForCurrentVideoId = null;
+      _crossfadeFailedQueueKey = null;
+      _clearPreloadedNextTrack();
+
+      if (_isLyricsLayout &&
+          (!hasAppliedLocalLyrics ||
+              ((_lyricsText?.trim().isEmpty ?? true) &&
+                  _syncedLyrics.isEmpty))) {
+        unawaited(_loadLyricsForCurrentTrack());
+      }
+
+      _isCrossfadeTransitioning = false;
+      _syncSystemNowPlaying();
+      _syncSystemPlaybackState(force: true);
+      notifyListeners();
+
+      unawaited(() async {
+        if (next.isLocal) {
+          if (_autoplayEnabled && !_hasQueuedItems()) {
+            await _loadLocalQueue(currentVideoId: next.videoId);
+          }
+          final hasLyrics =
+              (_lyricsText?.trim().isNotEmpty ?? false) ||
+              _syncedLyrics.isNotEmpty;
+          if (_isLyricsLayout && !hasAppliedLocalLyrics && !hasLyrics) {
+            await _loadLyricsForCurrentTrack();
+          }
+          return;
+        }
+
+        try {
+          final video = await _getVideoWithRetry(next.videoId);
+          if (_currentVideoId != next.videoId) return;
+          _trackTitle = video.title;
+          _trackArtist = cleanArtistName(video.author);
+          _trackThumbnailUrl = bestThumbnailForVideo(
+            video,
+            preferLowResolution: _settingsService.dataSaverMode,
+          );
+          _trackDuration = video.duration ?? Duration.zero;
+          _syncSystemNowPlaying();
+          _syncSystemPlaybackState(force: true);
+          notifyListeners();
+          final hasLyrics =
+              (_lyricsText?.trim().isNotEmpty ?? false) ||
+              _syncedLyrics.isNotEmpty;
+          if (_isLyricsLayout && !hasLyrics) {
+            await _loadLyricsForCurrentTrack();
+          }
+          if (_autoplayEnabled && !_hasQueuedItems()) {
+            await _loadOnlineQueue(video, currentVideoId: next.videoId);
+          }
+        } catch (_) {
+          // Best effort metadata/queue refresh.
+        }
+      }());
+
+      unawaited(_addCurrentTrackToHistory(next.videoId));
+      _warmUpNextTrackPreloadNow();
+      return true;
+    } catch (_) {
+      _trackTitle = previousTitle;
+      _trackArtist = previousArtist;
+      _trackThumbnailUrl = previousThumbnail;
+      _trackDuration = previousDuration;
+      _currentStreamUrl = previousStreamUrl;
+      _isPlaying = previousIsPlaying;
+      _isBuffering = previousIsBuffering;
+      try {
+        await nextPlayer.stop();
+      } catch (_) {}
+      _syncSystemNowPlaying();
+      _syncSystemPlaybackState(force: true);
+      notifyListeners();
+      return false;
+    } finally {
+      if (_isCrossfadeTransitioning) {
+        _isCrossfadeTransitioning = false;
+        _syncSystemPlaybackState(force: true);
+        notifyListeners();
+      }
     }
   }
 
@@ -6016,8 +6198,22 @@ Future<Video> _getVideoWithRetry(String videoId) async {
     return stream;
   }
 
+  void _warmUpNextTrackPreloadNow() {
+    unawaited(_maybePreloadUpcomingQueueTrack());
+    // Reintentos cortos para casos en que la cola llega justo despues
+    // (p. ej. metadata/queue en background) y queremos que "siguiente"
+    // ya esté caliente tanto en UI grande como en controles nativos.
+    unawaited(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 520));
+      await _maybePreloadUpcomingQueueTrack();
+    }());
+    unawaited(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      await _maybePreloadUpcomingQueueTrack();
+    }());
+  }
+
   Future<void> _maybePreloadUpcomingQueueTrack() async {
-    if (!_isMixingEnabled || !_autoplayEnabled) return;
     final currentId = _currentVideoId;
     if (currentId == null ||
         _isLoading ||
@@ -6042,7 +6238,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
         (_preloadedNextStreamUrl?.isNotEmpty ?? false);
     if (alreadyPreloaded || _isPreloadingNextTrack) return;
 
-    if (_trackDuration > Duration.zero) {
+    if (_isMixingEnabled && _trackDuration > Duration.zero) {
       final remaining = _trackDuration - _position;
       // Si faltan muchos segundos todavía, no hace falta insistir en cada tick.
       if (remaining > _effectiveCrossfadePreloadLeadTime()) {
