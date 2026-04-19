@@ -13,6 +13,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
+import 'package:myapp/services/app_lifecycle_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
@@ -2809,10 +2810,13 @@ class _SearchPageState extends State<SearchPage>
   Widget _buildSearchBar() {
     final borderRadius = BorderRadius.circular(18);
     final focused = _searchFocusNode.hasFocus;
+    final appInForeground =
+        context.watch<AppLifecycleService?>()?.isForeground ?? true;
     final dataSaverMode =
         context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
+    final shouldUseLightweightUi = dataSaverMode || !appInForeground;
     final glow = _ensureSearchBarGlowController();
-    final shouldAnimateGlow = !dataSaverMode && focused;
+    final shouldAnimateGlow = !shouldUseLightweightUi && focused;
     if (shouldAnimateGlow) {
       if (!glow.isAnimating) glow.repeat();
     } else if (glow.isAnimating) {
@@ -2825,7 +2829,7 @@ class _SearchPageState extends State<SearchPage>
         padding: const EdgeInsets.all(1.25),
         decoration: BoxDecoration(
           borderRadius: borderRadius,
-          gradient: dataSaverMode
+          gradient: shouldUseLightweightUi
               ? const LinearGradient(
                   colors: [Color(0xFFFF4F7A), Color(0xFFFF8A00)],
                   begin: Alignment.topLeft,
@@ -2845,7 +2849,7 @@ class _SearchPageState extends State<SearchPage>
               color: const Color(
                 0xFF581A95,
               ).withValues(alpha: focused ? 0.34 : 0.14),
-              blurRadius: focused ? (dataSaverMode ? 14 : 20) : 10,
+              blurRadius: focused ? (shouldUseLightweightUi ? 14 : 20) : 10,
               spreadRadius: focused ? 0.9 : 0,
               offset: const Offset(0, 2),
             ),
@@ -2853,7 +2857,7 @@ class _SearchPageState extends State<SearchPage>
               color: const Color(
                 0xFFFF2A6D,
               ).withValues(alpha: focused ? 0.24 : 0.08),
-              blurRadius: focused ? (dataSaverMode ? 16 : 26) : 12,
+              blurRadius: focused ? (shouldUseLightweightUi ? 16 : 26) : 12,
               spreadRadius: focused ? 1.2 : 0,
               offset: const Offset(0, 5),
             ),
@@ -2861,7 +2865,7 @@ class _SearchPageState extends State<SearchPage>
         ),
         child: ClipRRect(
           borderRadius: borderRadius,
-          child: dataSaverMode
+          child: shouldUseLightweightUi
               ? _buildSearchFieldContent(borderRadius, focused)
               : BackdropFilter(
                   filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
@@ -2871,7 +2875,7 @@ class _SearchPageState extends State<SearchPage>
       );
     }
 
-    if (dataSaverMode) {
+    if (shouldUseLightweightUi) {
       return buildSearchFieldShell(0);
     }
 
@@ -3398,104 +3402,97 @@ class ChannelCard extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 2.0),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(14),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-          child: Material(
-            color: Colors.white.withValues(alpha: 0.035),
-            child: InkWell(
-              onTap: onTap,
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: Colors.white.withValues(alpha: 0.14),
-                    width: 0.6,
-                  ),
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Colors.white.withValues(alpha: 0.075),
-                      Colors.white.withValues(alpha: 0.02),
-                    ],
-                  ),
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.035),
+          child: InkWell(
+            onTap: onTap,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.14),
+                  width: 0.6,
                 ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12.0,
-                  vertical: 7.0,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.075),
+                    Colors.white.withValues(alpha: 0.02),
+                  ],
                 ),
-                child: Row(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(999),
-                      child: Transform.scale(
-                        scale: 1.05,
-                        child: Image.network(
-                          thumb,
-                          width: 52,
-                          height: 52,
-                          fit: BoxFit.cover,
-                          alignment: Alignment.center,
-                          cacheWidth: avatarCachePx,
-                          cacheHeight: avatarCachePx,
-                          filterQuality: FilterQuality.medium,
-                          errorBuilder: (context, error, stackTrace) =>
-                              const SizedBox(
-                                width: 52,
-                                height: 52,
-                                child: Icon(
-                                  Icons.account_circle_outlined,
-                                  size: 26,
-                                  color: Colors.grey,
+              ),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12.0,
+                vertical: 7.0,
+              ),
+              child: Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(999),
+                    child: Transform.scale(
+                      scale: 1.05,
+                      child: Image.network(
+                        thumb,
+                        width: 52,
+                        height: 52,
+                        fit: BoxFit.cover,
+                        alignment: Alignment.center,
+                        cacheWidth: avatarCachePx,
+                        cacheHeight: avatarCachePx,
+                        filterQuality: FilterQuality.low,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const SizedBox(
+                              width: 52,
+                              height: 52,
+                              child: Icon(
+                                Icons.account_circle_outlined,
+                                size: 26,
+                                color: Colors.grey,
+                              ),
+                            ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          channel.channel.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                color: CupertinoColors.label.resolveFrom(
+                                  context,
                                 ),
                               ),
                         ),
-                      ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '$subscriberLabel • ${channel.channel.videoCount} videos',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
+                                fontSize: 13,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
+                              ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            channel.channel.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: CupertinoTheme.of(context)
-                                .textTheme
-                                .textStyle
-                                .copyWith(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w700,
-                                  color: CupertinoColors.label.resolveFrom(
-                                    context,
-                                  ),
-                                ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '$subscriberLabel • ${channel.channel.videoCount} videos',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: CupertinoTheme.of(context)
-                                .textTheme
-                                .textStyle
-                                .copyWith(
-                                  fontSize: 13,
-                                  color: CupertinoColors.secondaryLabel
-                                      .resolveFrom(context),
-                                ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Icon(
-                      Icons.chevron_right_rounded,
-                      color: CupertinoColors.tertiaryLabel.resolveFrom(context),
-                    ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: CupertinoColors.tertiaryLabel.resolveFrom(context),
+                  ),
+                ],
               ),
             ),
           ),
@@ -3559,45 +3556,40 @@ class SearchModeButton extends StatelessWidget {
         ),
         child: ClipRRect(
           borderRadius: borderRadius,
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-            child: Container(
-              height: 30,
-              padding: const EdgeInsets.symmetric(horizontal: 10),
-              decoration: BoxDecoration(
-                color: (isActive
-                    ? Theme.of(
-                        context,
-                      ).colorScheme.primary.withValues(alpha: 0.2)
-                    : CupertinoColors.systemGrey6
-                          .resolveFrom(context)
-                          .withValues(alpha: 0.52)),
-                borderRadius: borderRadius,
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    icon,
-                    size: 14,
-                    color: isActive
-                        ? Theme.of(context).colorScheme.primary
-                        : CupertinoColors.label.resolveFrom(context),
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    label,
-                    style: CupertinoTheme.of(context).textTheme.textStyle
-                        .copyWith(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: isActive
-                              ? Theme.of(context).colorScheme.primary
-                              : null,
-                        ),
-                  ),
-                ],
-              ),
+          child: Container(
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              color: (isActive
+                  ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.2)
+                  : CupertinoColors.systemGrey6
+                        .resolveFrom(context)
+                        .withValues(alpha: 0.52)),
+              borderRadius: borderRadius,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  icon,
+                  size: 14,
+                  color: isActive
+                      ? Theme.of(context).colorScheme.primary
+                      : CupertinoColors.label.resolveFrom(context),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: CupertinoTheme.of(context).textTheme.textStyle
+                      .copyWith(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: isActive
+                            ? Theme.of(context).colorScheme.primary
+                            : null,
+                      ),
+                ),
+              ],
             ),
           ),
         ),
@@ -3654,7 +3646,7 @@ class _SearchAlbumCard extends StatelessWidget {
                             fit: BoxFit.cover,
                             cacheWidth: coverCachePx,
                             cacheHeight: coverCachePx,
-                            filterQuality: FilterQuality.medium,
+                            filterQuality: FilterQuality.low,
                             errorBuilder: (context, error, stackTrace) =>
                                 Container(
                                   width: 62,
@@ -3804,7 +3796,7 @@ class TopArtistCard extends StatelessWidget {
                           alignment: Alignment.center,
                           cacheWidth: avatarCachePx,
                           cacheHeight: avatarCachePx,
-                          filterQuality: FilterQuality.medium,
+                          filterQuality: FilterQuality.low,
                           errorBuilder: (context, error, stackTrace) =>
                               const SizedBox(
                                 width: 72,
@@ -3961,7 +3953,7 @@ class _TopArtistFromVideoCard extends StatelessWidget {
                       alignment: Alignment.center,
                       cacheWidth: avatarCachePx,
                       cacheHeight: avatarCachePx,
-                      filterQuality: FilterQuality.medium,
+                      filterQuality: FilterQuality.low,
                       errorBuilder: (context, error, stackTrace) =>
                           const SizedBox(
                             width: 72,
@@ -5393,7 +5385,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                           alignment: Alignment.center,
                           cacheWidth: coverCachePx,
                           cacheHeight: coverCachePx,
-                          filterQuality: FilterQuality.medium,
+                          filterQuality: FilterQuality.low,
                           errorBuilder: (context, error, stackTrace) =>
                               fallback,
                         ),
@@ -6071,7 +6063,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                       fit: BoxFit.cover,
                       cacheWidth: heroCacheWidth,
                       cacheHeight: heroCacheHeight,
-                      filterQuality: FilterQuality.medium,
+                      filterQuality: FilterQuality.low,
                       errorBuilder: (context, error, stackTrace) => Container(
                         color: fallback,
                         alignment: Alignment.center,
@@ -7705,7 +7697,7 @@ class _AlbumAnimatedCoverState extends State<_AlbumAnimatedCover>
             fit: BoxFit.cover,
             cacheWidth: coverCachePx,
             cacheHeight: coverCachePx,
-            filterQuality: FilterQuality.medium,
+            filterQuality: FilterQuality.low,
             errorBuilder: (context, error, stackTrace) => widget.fallback,
           )
         : Image.network(
@@ -7713,7 +7705,7 @@ class _AlbumAnimatedCoverState extends State<_AlbumAnimatedCover>
             fit: BoxFit.cover,
             cacheWidth: coverCachePx,
             cacheHeight: coverCachePx,
-            filterQuality: FilterQuality.medium,
+            filterQuality: FilterQuality.low,
             gaplessPlayback: true,
             errorBuilder: (context, error, stackTrace) => widget.fallback,
           );
@@ -7743,7 +7735,7 @@ class _AlbumAnimatedCoverState extends State<_AlbumAnimatedCover>
                         fit: BoxFit.contain,
                         cacheWidth: coverCachePx,
                         cacheHeight: coverCachePx,
-                        filterQuality: FilterQuality.medium,
+                        filterQuality: FilterQuality.low,
                       ),
                     ),
                   );

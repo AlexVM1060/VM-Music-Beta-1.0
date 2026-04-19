@@ -1386,148 +1386,82 @@ class _FullPlayerState extends State<_FullPlayer> {
   }
 }
 
-class _InlineLyricsButton extends StatefulWidget {
+class _InlineLyricsButton extends StatelessWidget {
   final bool isActive;
   final VoidCallback onPressed;
 
   const _InlineLyricsButton({required this.isActive, required this.onPressed});
 
   @override
-  State<_InlineLyricsButton> createState() => _InlineLyricsButtonState();
-}
-
-class _InlineLyricsButtonState extends State<_InlineLyricsButton>
-    with TickerProviderStateMixin {
-  AnimationController? _rainbowController;
-
-  @override
-  void initState() {
-    super.initState();
-    _ensureController();
-  }
-
-  @override
-  void didUpdateWidget(covariant _InlineLyricsButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _ensureController();
-    if (oldWidget.isActive == widget.isActive) return;
-    _rainbowController!.duration = widget.isActive
-        ? const Duration(milliseconds: 1350)
-        : const Duration(milliseconds: 2600);
-    _rainbowController!
-      ..reset()
-      ..repeat();
-  }
-
-  @override
-  void dispose() {
-    _rainbowController?.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    _ensureController();
-    return AnimatedBuilder(
-      animation: _rainbowController!,
-      builder: (context, _) {
-        final borderRadius = BorderRadius.circular(14);
-        return CupertinoButton(
-          padding: EdgeInsets.zero,
-          minimumSize: Size.zero,
-          onPressed: widget.onPressed,
-          child: Container(
-            padding: const EdgeInsets.all(1.25),
-            decoration: BoxDecoration(
-              borderRadius: borderRadius,
-              gradient: SweepGradient(
-                transform: GradientRotation(
-                  _rainbowController!.value * 6.28318530718,
+    final borderRadius = BorderRadius.circular(14);
+    final activeColor = Theme.of(context).colorScheme.primary;
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      minimumSize: Size.zero,
+      onPressed: onPressed,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        height: 30,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          borderRadius: borderRadius,
+          gradient: isActive
+              ? LinearGradient(
+                  colors: [
+                    activeColor.withValues(alpha: 0.30),
+                    activeColor.withValues(alpha: 0.18),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : LinearGradient(
+                  colors: [
+                    CupertinoColors.systemGrey6
+                        .resolveFrom(context)
+                        .withValues(alpha: 0.56),
+                    CupertinoColors.systemGrey5
+                        .resolveFrom(context)
+                        .withValues(alpha: 0.44),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
-                colors: const [
-                  Color(0xFFFF004D),
-                  Color(0xFFFF7A00),
-                  Color(0xFFFFD500),
-                  Color(0xFF2DFF6A),
-                  Color(0xFF00D1FF),
-                  Color(0xFF7A5CFF),
-                  Color(0xFFFF00C8),
-                  Color(0xFFFF004D),
-                ],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(
-                    0xFFFF4D00,
-                  ).withValues(alpha: widget.isActive ? 0.3 : 0.16),
-                  blurRadius: widget.isActive ? 16 : 10,
-                  spreadRadius: widget.isActive ? 0.6 : 0.0,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: borderRadius,
-              child: _PerformanceBackdrop(
-                filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                child: Container(
-                  height: 30,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  decoration: BoxDecoration(
-                    color: (widget.isActive
-                        ? Theme.of(
-                            context,
-                          ).colorScheme.primary.withValues(alpha: 0.2)
-                        : CupertinoColors.systemGrey6
-                              .resolveFrom(context)
-                              .withValues(alpha: 0.52)),
-                    borderRadius: borderRadius,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        CupertinoIcons.text_alignleft,
-                        size: 14,
-                        color: widget.isActive
-                            ? Theme.of(context).colorScheme.primary
-                            : CupertinoColors.label.resolveFrom(context),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Lyrics',
-                        style: CupertinoTheme.of(context).textTheme.textStyle
-                            .copyWith(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: widget.isActive
-                                  ? Theme.of(context).colorScheme.primary
-                                  : null,
-                            ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          border: Border.all(
+            color: isActive
+                ? activeColor.withValues(alpha: 0.42)
+                : CupertinoColors.white.withValues(alpha: 0.22),
+            width: 0.8,
           ),
-        );
-      },
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              CupertinoIcons.text_alignleft,
+              size: 14,
+              color: isActive
+                  ? activeColor
+                  : CupertinoColors.label.resolveFrom(context),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Lyrics',
+              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: isActive ? activeColor : null,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
-
-  void _ensureController() {
-    if (_rainbowController != null) return;
-    _rainbowController = AnimationController(
-      vsync: this,
-      duration: widget.isActive
-          ? const Duration(milliseconds: 1350)
-          : const Duration(milliseconds: 2600),
-    )..repeat();
-  }
 }
 
-class _InlineAutoplayButton extends StatefulWidget {
+class _InlineAutoplayButton extends StatelessWidget {
   final bool isActive;
   final VoidCallback onPressed;
 
@@ -1537,132 +1471,71 @@ class _InlineAutoplayButton extends StatefulWidget {
   });
 
   @override
-  State<_InlineAutoplayButton> createState() => _InlineAutoplayButtonState();
-}
-
-class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>
-    with TickerProviderStateMixin {
-  AnimationController? _ringController;
-
-  @override
-  void initState() {
-    super.initState();
-    _ensureController();
-  }
-
-  @override
-  void didUpdateWidget(covariant _InlineAutoplayButton oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    _ensureController();
-    if (oldWidget.isActive == widget.isActive) return;
-    _ringController!.duration = widget.isActive
-        ? const Duration(milliseconds: 1350)
-        : const Duration(milliseconds: 2600);
-    _ringController!
-      ..reset()
-      ..repeat();
-  }
-
-  @override
-  void dispose() {
-    _ringController?.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    _ensureController();
-    return AnimatedBuilder(
-      animation: _ringController!,
-      builder: (context, _) {
-        final borderRadius = BorderRadius.circular(14);
-        final activeColor = const Color(0xFF1FBF64);
-        return CupertinoButton(
-          padding: EdgeInsets.zero,
-          minimumSize: Size.zero,
-          onPressed: widget.onPressed,
-          child: Container(
-            padding: const EdgeInsets.all(1.25),
-            decoration: BoxDecoration(
-              borderRadius: borderRadius,
-              gradient: SweepGradient(
-                transform: GradientRotation(
-                  _ringController!.value * 6.28318530718,
+    final borderRadius = BorderRadius.circular(14);
+    const activeColor = Color(0xFF1FBF64);
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      minimumSize: Size.zero,
+      onPressed: onPressed,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        height: 30,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          borderRadius: borderRadius,
+          gradient: isActive
+              ? LinearGradient(
+                  colors: [
+                    activeColor.withValues(alpha: 0.28),
+                    activeColor.withValues(alpha: 0.16),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : LinearGradient(
+                  colors: [
+                    CupertinoColors.systemGrey6
+                        .resolveFrom(context)
+                        .withValues(alpha: 0.56),
+                    CupertinoColors.systemGrey5
+                        .resolveFrom(context)
+                        .withValues(alpha: 0.44),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
-                colors: const [
-                  Color(0xFF1FBF64),
-                  Color(0xFF4ADE80),
-                  Color(0xFF9CA3AF),
-                  Color(0xFF6B7280),
-                  Color(0xFF22C55E),
-                  Color(0xFF1FBF64),
-                ],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: activeColor.withValues(
-                    alpha: widget.isActive ? 0.26 : 0.14,
-                  ),
-                  blurRadius: widget.isActive ? 16 : 10,
-                  spreadRadius: widget.isActive ? 0.6 : 0.0,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: ClipRRect(
-              borderRadius: borderRadius,
-              child: _PerformanceBackdrop(
-                filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                child: Container(
-                  height: 30,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  decoration: BoxDecoration(
-                    color: widget.isActive
-                        ? activeColor.withValues(alpha: 0.2)
-                        : CupertinoColors.systemGrey6
-                              .resolveFrom(context)
-                              .withValues(alpha: 0.52),
-                    borderRadius: borderRadius,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        CupertinoIcons.dot_radiowaves_left_right,
-                        size: 14,
-                        color: widget.isActive
-                            ? activeColor
-                            : CupertinoColors.label.resolveFrom(context),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Autoplay',
-                        style: CupertinoTheme.of(context).textTheme.textStyle
-                            .copyWith(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: widget.isActive ? activeColor : null,
-                            ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          border: Border.all(
+            color: isActive
+                ? activeColor.withValues(alpha: 0.40)
+                : CupertinoColors.white.withValues(alpha: 0.22),
+            width: 0.8,
           ),
-        );
-      },
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              CupertinoIcons.dot_radiowaves_left_right,
+              size: 14,
+              color: isActive
+                  ? activeColor
+                  : CupertinoColors.label.resolveFrom(context),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Autoplay',
+              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: isActive ? activeColor : null,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
-  }
-
-  void _ensureController() {
-    if (_ringController != null) return;
-    _ringController = AnimationController(
-      vsync: this,
-      duration: widget.isActive
-          ? const Duration(milliseconds: 1350)
-          : const Duration(milliseconds: 2600),
-    )..repeat();
   }
 }
 
@@ -3856,7 +3729,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     required VideoPlayerManager manager,
     required bool liveLyricsEnabled,
   }) {
-    final targetTickInterval = manager.isLowPowerModeEnabled
+    final targetTickInterval = manager.shouldUseLightweightPlayerUi
         ? _lyricsVisualTickIntervalLowPower
         : _lyricsVisualTickIntervalNormal;
     final shouldRun = _isVisualLyricsClockActive(
@@ -4987,9 +4860,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
   static const int _maxArtworkCacheEntries = 120;
   static final AiCoverAnimationService _aiCoverAnimationService =
       AiCoverAnimationService();
-  static final Map<String, Color> _paletteCache = <String, Color>{};
-  static final Map<String, Future<Color?>> _paletteRequests =
-      <String, Future<Color?>>{};
   static final Map<String, Uint8List?> _subjectCutoutCache =
       <String, Uint8List?>{};
   static final Map<String, Future<Uint8List?>> _subjectCutoutRequests =
@@ -5006,8 +4876,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
       <String, _FocusObjectLayer?>{};
   static final Map<String, Future<_FocusObjectLayer?>> _focusObjectRequests =
       <String, Future<_FocusObjectLayer?>>{};
-  Color _dominantColor = CupertinoColors.systemBlue;
-  String? _lastPaletteUrl;
   Uint8List? _subjectCutoutBytes;
   String? _lastSubjectUrl;
   _SubjectMotionProfile? _subjectMotionProfile;
@@ -5038,7 +4906,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
     _syncAnimationControllers(initial: true);
     if (widget.animated) {
       unawaited(_resolveAiAnimatedCover());
-      unawaited(_resolveArtworkColor());
       unawaited(_resolveSubjectCutout());
     }
   }
@@ -5053,7 +4920,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
     if (oldWidget.url != widget.url) {
       if (widget.animated) {
         unawaited(_resolveAiAnimatedCover());
-        unawaited(_resolveArtworkColor());
         unawaited(_resolveSubjectCutout());
       } else {
         _aiAnimatedCoverUrl = null;
@@ -5062,7 +4928,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
         _aiVideoSource = null;
         _aiLoopToken++;
         unawaited(_disposeAiVideoControllers());
-        _lastPaletteUrl = null;
         _lastSubjectUrl = null;
         _lastSubjectProfileUrl = null;
         _subjectMotionProfile = null;
@@ -5187,7 +5052,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
           final playFactor = widget.isPlaying ? 1.0 : 0.38;
           final energy = widget.motionEnergy.clamp(0.78, 1.32);
           final motionGain = playFactor * energy;
-          final glowColor = _enhanceGlowColor(_dominantColor);
           final profile = _subjectMotionProfile;
           final subjectMoveScale = profile?.moveScale ?? 1.0;
           final subjectTiltScale = profile?.tiltScale ?? 1.0;
@@ -5241,11 +5105,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
                     0.015 *
                     motionGain *
                     subjectTiltScale
-              : 0.0;
-          final glow = enableMotion
-              ? (0.36 + (pulseController.value * 0.34)) *
-                    (widget.isPlaying ? 1.0 : 0.56) *
-                    (0.86 + (energy - 0.78) * 0.42)
               : 0.0;
           final baseAlignment = profile?.alignment ?? Alignment.center;
           final focusAlignment = Alignment(
@@ -5361,34 +5220,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
           return Stack(
             clipBehavior: Clip.none,
             children: [
-              if (enableMotion)
-                Positioned.fill(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(widget.borderRadius),
-                      boxShadow: [
-                        BoxShadow(
-                          color: glowColor.withValues(alpha: glow * 0.58),
-                          blurRadius: widget.size * 0.24,
-                          spreadRadius: widget.size * 0.014,
-                          offset: const Offset(0, -10),
-                        ),
-                        BoxShadow(
-                          color: glowColor.withValues(alpha: glow * 0.60),
-                          blurRadius: widget.size * 0.22,
-                          spreadRadius: widget.size * 0.012,
-                          offset: const Offset(0, 12),
-                        ),
-                        BoxShadow(
-                          color: glowColor.withValues(alpha: glow * 0.44),
-                          blurRadius: widget.size * 0.12,
-                          spreadRadius: widget.size * 0.005,
-                          offset: const Offset(0, 5),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
               ClipRRect(
                 borderRadius: BorderRadius.circular(widget.borderRadius),
                 child: ColoredBox(
@@ -5882,70 +5713,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
     );
   }
 
-  Future<void> _resolveArtworkColor() async {
-    if (!widget.animated) return;
-    final resolved = _processingArtworkSourceUrl();
-    if (resolved == null || resolved.isEmpty || resolved == _lastPaletteUrl) {
-      return;
-    }
-    _lastPaletteUrl = resolved;
-
-    final cached = _paletteCache[resolved];
-    if (cached != null) {
-      if (mounted && _lastPaletteUrl == resolved) {
-        setState(() {
-          _dominantColor = cached;
-        });
-      } else {
-        _dominantColor = cached;
-      }
-      return;
-    }
-
-    Future<Color?> request =
-        _paletteRequests[resolved] ??
-        () async {
-          try {
-            final ImageProvider provider = resolved.startsWith('/')
-                ? FileImage(File(resolved))
-                : NetworkImage(resolved);
-            final palette = await PaletteGenerator.fromImageProvider(
-              provider,
-              size: const Size(96, 96),
-              maximumColorCount: 16,
-            );
-            final color =
-                palette.vibrantColor?.color ??
-                palette.lightVibrantColor?.color ??
-                palette.dominantColor?.color ??
-                palette.mutedColor?.color;
-            if (color != null) {
-              _rememberPaletteColor(resolved, color);
-            }
-            return color;
-          } catch (_) {
-            return null;
-          }
-        }();
-    _paletteRequests[resolved] = request;
-
-    try {
-      final color = await request;
-      if (!mounted || _lastPaletteUrl != resolved) return;
-      if (color != null) {
-        setState(() {
-          _dominantColor = color;
-        });
-      }
-    } catch (_) {
-      // Si falla extracción de color, mantenemos fallback.
-    } finally {
-      if (identical(_paletteRequests[resolved], request)) {
-        _paletteRequests.remove(resolved);
-      }
-    }
-  }
-
   Future<void> _resolveSubjectCutout() async {
     if (!widget.animated) return;
     final settings = context.read<AppSettingsService?>();
@@ -6351,13 +6118,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
     unawaited(_disposeAiVideoControllers());
   }
 
-  void _rememberPaletteColor(String key, Color value) {
-    _paletteCache[key] = value;
-    while (_paletteCache.length > _maxArtworkCacheEntries) {
-      _paletteCache.remove(_paletteCache.keys.first);
-    }
-  }
-
   void _rememberSubjectCutout(String key, Uint8List? value) {
     _subjectCutoutCache[key] = value;
     while (_subjectCutoutCache.length > _maxArtworkCacheEntries) {
@@ -6377,14 +6137,6 @@ class _ArtworkImageState extends State<_ArtworkImage>
     while (_focusObjectCache.length > _maxArtworkCacheEntries) {
       _focusObjectCache.remove(_focusObjectCache.keys.first);
     }
-  }
-
-  Color _enhanceGlowColor(Color base) {
-    final hsl = HSLColor.fromColor(base);
-    final boosted = hsl
-        .withSaturation((hsl.saturation + 0.16).clamp(0.35, 1.0))
-        .withLightness((hsl.lightness + 0.08).clamp(0.25, 0.72));
-    return boosted.toColor();
   }
 
   int _subjectMotionStyleForUrl(String? raw) {

@@ -287,6 +287,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _playbackOpsTickIntervalLowPower = Duration(
     milliseconds: 1000,
   );
+  static const bool _forceLowPowerProfileInNormal = true;
   static const Duration _searchVideosCacheTtl = Duration(minutes: 12);
   static const int _searchVideosCacheMaxEntries = 220;
   static const double _defaultPlaybackVolume = 3;
@@ -342,15 +343,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   Duration get _playbackUiNotifyMinInterval => _isLowPowerModeEnabled
       ? _playbackUiNotifyMinIntervalLowPower
-      : _playbackUiNotifyMinIntervalNormal;
+      : (_forceLowPowerProfileInNormal
+            ? _playbackUiNotifyMinIntervalLowPower
+            : _playbackUiNotifyMinIntervalNormal);
 
   Duration get _playbackUiNotifyMinPositionDelta => _isLowPowerModeEnabled
       ? _playbackUiNotifyMinPositionDeltaLowPower
-      : _playbackUiNotifyMinPositionDeltaNormal;
+      : (_forceLowPowerProfileInNormal
+            ? _playbackUiNotifyMinPositionDeltaLowPower
+            : _playbackUiNotifyMinPositionDeltaNormal);
 
   Duration get _playbackOpsTickInterval => _isLowPowerModeEnabled
       ? _playbackOpsTickIntervalLowPower
-      : _playbackOpsTickIntervalNormal;
+      : (_forceLowPowerProfileInNormal
+            ? _playbackOpsTickIntervalLowPower
+            : _playbackOpsTickIntervalNormal);
 
   void _attachActivePlayerSubscriptions() {
     _detachActivePlayerSubscriptions();
@@ -363,8 +370,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     _positionSub = _player
         .createPositionStream(
-          steps: _isLowPowerModeEnabled ? 170 : 220,
-          minPeriod: Duration(milliseconds: _isLowPowerModeEnabled ? 620 : 520),
+          steps: (_isLowPowerModeEnabled || _forceLowPowerProfileInNormal)
+              ? 170
+              : 220,
+          minPeriod: Duration(
+            milliseconds:
+                (_isLowPowerModeEnabled || _forceLowPowerProfileInNormal)
+                ? 620
+                : 520,
+          ),
           maxPeriod: const Duration(milliseconds: 1400),
         )
         .listen((position) {
@@ -460,7 +474,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _settingsService.dataSaverMode ||
       _isMinimized ||
       !_appInForeground ||
-      _isLowPowerModeEnabled;
+      _isLowPowerModeEnabled ||
+      _forceLowPowerProfileInNormal;
   String? get trackTitle => _trackTitle;
   String? get trackThumbnailUrl => _trackThumbnailUrl;
   String? get trackArtist {

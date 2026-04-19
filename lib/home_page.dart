@@ -11,6 +11,8 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:hive/hive.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
+import 'package:myapp/services/app_lifecycle_service.dart';
+import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
@@ -1758,63 +1760,69 @@ class _QueueIosToastState extends State<_QueueIosToast>
 
   @override
   Widget build(BuildContext context) {
+    final lightweightEffects =
+        context.select<AppLifecycleService, bool>((s) => !s.isForeground) ||
+        (context.select<AppSettingsService?, bool>(
+          (s) => s?.dataSaverMode ?? false,
+        ));
+    final toastContent = DecoratedBox(
+      decoration: BoxDecoration(
+        color: widget.isDark
+            ? const Color(0xFF0D0F13).withValues(alpha: 0.84)
+            : Colors.white.withValues(alpha: 0.9),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: widget.isDark
+              ? Colors.white.withValues(alpha: 0.14)
+              : Colors.black.withValues(alpha: 0.08),
+          width: 0.6,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: CupertinoColors.black.withValues(alpha: 0.18),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              widget.icon,
+              size: 18,
+              color: CupertinoColors.systemPink.resolveFrom(context),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              widget.message,
+              style: TextStyle(
+                fontFamily: '.SF Pro Text',
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: widget.isDark ? Colors.white : Colors.black,
+                decoration: TextDecoration.none,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
     return FadeTransition(
       opacity: _opacity,
       child: SlideTransition(
         position: _slide,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(18),
-          child: BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: widget.isDark
-                    ? const Color(0xFF0D0F13).withValues(alpha: 0.84)
-                    : Colors.white.withValues(alpha: 0.9),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: widget.isDark
-                      ? Colors.white.withValues(alpha: 0.14)
-                      : Colors.black.withValues(alpha: 0.08),
-                  width: 0.6,
+          child: lightweightEffects
+              ? toastContent
+              : BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                  child: toastContent,
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: CupertinoColors.black.withValues(alpha: 0.18),
-                    blurRadius: 14,
-                    offset: const Offset(0, 6),
-                  ),
-                ],
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      widget.icon,
-                      size: 18,
-                      color: CupertinoColors.systemPink.resolveFrom(context),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      widget.message,
-                      style: TextStyle(
-                        fontFamily: '.SF Pro Text',
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: widget.isDark ? Colors.white : Colors.black,
-                        decoration: TextDecoration.none,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
         ),
       ),
     );

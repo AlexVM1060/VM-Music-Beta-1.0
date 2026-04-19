@@ -20,6 +20,7 @@ import 'package:myapp/router.dart';
 import 'package:myapp/search_page.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
+import 'package:myapp/services/app_lifecycle_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/search_view_state.dart';
@@ -58,6 +59,7 @@ void main() async {
           create: (_) => VideoPlayerManager(audioHandler, appSettingsService),
         ),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider(create: (_) => AppLifecycleService()),
         ChangeNotifierProvider(create: (_) => AppTabState()),
         ChangeNotifierProvider(create: (_) => SearchViewState()),
         Provider(create: (_) => HistoryService()),
@@ -165,8 +167,8 @@ class MyApp extends StatelessWidget {
       ),
     );
 
-    return Consumer<ThemeProvider>(
-      builder: (context, themeProvider, child) {
+    return Consumer2<ThemeProvider, AppLifecycleService>(
+      builder: (context, themeProvider, lifecycleService, child) {
         return MaterialApp.router(
           routerConfig: router,
           title: 'Music',
@@ -174,7 +176,10 @@ class MyApp extends StatelessWidget {
           darkTheme: darkTheme,
           themeMode: themeProvider.themeMode,
           debugShowCheckedModeBanner: false,
-          builder: (context, child) => child ?? const SizedBox.shrink(),
+          builder: (context, child) => TickerMode(
+            enabled: lifecycleService.isForeground,
+            child: child ?? const SizedBox.shrink(),
+          ),
         );
       },
     );
@@ -614,6 +619,11 @@ class _CupertinoRootTabBar extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final inactive = CupertinoColors.secondaryLabel.resolveFrom(context);
     final active = CupertinoColors.systemPink.resolveFrom(context);
+    final lightweightEffects =
+        context.select<AppLifecycleService, bool>((s) => !s.isForeground) ||
+        (context.select<AppSettingsService?, bool>(
+          (s) => s?.dataSaverMode ?? false,
+        ));
     const items = <({IconData icon, String label})>[
       (icon: CupertinoIcons.home, label: 'Inicio'),
       (icon: CupertinoIcons.search, label: 'Buscar'),
@@ -621,61 +631,65 @@ class _CupertinoRootTabBar extends StatelessWidget {
       (icon: CupertinoIcons.person_crop_circle, label: 'Cuenta'),
     ];
 
+    final barContent = Container(
+      padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDark
+              ? [
+                  Colors.white.withValues(alpha: 0.11),
+                  Colors.white.withValues(alpha: 0.06),
+                ]
+              : [
+                  Colors.white.withValues(alpha: 0.70),
+                  Colors.white.withValues(alpha: 0.50),
+                ],
+        ),
+        border: Border.all(
+          color: isDark
+              ? Colors.white.withValues(alpha: 0.16)
+              : Colors.white.withValues(alpha: 0.72),
+          width: 0.9,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.14),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Row(
+        children: List.generate(items.length, (index) {
+          final selected = index == currentIndex;
+          return Expanded(
+            child: _LiquidTabButton(
+              icon: items[index].icon,
+              label: items[index].label,
+              selected: selected,
+              activeColor: active,
+              inactiveColor: inactive,
+              onPressed: () => onTap(index),
+            ),
+          );
+        }),
+      ),
+    );
+
     return SafeArea(
       top: false,
       minimum: const EdgeInsets.fromLTRB(14, 0, 14, 10),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(24),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(24),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: isDark
-                    ? [
-                        Colors.white.withValues(alpha: 0.11),
-                        Colors.white.withValues(alpha: 0.06),
-                      ]
-                    : [
-                        Colors.white.withValues(alpha: 0.70),
-                        Colors.white.withValues(alpha: 0.50),
-                      ],
+        child: lightweightEffects
+            ? barContent
+            : BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: barContent,
               ),
-              border: Border.all(
-                color: isDark
-                    ? Colors.white.withValues(alpha: 0.16)
-                    : Colors.white.withValues(alpha: 0.72),
-                width: 0.9,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.14),
-                  blurRadius: 24,
-                  offset: const Offset(0, 10),
-                ),
-              ],
-            ),
-            child: Row(
-              children: List.generate(items.length, (index) {
-                final selected = index == currentIndex;
-                return Expanded(
-                  child: _LiquidTabButton(
-                    icon: items[index].icon,
-                    label: items[index].label,
-                    selected: selected,
-                    activeColor: active,
-                    inactiveColor: inactive,
-                    onPressed: () => onTap(index),
-                  ),
-                );
-              }),
-            ),
-          ),
-        ),
       ),
     );
   }
