@@ -738,6 +738,14 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final playerManager = context.watch<VideoPlayerManager>();
+    final hasMiniPlayer =
+        playerManager.currentVideoId != null && playerManager.isMinimized;
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    const tabBarReserve = 108.0;
+    const miniPlayerReserve = 64.0;
+    final bottomReserve =
+        tabBarReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
     final pageBackground = isDark
         ? Colors.black
         : CupertinoColors.systemGroupedBackground.resolveFrom(context);
@@ -939,6 +947,7 @@ class _HomePageState extends State<HomePage> {
                       );
                     },
                   ),
+                  SliverToBoxAdapter(child: SizedBox(height: bottomReserve)),
                 ],
               ),
             );

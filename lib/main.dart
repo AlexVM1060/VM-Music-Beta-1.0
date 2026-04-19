@@ -160,6 +160,7 @@ class MyApp extends StatelessWidget {
           darkTheme: darkTheme,
           themeMode: themeProvider.themeMode,
           debugShowCheckedModeBanner: false,
+          builder: (context, child) => child ?? const SizedBox.shrink(),
         );
       },
     );
@@ -171,9 +172,7 @@ class AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Stack(
-      children: [MainTabs(), OverlayVideoPlayer(), _StartupSplashOverlay()],
-    );
+    return const Stack(children: [MainTabs(), _StartupSplashOverlay()]);
   }
 }
 
@@ -444,16 +443,16 @@ class _MainTabsState extends State<MainTabs> {
     final selectedIndex = tabState?.selectedIndex ?? _fallbackSelectedIndex;
     _pageController ??= PageController(initialPage: _displayedPageIndex);
     final controller = _pageController!;
-    final isFullScreen = context.watch<VideoPlayerManager>().isFullScreen;
-    final searchViewState = context.watch<SearchViewState>();
+    final playerManager = context.watch<VideoPlayerManager>();
+    final isFullScreen = playerManager.isFullScreen;
+    final isExpandedPlayerVisible =
+        playerManager.currentVideoId != null && !playerManager.isMinimized;
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final shellBackground = isDark
         ? Colors.black
         : CupertinoColors.systemGroupedBackground.resolveFrom(context);
-    final hideMainAppBar =
-        selectedIndex == 3 ||
-        (selectedIndex == 1 && searchViewState.isArtistFullscreen);
+    final hideMainAppBar = selectedIndex == 3;
 
     if (_displayedPageIndex != selectedIndex) {
       WidgetsBinding.instance.addPostFrameCallback((_) async {
@@ -470,7 +469,7 @@ class _MainTabsState extends State<MainTabs> {
     return Stack(
       children: [
         Scaffold(
-          extendBody: false,
+          extendBody: true,
           backgroundColor: shellBackground,
           appBar: hideMainAppBar
               ? null
@@ -534,13 +533,18 @@ class _MainTabsState extends State<MainTabs> {
             physics: const NeverScrollableScrollPhysics(),
             children: _pages,
           ),
-          bottomNavigationBar: isFullScreen
-              ? null
-              : _CupertinoRootTabBar(
-                  currentIndex: selectedIndex,
-                  onTap: _onItemTapped,
-                ),
         ),
+        const Positioned.fill(child: OverlayVideoPlayer()),
+        if (!isFullScreen && !isExpandedPlayerVisible)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _CupertinoRootTabBar(
+              currentIndex: selectedIndex,
+              onTap: _onItemTapped,
+            ),
+          ),
       ],
     );
   }

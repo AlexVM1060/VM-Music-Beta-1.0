@@ -51,6 +51,9 @@ class _HistoryPageState extends State<HistoryPage> {
 
   @override
   Widget build(BuildContext context) {
+    final playerManager = context.watch<VideoPlayerManager>();
+    final hasMiniPlayer =
+        playerManager.currentVideoId != null && playerManager.isMinimized;
     return FutureBuilder<List<VideoHistory>>(
       future: _historyFuture,
       builder: (context, snapshot) {
@@ -96,7 +99,10 @@ class _HistoryPageState extends State<HistoryPage> {
                     12,
                     8,
                     12,
-                    _accountBottomOverlayReserve(context),
+                    _accountBottomOverlayReserve(
+                      context,
+                      hasMiniPlayer: hasMiniPlayer,
+                    ),
                   ),
                   itemCount: history.length,
                   itemBuilder: (context, index) {
@@ -112,10 +118,16 @@ class _HistoryPageState extends State<HistoryPage> {
     );
   }
 
-  double _accountBottomOverlayReserve(BuildContext context) {
+  double _accountBottomOverlayReserve(
+    BuildContext context, {
+    required bool hasMiniPlayer,
+  }) {
     final bottomInset = MediaQuery.of(context).padding.bottom;
     const baseReserve = 108.0;
-    return baseReserve + bottomInset;
+    const miniPlayerReserve = 64.0;
+    return baseReserve +
+        (hasMiniPlayer ? miniPlayerReserve : 0) +
+        bottomInset;
   }
 }
 

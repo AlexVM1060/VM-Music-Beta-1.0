@@ -7,6 +7,7 @@ import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/playlist.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 
@@ -22,10 +23,16 @@ class PlaylistsPage extends StatefulWidget {
 class _PlaylistsPageState extends State<PlaylistsPage> {
   late Future<List<Playlist>> _playlistsFuture;
 
-  double _accountBottomOverlayReserve(BuildContext context) {
+  double _accountBottomOverlayReserve(
+    BuildContext context, {
+    required bool hasMiniPlayer,
+  }) {
     final bottomInset = MediaQuery.of(context).padding.bottom;
     const baseReserve = 108.0;
-    return baseReserve + bottomInset;
+    const miniPlayerReserve = 64.0;
+    return baseReserve +
+        (hasMiniPlayer ? miniPlayerReserve : 0) +
+        bottomInset;
   }
 
   @override
@@ -92,6 +99,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
   @override
   Widget build(BuildContext context) {
     final downloadService = context.watch<DownloadService>();
+    final playerManager = context.watch<VideoPlayerManager>();
+    final hasMiniPlayer =
+        playerManager.currentVideoId != null && playerManager.isMinimized;
     return FutureBuilder<List<Playlist>>(
       future: _playlistsFuture,
       builder: (context, snapshot) {
@@ -162,7 +172,10 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                             12,
                             8,
                             12,
-                            _accountBottomOverlayReserve(context),
+                            _accountBottomOverlayReserve(
+                              context,
+                              hasMiniPlayer: hasMiniPlayer,
+                            ),
                           ),
                           itemCount: playlists.length,
                           itemBuilder: (context, index) {

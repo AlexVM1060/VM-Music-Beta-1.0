@@ -355,12 +355,18 @@ class _FullPlayer extends StatefulWidget {
 class _FullPlayerState extends State<_FullPlayer> {
   static const double _pullToMinimizeThreshold = 76;
   static const Duration _lyricsUiInactivityDelay = Duration(seconds: 4);
+  static const int _maxPaletteCacheEntries = 120;
+  static final Map<String, Color> _backgroundPaletteCache = <String, Color>{};
+  static final Map<String, Future<Color?>> _backgroundPaletteRequests =
+      <String, Future<Color?>>{};
   final ScrollController _contentScrollController = ScrollController();
   double _pullDownAccumulated = 0;
   bool _didTriggerMinimizeInGesture = false;
   Timer? _lyricsUiHideTimer;
   bool _lyricsChromeVisible = true;
   bool _wasLyricsLayout = false;
+  Color _albumBackgroundTint = const Color(0xFF1A2030);
+  String? _lastPaletteArtworkUrl;
 
   VideoPlayerManager get manager => widget.manager;
 
@@ -369,6 +375,138 @@ class _FullPlayerState extends State<_FullPlayer> {
     _lyricsUiHideTimer?.cancel();
     _contentScrollController.dispose();
     super.dispose();
+  }
+
+  void _maybeResolveAlbumBackgroundTint() {
+    final raw = manager.trackThumbnailUrl?.trim() ?? '';
+    if (raw.isEmpty || raw == _lastPaletteArtworkUrl) return;
+    _lastPaletteArtworkUrl = raw;
+
+    final cached = _backgroundPaletteCache[raw];
+    if (cached != null) {
+      if (mounted) {
+        setState(() {
+          _albumBackgroundTint = cached;
+        });
+      } else {
+        _albumBackgroundTint = cached;
+      }
+      return;
+    }
+
+    Future<Color?> request =
+        _backgroundPaletteRequests[raw] ??
+        () async {
+          try {
+            final ImageProvider provider = raw.startsWith('/')
+                ? FileImage(File(raw))
+                : NetworkImage(raw);
+            final palette = await PaletteGenerator.fromImageProvider(
+              provider,
+              size: const Size(96, 96),
+              maximumColorCount: 16,
+            );
+            return palette.vibrantColor?.color ??
+                palette.lightVibrantColor?.color ??
+                palette.dominantColor?.color ??
+                palette.mutedColor?.color;
+          } catch (_) {
+            return null;
+          }
+        }();
+    _backgroundPaletteRequests[raw] = request;
+
+    unawaited(
+      request
+          .then((color) {
+            if (!mounted || _lastPaletteArtworkUrl != raw || color == null) {
+              return;
+            }
+            _rememberBackgroundPalette(raw, color);
+            setState(() {
+              _albumBackgroundTint = color;
+            });
+          })
+          .whenComplete(() {
+            if (identical(_backgroundPaletteRequests[raw], request)) {
+              _backgroundPaletteRequests.remove(raw);
+            }
+          }),
+    );
+  }
+
+  void _rememberBackgroundPalette(String key, Color value) {
+    _backgroundPaletteCache[key] = value;
+    while (_backgroundPaletteCache.length > _maxPaletteCacheEntries) {
+      _backgroundPaletteCache.remove(_backgroundPaletteCache.keys.first);
+    }
+  }
+
+  Widget _buildAlbumBlurBackground(BuildContext context) {
+    final artwork = manager.trackThumbnailUrl?.trim() ?? '';
+    final tint = _albumBackgroundTint;
+    final darkTop = Color.lerp(tint, Colors.black, 0.55)!;
+    final deepBottom = Color.lerp(tint, Colors.black, 0.80)!;
+
+    Widget? artworkLayer;
+    if (artwork.isNotEmpty) {
+      artworkLayer = Transform.scale(
+        scale: 1.32,
+        child: artwork.startsWith('/')
+            ? Image.file(File(artwork), fit: BoxFit.cover)
+            : Image.network(artwork, fit: BoxFit.cover),
+      );
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [darkTop, tint, deepBottom],
+            ),
+          ),
+        ),
+        if (artworkLayer != null)
+          Opacity(
+            opacity: 0.58,
+            child: ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 64, sigmaY: 64),
+              child: artworkLayer,
+            ),
+          ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: RadialGradient(
+              center: const Alignment(-0.25, -0.85),
+              radius: 1.20,
+              colors: [
+                tint.withValues(alpha: 0.42),
+                tint.withValues(alpha: 0.14),
+                Colors.black.withValues(alpha: 0.62),
+              ],
+              stops: const [0.0, 0.52, 1.0],
+            ),
+          ),
+        ),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.black.withValues(alpha: 0.10),
+                Colors.transparent,
+                Colors.black.withValues(alpha: 0.50),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   void _syncLyricsImmersiveMode(bool isLyricsLayout) {
@@ -497,6 +635,7 @@ class _FullPlayerState extends State<_FullPlayer> {
     final canDownload = videoId != null && !manager.isLocal;
     final canAddToPlaylist = videoId != null;
     final animatedCoverEnabled = settings?.animatedCutoutCovers ?? true;
+    _maybeResolveAlbumBackgroundTint();
     _syncLyricsImmersiveMode(manager.isLyricsLayout);
     final lyricsImmersive = manager.isLyricsLayout && !_lyricsChromeVisible;
     final showLyricsControls = !manager.isLyricsLayout || _lyricsChromeVisible;
@@ -504,348 +643,347 @@ class _FullPlayerState extends State<_FullPlayer> {
     return SizedBox.expand(
       child: Material(
         color: Colors.transparent,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                Theme.of(context).colorScheme.primaryContainer,
-                Theme.of(context).colorScheme.surface,
-                Theme.of(context).colorScheme.surface,
-              ],
-            ),
-          ),
-          child: SafeArea(
-            child: Listener(
-              onPointerDown: (_) => _onLyricsPanelInteraction(),
-              child: Column(
-                children: [
-                  Center(
-                    child: Container(
-                      width: 36,
-                      height: 4,
-                      margin: const EdgeInsets.only(top: 2, bottom: 6),
-                      decoration: BoxDecoration(
-                        color: CupertinoColors.systemGrey3
-                            .resolveFrom(context)
-                            .withValues(alpha: 0.7),
-                        borderRadius: BorderRadius.circular(999),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _buildAlbumBlurBackground(context),
+            SafeArea(
+              child: Listener(
+                onPointerDown: (_) => _onLyricsPanelInteraction(),
+                child: Column(
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 36,
+                        height: 4,
+                        margin: const EdgeInsets.only(top: 2, bottom: 6),
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(context)
+                              .withValues(alpha: 0.7),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
                       ),
                     ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      children: [
-                        _TopGlassIconButton(
-                          icon: CupertinoIcons.chevron_down,
-                          onPressed: manager.minimize,
-                        ),
-                        const Spacer(),
-                        _TopGlassIconButton(
-                          icon: CupertinoIcons.list_bullet,
-                          onPressed: () => _showQueueSheet(context),
-                        ),
-                        _TopGlassIconButton(
-                          icon: CupertinoIcons.square_arrow_up,
-                          onPressed: () =>
-                              unawaited(_shareCurrentSongLink(context)),
-                        ),
-                        if (canDownload)
-                          _DownloadButton(
-                            videoId: videoId,
-                            title: manager.trackTitle ?? 'Sin título',
-                            thumbnailUrl: manager.trackThumbnailUrl ?? '',
-                            channelTitle: manager.trackArtist ?? '',
-                            sourceUrl: manager.currentStreamUrl,
-                            isVideoSource: manager.isUsingVideoFallback,
-                            downloadService: downloadService,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: [
+                          _TopGlassIconButton(
+                            icon: CupertinoIcons.chevron_down,
+                            onPressed: manager.minimize,
                           ),
-                        _TopGlassIconButton(
-                          icon: CupertinoIcons.xmark,
-                          onPressed: manager.close,
-                        ),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        final screenWidth = MediaQuery.sizeOf(context).width;
-                        final maxArtworkWidth = math.max(
-                          220.0,
-                          screenWidth - 48,
-                        );
-                        final halfViewportSize = constraints.maxHeight * 0.5;
-                        final animatedArtworkSize = math
-                            .min(halfViewportSize, maxArtworkWidth)
-                            .clamp(220.0, 560.0)
-                            .toDouble();
-                        final defaultArtworkSize = animatedCoverEnabled
-                            ? animatedArtworkSize
-                            : 310.0;
-                        final collapsedLyricsHeight = math.max(
-                          230.0,
-                          math.min(390.0, constraints.maxHeight * 0.48),
-                        );
-                        final expandedLyricsHeight = math.max(
-                          collapsedLyricsHeight + 90,
-                          constraints.maxHeight * 0.87,
-                        );
-                        return NotificationListener<ScrollNotification>(
-                          onNotification: _handleContentScrollNotification,
-                          child: SingleChildScrollView(
-                            controller: _contentScrollController,
-                            physics: const ClampingScrollPhysics(
-                              parent: AlwaysScrollableScrollPhysics(),
+                          const Spacer(),
+                          _TopGlassIconButton(
+                            icon: CupertinoIcons.list_bullet,
+                            onPressed: () => _showQueueSheet(context),
+                          ),
+                          _TopGlassIconButton(
+                            icon: CupertinoIcons.square_arrow_up,
+                            onPressed: () =>
+                                unawaited(_shareCurrentSongLink(context)),
+                          ),
+                          if (canDownload)
+                            _DownloadButton(
+                              videoId: videoId,
+                              title: manager.trackTitle ?? 'Sin título',
+                              thumbnailUrl: manager.trackThumbnailUrl ?? '',
+                              channelTitle: manager.trackArtist ?? '',
+                              sourceUrl: manager.currentStreamUrl,
+                              isVideoSource: manager.isUsingVideoFallback,
+                              downloadService: downloadService,
                             ),
-                            clipBehavior: Clip.none,
-                            padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
-                            child: ConstrainedBox(
-                              constraints: BoxConstraints(
-                                minHeight: constraints.maxHeight - 40,
+                          _TopGlassIconButton(
+                            icon: CupertinoIcons.xmark,
+                            onPressed: manager.close,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final screenWidth = MediaQuery.sizeOf(context).width;
+                          final maxArtworkWidth = math.max(
+                            220.0,
+                            screenWidth - 48,
+                          );
+                          final halfViewportSize = constraints.maxHeight * 0.5;
+                          final animatedArtworkSize = math
+                              .min(halfViewportSize, maxArtworkWidth)
+                              .clamp(220.0, 560.0)
+                              .toDouble();
+                          final defaultArtworkSize = animatedCoverEnabled
+                              ? animatedArtworkSize
+                              : 310.0;
+                          final collapsedLyricsHeight = math.max(
+                            230.0,
+                            math.min(390.0, constraints.maxHeight * 0.48),
+                          );
+                          final expandedLyricsHeight = math.max(
+                            collapsedLyricsHeight + 90,
+                            constraints.maxHeight * 0.87,
+                          );
+                          return NotificationListener<ScrollNotification>(
+                            onNotification: _handleContentScrollNotification,
+                            child: SingleChildScrollView(
+                              controller: _contentScrollController,
+                              physics: const ClampingScrollPhysics(
+                                parent: AlwaysScrollableScrollPhysics(),
                               ),
-                              child: Column(
-                                children: [
-                                  TweenAnimationBuilder<double>(
-                                    key: ValueKey(
-                                      'full-hero-entry-${manager.currentVideoId}-${manager.isLyricsLayout}',
-                                    ),
-                                    tween: Tween<double>(begin: 0, end: 1),
-                                    duration: const Duration(milliseconds: 440),
-                                    curve: Curves.easeOutCubic,
-                                    builder: (context, value, child) {
-                                      final lift = (1 - value) * 40;
-                                      final scale = 0.90 + (0.10 * value);
-                                      return Opacity(
-                                        opacity: value,
-                                        child: Transform.translate(
-                                          offset: Offset(0, lift),
-                                          child: Transform.scale(
-                                            alignment: Alignment.topCenter,
-                                            scale: scale,
-                                            child: child,
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                    child: AnimatedSwitcher(
-                                      duration: const Duration(
-                                        milliseconds: 420,
+                              clipBehavior: Clip.none,
+                              padding: const EdgeInsets.fromLTRB(24, 8, 24, 32),
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  minHeight: constraints.maxHeight - 40,
+                                ),
+                                child: Column(
+                                  children: [
+                                    TweenAnimationBuilder<double>(
+                                      key: ValueKey(
+                                        'full-hero-entry-${manager.currentVideoId}-${manager.isLyricsLayout}',
                                       ),
-                                      switchInCurve: Curves.easeOutCubic,
-                                      switchOutCurve: Curves.easeInCubic,
-                                      layoutBuilder:
-                                          (currentChild, previousChildren) {
-                                            return Stack(
-                                              clipBehavior: Clip.none,
+                                      tween: Tween<double>(begin: 0, end: 1),
+                                      duration: const Duration(
+                                        milliseconds: 440,
+                                      ),
+                                      curve: Curves.easeOutCubic,
+                                      builder: (context, value, child) {
+                                        final lift = (1 - value) * 40;
+                                        final scale = 0.90 + (0.10 * value);
+                                        return Opacity(
+                                          opacity: value,
+                                          child: Transform.translate(
+                                            offset: Offset(0, lift),
+                                            child: Transform.scale(
                                               alignment: Alignment.topCenter,
-                                              children: <Widget>[
-                                                ...previousChildren,
-                                                if (currentChild != null)
-                                                  currentChild,
-                                              ],
-                                            );
-                                          },
-                                      transitionBuilder: (child, animation) {
-                                        final slide =
-                                            Tween<Offset>(
-                                              begin: const Offset(0, 0.06),
-                                              end: Offset.zero,
-                                            ).animate(
-                                              CurvedAnimation(
-                                                parent: animation,
-                                                curve: Curves.easeOutCubic,
-                                              ),
-                                            );
-                                        return FadeTransition(
-                                          opacity: animation,
-                                          child: SlideTransition(
-                                            position: slide,
-                                            child: child,
+                                              scale: scale,
+                                              child: child,
+                                            ),
                                           ),
                                         );
                                       },
-                                      child: manager.isLyricsLayout
-                                          ? _CompactNowPlayingHeader(
-                                              key: const ValueKey(
-                                                'compact_now_playing_header',
-                                              ),
-                                              manager: manager,
-                                              onArtistTap: () =>
-                                                  _openArtistProfile(context),
-                                              canAddToPlaylist:
-                                                  canAddToPlaylist,
-                                              onAddToPlaylist: () =>
-                                                  _showAddToPlaylistSheet(
-                                                    context: context,
-                                                    playlistService:
-                                                        playlistService,
-                                                    downloadService:
-                                                        downloadService,
-                                                    manager: manager,
-                                                  ),
-                                              onAddToFavorites: () =>
-                                                  _addCurrentTrackToFavorites(
-                                                    context: context,
-                                                    playlistService:
-                                                        playlistService,
-                                                    downloadService:
-                                                        downloadService,
-                                                    manager: manager,
-                                                  ),
-                                            )
-                                          : _DefaultNowPlayingHero(
-                                              key: const ValueKey(
-                                                'default_now_playing_hero',
-                                              ),
-                                              manager: manager,
-                                              artworkSize: defaultArtworkSize,
-                                              onArtistTap: () =>
-                                                  _openArtistProfile(context),
-                                              canAddToPlaylist:
-                                                  canAddToPlaylist,
-                                              onAddToPlaylist: () =>
-                                                  _showAddToPlaylistSheet(
-                                                    context: context,
-                                                    playlistService:
-                                                        playlistService,
-                                                    downloadService:
-                                                        downloadService,
-                                                    manager: manager,
-                                                  ),
-                                              onAddToFavorites: () =>
-                                                  _addCurrentTrackToFavorites(
-                                                    context: context,
-                                                    playlistService:
-                                                        playlistService,
-                                                    downloadService:
-                                                        downloadService,
-                                                    manager: manager,
-                                                  ),
-                                            ),
-                                    ),
-                                  ),
-                                  if (manager.isLyricsLayout) ...[
-                                    const SizedBox(height: 14),
-                                    AnimatedContainer(
-                                      duration: const Duration(
-                                        milliseconds: 420,
-                                      ),
-                                      curve: Curves.easeInOutCubicEmphasized,
-                                      height: lyricsImmersive
-                                          ? expandedLyricsHeight
-                                          : collapsedLyricsHeight,
-                                      child: _LyricsPanel(
-                                        manager: manager,
-                                        immersiveMode: lyricsImmersive,
-                                        onInteraction:
-                                            _onLyricsPanelInteraction,
-                                        onRevealRequest:
-                                            _onLyricsPanelRevealRequest,
-                                        onImmersiveRequest:
-                                            _onLyricsPanelImmersiveRequest,
-                                      ),
-                                    ),
-                                  ],
-                                  ClipRect(
-                                    child: AnimatedAlign(
-                                      duration: const Duration(
-                                        milliseconds: 420,
-                                      ),
-                                      curve: Curves.easeInOutCubicEmphasized,
-                                      alignment: Alignment.topCenter,
-                                      heightFactor: showLyricsControls ? 1 : 0,
-                                      child: AnimatedOpacity(
+                                      child: AnimatedSwitcher(
                                         duration: const Duration(
-                                          milliseconds: 260,
+                                          milliseconds: 420,
                                         ),
-                                        curve: Curves.easeInOutCubic,
-                                        opacity: showLyricsControls ? 1 : 0,
-                                        child: IgnorePointer(
-                                          ignoring: !showLyricsControls,
-                                          child: Column(
-                                            children: [
-                                              const SizedBox(height: 24),
-                                              if (manager.isLoading)
-                                                const Padding(
-                                                  padding: EdgeInsets.symmetric(
-                                                    vertical: 20,
-                                                  ),
-                                                  child: _IosLoadingControls(),
-                                                )
-                                              else ...[
-                                                _ProgressSection(
-                                                  manager: manager,
+                                        switchInCurve: Curves.easeOutCubic,
+                                        switchOutCurve: Curves.easeInCubic,
+                                        layoutBuilder:
+                                            (currentChild, previousChildren) {
+                                              return Stack(
+                                                clipBehavior: Clip.none,
+                                                alignment: Alignment.topCenter,
+                                                children: <Widget>[
+                                                  ...previousChildren,
+                                                  if (currentChild != null)
+                                                    currentChild,
+                                                ],
+                                              );
+                                            },
+                                        transitionBuilder: (child, animation) {
+                                          final slide =
+                                              Tween<Offset>(
+                                                begin: const Offset(0, 0.06),
+                                                end: Offset.zero,
+                                              ).animate(
+                                                CurvedAnimation(
+                                                  parent: animation,
+                                                  curve: Curves.easeOutCubic,
                                                 ),
-                                                const SizedBox(height: 16),
-                                                _GlassControlsGroup(
-                                                  child: Row(
-                                                    mainAxisAlignment:
-                                                        MainAxisAlignment
-                                                            .spaceEvenly,
+                                              );
+                                          return FadeTransition(
+                                            opacity: animation,
+                                            child: SlideTransition(
+                                              position: slide,
+                                              child: child,
+                                            ),
+                                          );
+                                        },
+                                        child: manager.isLyricsLayout
+                                            ? _CompactNowPlayingHeader(
+                                                key: const ValueKey(
+                                                  'compact_now_playing_header',
+                                                ),
+                                                manager: manager,
+                                                onArtistTap: () =>
+                                                    _openArtistProfile(context),
+                                                canAddToPlaylist:
+                                                    canAddToPlaylist,
+                                                onAddToPlaylist: () =>
+                                                    _showAddToPlaylistSheet(
+                                                      context: context,
+                                                      playlistService:
+                                                          playlistService,
+                                                      downloadService:
+                                                          downloadService,
+                                                      manager: manager,
+                                                    ),
+                                                onAddToFavorites: () =>
+                                                    _addCurrentTrackToFavorites(
+                                                      context: context,
+                                                      playlistService:
+                                                          playlistService,
+                                                      downloadService:
+                                                          downloadService,
+                                                      manager: manager,
+                                                    ),
+                                              )
+                                            : _DefaultNowPlayingHero(
+                                                key: const ValueKey(
+                                                  'default_now_playing_hero',
+                                                ),
+                                                manager: manager,
+                                                artworkSize: defaultArtworkSize,
+                                                onArtistTap: () =>
+                                                    _openArtistProfile(context),
+                                                canAddToPlaylist:
+                                                    canAddToPlaylist,
+                                                onAddToPlaylist: () =>
+                                                    _showAddToPlaylistSheet(
+                                                      context: context,
+                                                      playlistService:
+                                                          playlistService,
+                                                      downloadService:
+                                                          downloadService,
+                                                      manager: manager,
+                                                    ),
+                                                onAddToFavorites: () =>
+                                                    _addCurrentTrackToFavorites(
+                                                      context: context,
+                                                      playlistService:
+                                                          playlistService,
+                                                      downloadService:
+                                                          downloadService,
+                                                      manager: manager,
+                                                    ),
+                                              ),
+                                      ),
+                                    ),
+                                    if (manager.isLyricsLayout) ...[
+                                      const SizedBox(height: 14),
+                                      AnimatedContainer(
+                                        duration: const Duration(
+                                          milliseconds: 420,
+                                        ),
+                                        curve: Curves.easeInOutCubicEmphasized,
+                                        height: lyricsImmersive
+                                            ? expandedLyricsHeight
+                                            : collapsedLyricsHeight,
+                                        child: _LyricsPanel(
+                                          manager: manager,
+                                          immersiveMode: lyricsImmersive,
+                                          onInteraction:
+                                              _onLyricsPanelInteraction,
+                                          onRevealRequest:
+                                              _onLyricsPanelRevealRequest,
+                                          onImmersiveRequest:
+                                              _onLyricsPanelImmersiveRequest,
+                                        ),
+                                      ),
+                                    ],
+                                    ClipRect(
+                                      child: AnimatedAlign(
+                                        duration: const Duration(
+                                          milliseconds: 420,
+                                        ),
+                                        curve: Curves.easeInOutCubicEmphasized,
+                                        alignment: Alignment.topCenter,
+                                        heightFactor: showLyricsControls
+                                            ? 1
+                                            : 0,
+                                        child: AnimatedOpacity(
+                                          duration: const Duration(
+                                            milliseconds: 260,
+                                          ),
+                                          curve: Curves.easeInOutCubic,
+                                          opacity: showLyricsControls ? 1 : 0,
+                                          child: IgnorePointer(
+                                            ignoring: !showLyricsControls,
+                                            child: Column(
+                                              children: [
+                                                const SizedBox(height: 24),
+                                                if (manager.isLoading)
+                                                  const Padding(
+                                                    padding:
+                                                        EdgeInsets.symmetric(
+                                                          vertical: 20,
+                                                        ),
+                                                    child:
+                                                        _IosLoadingControls(),
+                                                  )
+                                                else ...[
+                                                  _ProgressSection(
+                                                    manager: manager,
+                                                  ),
+                                                  const SizedBox(height: 16),
+                                                  _GlassControlsGroup(
+                                                    child: Row(
+                                                      mainAxisAlignment:
+                                                          MainAxisAlignment
+                                                              .spaceEvenly,
+                                                      children: [
+                                                        _NativeControlButton(
+                                                          icon: CupertinoIcons
+                                                              .backward_end_fill,
+                                                          onPressed: manager
+                                                              .playPreviousInQueue,
+                                                        ),
+                                                        _NativePrimaryPlayButton(
+                                                          isPlaying:
+                                                              manager.isPlaying,
+                                                          onPressed: manager
+                                                              .togglePlayPause,
+                                                        ),
+                                                        _NativeControlButton(
+                                                          icon: CupertinoIcons
+                                                              .forward_end_fill,
+                                                          onPressed: manager
+                                                              .playNextInQueue,
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                  const SizedBox(height: 10),
+                                                  Row(
                                                     children: [
-                                                      _NativeControlButton(
-                                                        icon: CupertinoIcons
-                                                            .backward_end_fill,
+                                                      _InlineLyricsButton(
+                                                        isActive: manager
+                                                            .isLyricsLayout,
                                                         onPressed: manager
-                                                            .playPreviousInQueue,
+                                                            .toggleLyricsLayout,
                                                       ),
-                                                      _NativePrimaryPlayButton(
-                                                        isPlaying:
-                                                            manager.isPlaying,
+                                                      const Spacer(),
+                                                      _InlineAutoplayButton(
+                                                        isActive: manager
+                                                            .autoplayEnabled,
                                                         onPressed: manager
-                                                            .togglePlayPause,
-                                                      ),
-                                                      _NativeControlButton(
-                                                        icon: CupertinoIcons
-                                                            .forward_end_fill,
-                                                        onPressed: manager
-                                                            .playNextInQueue,
+                                                            .toggleAutoplay,
                                                       ),
                                                     ],
                                                   ),
-                                                ),
-                                                const SizedBox(height: 10),
-                                                Row(
-                                                  children: [
-                                                    _InlineLyricsButton(
-                                                      isActive: manager
-                                                          .isLyricsLayout,
-                                                      onPressed: manager
-                                                          .toggleLyricsLayout,
-                                                    ),
-                                                    const Spacer(),
-                                                    _InlineAutoplayButton(
-                                                      isActive: manager
-                                                          .autoplayEnabled,
-                                                      onPressed: manager
-                                                          .toggleAutoplay,
-                                                    ),
-                                                  ],
-                                                ),
+                                                ],
+                                                const SizedBox(height: 26),
+                                                _QueueSection(manager: manager),
                                               ],
-                                              const SizedBox(height: 26),
-                                              _QueueSection(manager: manager),
-                                            ],
+                                            ),
                                           ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             ),
-                          ),
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );

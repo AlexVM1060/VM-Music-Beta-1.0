@@ -55,6 +55,14 @@ class _DownloadsPageState extends State<DownloadsPage> {
   Widget build(BuildContext context) {
     final downloadService = context.watch<DownloadService>();
     final manager = context.read<VideoPlayerManager>();
+    final playerManager = context.watch<VideoPlayerManager>();
+    final hasMiniPlayer =
+        playerManager.currentVideoId != null && playerManager.isMinimized;
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    const tabBarReserve = 108.0;
+    const miniPlayerReserve = 64.0;
+    final bottomReserve =
+        tabBarReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
 
     return Scaffold(
       backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
@@ -94,6 +102,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
                     hasSearch: hasSearch,
                     manager: manager,
                     downloadService: downloadService,
+                    bottomReserve: bottomReserve,
                   ),
                 );
               },
@@ -111,13 +120,15 @@ class _DownloadsPageState extends State<DownloadsPage> {
     required bool hasSearch,
     required VideoPlayerManager manager,
     required DownloadService downloadService,
+    required double bottomReserve,
   }) {
     if (allSongsEmpty) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        children: const [
-          SizedBox(height: 180),
-          Center(child: Text('Aún no has descargado música.')),
+        children: [
+          const SizedBox(height: 180),
+          const Center(child: Text('Aún no has descargado música.')),
+          SizedBox(height: bottomReserve),
         ],
       );
     }
@@ -125,16 +136,17 @@ class _DownloadsPageState extends State<DownloadsPage> {
     if (songs.isEmpty && hasSearch) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        children: const [
-          SizedBox(height: 180),
-          Center(child: Text('No encontramos canciones con esa búsqueda.')),
+        children: [
+          const SizedBox(height: 180),
+          const Center(child: Text('No encontramos canciones con esa búsqueda.')),
+          SizedBox(height: bottomReserve),
         ],
       );
     }
 
     return ListView.builder(
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.fromLTRB(12, 2, 12, 20),
+      padding: EdgeInsets.fromLTRB(12, 2, 12, 20 + bottomReserve),
       itemCount: songs.length,
       itemBuilder: (context, index) {
         final song = songs[index];
