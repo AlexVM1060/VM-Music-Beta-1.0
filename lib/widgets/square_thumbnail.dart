@@ -46,6 +46,8 @@ class SquareThumbnail extends StatelessWidget {
         height: size,
         fit: BoxFit.cover,
         alignment: Alignment.center,
+        filterQuality: FilterQuality.low,
+        errorBuilder: (context, error, stackTrace) => fallback,
       );
     } else if (hasUrl) {
       image = _NetworkThumbnailWithFallback(
@@ -132,4 +134,3 @@ class _NetworkThumbnailWithFallbackState
     );
   }
 }
-

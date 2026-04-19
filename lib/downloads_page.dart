@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:myapp/models/downloaded_video.dart';
@@ -164,11 +162,8 @@ class _DownloadsPageState extends State<DownloadsPage> {
             : CupertinoColors.separator
                   .resolveFrom(context)
                   .withValues(alpha: 0.12);
-        final localThumbPath = song.localThumbnailPath;
-        final hasLocalThumb =
-            localThumbPath != null &&
-            localThumbPath.isNotEmpty &&
-            File(localThumbPath).existsSync();
+        final localThumbPath = song.localThumbnailPath?.trim() ?? '';
+        final hasLocalThumb = localThumbPath.isNotEmpty;
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 2.0),
           child: ClipRRect(
@@ -191,17 +186,13 @@ class _DownloadsPageState extends State<DownloadsPage> {
                     );
                     return;
                   }
-                  final localThumb = local.localThumbnailPath;
-                  final hasRecoveredThumb =
-                      localThumb != null &&
-                      localThumb.isNotEmpty &&
-                      File(localThumb).existsSync();
+                  final localThumb = local.localThumbnailPath?.trim() ?? '';
                   await manager.playLocalFileFromUserSelection(
                     context,
                     id: local.videoId,
                     filePath: local.filePath,
                     title: local.title,
-                    thumbnailUrl: hasRecoveredThumb
+                    thumbnailUrl: localThumb.isNotEmpty
                         ? localThumb
                         : local.thumbnailUrl,
                     artist: local.channelTitle,

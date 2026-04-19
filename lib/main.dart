@@ -22,12 +22,14 @@ import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/app_lifecycle_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
+import 'package:myapp/services/app_update_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/music_player_page.dart';
 import 'package:provider/provider.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -191,7 +193,87 @@ class AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Stack(children: [MainTabs(), _StartupSplashOverlay()]);
+    return const Stack(
+      children: [MainTabs(), _StartupSplashOverlay(), _AppUpdateGate()],
+    );
+  }
+}
+
+class _AppUpdateGate extends StatefulWidget {
+  const _AppUpdateGate();
+
+  @override
+  State<_AppUpdateGate> createState() => _AppUpdateGateState();
+}
+
+class _AppUpdateGateState extends State<_AppUpdateGate> {
+  bool _didCheck = false;
+  final AppUpdateService _updateService = AppUpdateService();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_didCheck) return;
+    _didCheck = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_checkAndPromptUpdate());
+    });
+  }
+
+  Future<void> _checkAndPromptUpdate() async {
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    if (!mounted) return;
+    final info = await _updateService.checkForUpdate();
+    if (!mounted || info == null) return;
+    await _showUpdateDialog(info);
+  }
+
+  Future<void> _showUpdateDialog(AppUpdateInfo info) async {
+    if (!mounted) return;
+    await showCupertinoDialog<void>(
+      context: context,
+      barrierDismissible: !info.force,
+      builder: (dialogContext) {
+        return PopScope(
+          canPop: !info.force,
+          child: CupertinoAlertDialog(
+            title: Text(info.title),
+            content: Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                '${info.message}\n\nVersión actual: ${info.currentVersion}\nNueva versión: ${info.latestVersion}',
+              ),
+            ),
+            actions: [
+              if (!info.force)
+                CupertinoDialogAction(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Más tarde'),
+                ),
+              CupertinoDialogAction(
+                isDefaultAction: true,
+                onPressed: () async {
+                  final uri = Uri.tryParse(info.storeUrl);
+                  if (uri != null) {
+                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                  }
+                  if (!dialogContext.mounted) return;
+                  if (!info.force) {
+                    Navigator.of(dialogContext).pop();
+                  }
+                },
+                child: const Text('Actualizar'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox.shrink();
   }
 }
 
