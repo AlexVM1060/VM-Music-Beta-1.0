@@ -4567,7 +4567,7 @@ class _ArtistProfileCacheEntry {
 }
 
 class _ChannelVideosPageState extends State<ChannelVideosPage> {
-  static const int _artistSessionCacheSchemaVersion = 2;
+  static const int _artistSessionCacheSchemaVersion = 3;
   static final Map<String, _ArtistProfileCacheEntry> _artistSessionCache = {};
   final YoutubeExplode _yt = YoutubeExplode();
   final ScrollController _artistScrollController = ScrollController();
@@ -4596,8 +4596,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       _artistAlbums = cached.artistAlbums;
       _loading = false;
       _error = false;
-      _suggestedAlbumLoading = !cached.albumsResolved;
-      if (!cached.albumsResolved) {
+      final shouldRefreshAlbums =
+          !cached.albumsResolved || cached.artistAlbums.isEmpty;
+      _suggestedAlbumLoading = shouldRefreshAlbums;
+      if (shouldRefreshAlbums) {
         unawaited(_loadSuggestedAlbumForArtist());
       }
       return;
@@ -4788,7 +4790,58 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
   String get _artistDisplayName {
     return widget.channelName
         .replaceAll(RegExp(r'\s*[-–—]\s*topic$', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+topic$', caseSensitive: false), '')
         .trim();
+  }
+
+  List<String> _artistAlbumSearchQueries() {
+    final profileDisplayName = _artistDisplayName.trim();
+    final profileRawName = widget.channelName.trim();
+    final normalized = cleanArtistName(widget.channelName);
+    final withoutTopic = normalized
+        .replaceAll(RegExp(r'\s*[-–—]\s*topic$', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+topic$', caseSensitive: false), '')
+        .trim();
+    final display = profileDisplayName;
+    final exactLiteral = profileDisplayName.isNotEmpty
+        ? '"$profileDisplayName"'
+        : '';
+    final rawLiteral = profileRawName.isNotEmpty ? '"$profileRawName"' : '';
+    final displayNoAccents = _foldBasicAccents(profileDisplayName).trim();
+    final rawNoAccents = _foldBasicAccents(profileRawName).trim();
+    final normalizedNoAccents = _foldBasicAccents(normalized).trim();
+    final withoutTopicNoAccents = _foldBasicAccents(withoutTopic).trim();
+    final displayNoAccentsLiteral = displayNoAccents.isNotEmpty
+        ? '"$displayNoAccents"'
+        : '';
+    final rawNoAccentsLiteral = rawNoAccents.isNotEmpty
+        ? '"$rawNoAccents"'
+        : '';
+    final values = <String>[
+      profileDisplayName,
+      exactLiteral,
+      profileRawName,
+      rawLiteral,
+      displayNoAccents,
+      displayNoAccentsLiteral,
+      rawNoAccents,
+      rawNoAccentsLiteral,
+      display,
+      withoutTopic,
+      withoutTopicNoAccents,
+      normalized.trim(),
+      normalizedNoAccents,
+      widget.channelName.trim(),
+    ];
+    final out = <String>[];
+    final seen = <String>{};
+    for (final value in values) {
+      final q = value.trim();
+      if (q.isEmpty) continue;
+      final key = _foldBasicAccents(q).toLowerCase();
+      if (seen.add(key)) out.add(q);
+    }
+    return out;
   }
 
   String _foldBasicAccents(String value) {
@@ -4835,54 +4888,27 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
         .trim();
   }
 
-  bool _matchesArtistKeyOrLeadingYCollab({
+  String _compactArtistKeyForStrictProfileMatch(String value) {
+    return _strictArtistKey(value).replaceAll(' ', '');
+  }
+
+  bool _isStrictSameArtistName({
     required String canonicalArtistKey,
     required String candidateArtistKey,
   }) {
-    if (canonicalArtistKey.isEmpty || candidateArtistKey.isEmpty) return false;
-    if (candidateArtistKey == canonicalArtistKey) return true;
-
-    // Colaboración cuando el artista va primero:
-    // 1) "<artista> y <otro artista>"
-    // 2) "<artista>y<otro artista>" (sin espacios)
-    if (candidateArtistKey.startsWith(canonicalArtistKey)) {
-      final suffix = candidateArtistKey.substring(canonicalArtistKey.length);
-      if (suffix.isEmpty) return true;
-      if (suffix.startsWith(' y ')) return true;
-      if (suffix.startsWith('y') && suffix.length > 1) return true;
-    }
-
-    // Colaboración cuando el artista va segundo:
-    // 1) "<otro artista> y <artista>"
-    // 2) "<otro artista>y<artista>" (sin espacios)
-    if (candidateArtistKey.endsWith(canonicalArtistKey)) {
-      final prefix = candidateArtistKey.substring(
-        0,
-        candidateArtistKey.length - canonicalArtistKey.length,
-      );
-      if (prefix.isEmpty) return true;
-      if (prefix.endsWith(' y ')) return true;
-      if (prefix.endsWith('y') && prefix.length > 1) return true;
-    }
-
+    final canonicalCompact = _compactArtistKeyForStrictProfileMatch(
+      canonicalArtistKey,
+    );
+    final candidateCompact = _compactArtistKeyForStrictProfileMatch(
+      candidateArtistKey,
+    );
+    if (canonicalCompact.isEmpty || candidateCompact.isEmpty) return false;
+    if (canonicalCompact == candidateCompact) return true;
+    // Permite colaboraciones pegadas tipo "<artista>y<otro>".
+    if (candidateCompact.startsWith('${canonicalCompact}y')) return true;
+    // Permite colaboraciones pegadas tipo "<otro>y<artista>".
+    if (candidateCompact.endsWith('y$canonicalCompact')) return true;
     return false;
-  }
-
-  String _canonicalArtistKeyFromVideos() {
-    final counts = <String, int>{};
-    for (final video in _videos.take(40)) {
-      final key = _strictArtistKey(video.author);
-      if (key.isEmpty) continue;
-      counts.update(key, (value) => value + 1, ifAbsent: () => 1);
-    }
-    if (counts.isEmpty) return _strictArtistKey(_artistDisplayName);
-    final ranked = counts.entries.toList()
-      ..sort((a, b) {
-        final byCount = b.value.compareTo(a.value);
-        if (byCount != 0) return byCount;
-        return a.key.length.compareTo(b.key.length);
-      });
-    return ranked.first.key;
   }
 
   Future<bool> _albumPlaylistMatchesArtist(
@@ -4895,50 +4921,34 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     if (cached != null) return cached;
 
     try {
-      final videos = await _runYoutubeWithRetry(
-        () => _yt.playlists.getVideos(PlaylistId(playlistId)).take(8).toList(),
+      // Validación estricta: usamos el autor real del playlist/álbum.
+      final playlist = await _runYoutubeWithRetry(
+        () => _yt.playlists.get(PlaylistId(playlistId)),
         maxAttempts: 1,
       );
-      final counts = <String, int>{};
-      for (final video in videos) {
-        final key = _strictArtistKey(video.author);
-        if (key.isEmpty) continue;
-        counts.update(key, (value) => value + 1, ifAbsent: () => 1);
-      }
-
-      bool matches;
-      if (counts.isNotEmpty) {
-        final ranked = counts.entries.toList()
-          ..sort((a, b) {
-            final byCount = b.value.compareTo(a.value);
-            if (byCount != 0) return byCount;
-            return a.key.length.compareTo(b.key.length);
-          });
-        // Verificamos más de un autor para no perder casos donde
-        // el artista buscado aparece en segunda posición (ej. "otro y artista").
-        final candidateKeys = <String>{...ranked.take(4).map((e) => e.key)};
-        matches = candidateKeys.any((candidateKey) {
-          return _matchesArtistKeyOrLeadingYCollab(
-            canonicalArtistKey: canonicalArtistKey,
-            candidateArtistKey: candidateKey,
-          );
-        });
-      } else {
-        final playlist = await _runYoutubeWithRetry(
-          () => _yt.playlists.get(PlaylistId(playlistId)),
-          maxAttempts: 1,
-        );
-        matches = _matchesArtistKeyOrLeadingYCollab(
-          canonicalArtistKey: canonicalArtistKey,
-          candidateArtistKey: _strictArtistKey(playlist.author),
-        );
-      }
+      final playlistAuthorKey = _strictArtistKey(playlist.author);
+      final fallbackAlbumArtistKey = _strictArtistKey(album.artist);
+      final matches = playlistAuthorKey.isNotEmpty
+          ? _isStrictSameArtistName(
+              canonicalArtistKey: canonicalArtistKey,
+              candidateArtistKey: playlistAuthorKey,
+            )
+          : _isStrictSameArtistName(
+              canonicalArtistKey: canonicalArtistKey,
+              candidateArtistKey: fallbackAlbumArtistKey,
+            );
 
       _albumPlaylistArtistMatchCache[playlistId] = matches;
       return matches;
     } catch (_) {
-      _albumPlaylistArtistMatchCache[playlistId] = false;
-      return false;
+      // Si falla red/API, no bloqueamos completamente:
+      // conservamos el match estricto del metadato del resultado.
+      final fallback = _isStrictSameArtistName(
+        canonicalArtistKey: canonicalArtistKey,
+        candidateArtistKey: _strictArtistKey(album.artist),
+      );
+      _albumPlaylistArtistMatchCache[playlistId] = fallback;
+      return fallback;
     }
   }
 
@@ -4952,8 +4962,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
 
   Future<void> _loadSuggestedAlbumForArtist() async {
     final requestEpoch = ++_albumLoadEpoch;
-    final query = _artistDisplayName.trim();
-    if (query.isEmpty) return;
+    final queries = _artistAlbumSearchQueries();
+    if (queries.isEmpty) return;
     if (mounted) {
       setState(() {
         _suggestedAlbumLoading = true;
@@ -4966,93 +4976,172 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
 
     List<_SearchAlbumResult> ordered = const <_SearchAlbumResult>[];
     try {
-      final initialData = await _fetchYoutubeMusicSearchInitialDataForAlbums(
-        query,
-      );
-      if (initialData != null) {
-        ordered = _extractAlbumsInYoutubeMusicOrder(initialData);
-      }
-      if (ordered.isEmpty) {
-        final defaultPayload = await _runYoutubeWithRetry(
+      final seenPlaylistIds = <String>{};
+      final merged = <_SearchAlbumResult>[];
+      Future<List<_SearchAlbumResult>> loadAlbumsForQuery(String query) async {
+        final local = <_SearchAlbumResult>[];
+        final localSeen = <String>{};
+
+        void collectFromPayload(Map<String, dynamic>? payload) {
+          if (payload == null) return;
+          final extracted = _extractAlbumsInYoutubeMusicOrder(payload);
+          for (final album in extracted) {
+            final id = album.playlistId.trim();
+            if (id.isEmpty || !localSeen.add(id)) continue;
+            local.add(album);
+          }
+        }
+
+        final initialFuture = _fetchYoutubeMusicSearchInitialDataForAlbums(
+          query,
+        );
+        final defaultFuture = _runYoutubeWithRetry(
           () => _fetchYoutubeMusicSearchPayloadForAlbums(query),
           maxAttempts: 1,
         );
-        if (defaultPayload != null) {
-          ordered = _extractAlbumsInYoutubeMusicOrder(defaultPayload);
+
+        final pair = await Future.wait([
+          initialFuture,
+          defaultFuture,
+        ]);
+        collectFromPayload(pair[0]);
+        collectFromPayload(pair[1]);
+
+        if (local.isEmpty) {
+          final albumsOnlyPayload = await _runYoutubeWithRetry(
+            () => _fetchYoutubeMusicSearchPayloadForAlbums(
+              query,
+              albumsOnly: true,
+            ),
+            maxAttempts: 1,
+          );
+          collectFromPayload(albumsOnlyPayload);
         }
+        return local;
       }
-      if (ordered.isEmpty) {
-        final albumsOnlyPayload = await _runYoutubeWithRetry(
-          () =>
-              _fetchYoutubeMusicSearchPayloadForAlbums(query, albumsOnly: true),
-          maxAttempts: 1,
+
+      for (var i = 0; i < queries.length; i += 3) {
+        final batch = queries.skip(i).take(3).toList(growable: false);
+        if (batch.isEmpty) break;
+        final batchResults = await Future.wait(
+          batch.map(loadAlbumsForQuery),
         );
-        if (albumsOnlyPayload != null) {
-          ordered = _extractAlbumsInYoutubeMusicOrder(albumsOnlyPayload);
+        for (final local in batchResults) {
+          for (final album in local) {
+            final id = album.playlistId.trim();
+            if (id.isEmpty || !seenPlaylistIds.add(id)) continue;
+            merged.add(album);
+          }
+        }
+        // Salida temprana para mostrar albums antes.
+        if (merged.length >= 10) break;
+      }
+      if (merged.isNotEmpty) {
+        ordered = merged;
+      } else if (queries.isNotEmpty) {
+        final plainQuery = queries.first;
+        final fallback = await loadAlbumsForQuery(plainQuery);
+        if (fallback.isNotEmpty) {
+          ordered = fallback;
         }
       }
     } catch (_) {
       ordered = const <_SearchAlbumResult>[];
     }
 
-    final currentArtistKey = _canonicalArtistKeyFromVideos();
+    // Fallback duro: reutiliza el motor general de búsqueda de álbumes
+    // para evitar perfiles vacíos cuando los endpoints anteriores no responden
+    // consistentemente para cierto artista.
+    if (ordered.isEmpty) {
+      final display = _artistDisplayName.trim();
+      final noAccents = _foldBasicAccents(display).trim();
+      final byId = <String, _SearchAlbumResult>{};
+      final appQueries = <String>[
+        if (display.isNotEmpty) display,
+        if (noAccents.isNotEmpty && noAccents.toLowerCase() != display.toLowerCase())
+          noAccents,
+      ];
+      if (appQueries.isNotEmpty) {
+        final appResults = await Future.wait(
+          appQueries.map(_searchAlbumsFromAppEngine),
+        );
+        for (final list in appResults) {
+          for (final album in list) {
+            final id = album.playlistId.trim();
+            if (id.isNotEmpty) byId[id] = album;
+          }
+        }
+      }
+      if (byId.isNotEmpty) {
+        ordered = byId.values.toList(growable: false);
+      }
+    }
+
+    final profileArtistCompact = _compactArtistKeyForStrictProfileMatch(
+      _artistDisplayName,
+    );
+    final profileArtistKey = _strictArtistKey(_artistDisplayName);
     final filtered = <_SearchAlbumResult>[];
     final seenPlaylistIds = <String>{};
     for (final album in ordered) {
       final playlistId = album.playlistId.trim();
       if (playlistId.isEmpty || !seenPlaylistIds.add(playlistId)) continue;
       final albumArtistKey = _strictArtistKey(album.artist);
-      if (albumArtistKey.isEmpty) continue;
-      if (_matchesArtistKeyOrLeadingYCollab(
-        canonicalArtistKey: currentArtistKey,
+      if (profileArtistCompact.isEmpty || albumArtistKey.isEmpty) continue;
+      if (_isStrictSameArtistName(
+        canonicalArtistKey: _artistDisplayName,
         candidateArtistKey: albumArtistKey,
       )) {
         filtered.add(album);
       }
     }
 
-    // Mostramos resultados rápidamente y refinamos en segundo plano.
-    final quickResults = filtered.take(10).toList(growable: false);
+    // Mostramos solo resultados con coincidencia estricta de artista.
+    final quickResults = filtered.take(12).toList(growable: false);
+    if (quickResults.isEmpty) {
+      if (!mounted || requestEpoch != _albumLoadEpoch) return;
+      setState(() {
+        _artistAlbums = const <_SearchAlbumResult>[];
+        _suggestedAlbum = null;
+        _suggestedAlbumLoading = false;
+      });
+      _storeArtistCache(albumsResolved: true);
+      return;
+    }
+
+    // Mostramos resultados de inmediato y verificamos en background
+    // para que el perfil cargue más rápido.
     if (!mounted || requestEpoch != _albumLoadEpoch) return;
     setState(() {
       _artistAlbums = quickResults;
       _suggestedAlbum = quickResults.isNotEmpty ? quickResults.first : null;
       _suggestedAlbumLoading = false;
     });
-    _storeArtistCache(albumsResolved: true);
+    _storeArtistCache(albumsResolved: false);
 
-    // Verificación estricta (más costosa) sobre un subconjunto pequeño.
-    final toVerify = quickResults.take(6).toList(growable: false);
-    if (toVerify.isEmpty) return;
-    final verification = await Future.wait(
-      toVerify.map((album) async {
-        final matches = await _albumPlaylistMatchesArtist(
-          album,
-          currentArtistKey,
-        );
-        return (album: album, matches: matches);
-      }),
-    );
+    unawaited(() async {
+      final verification = await Future.wait(
+        quickResults.take(8).map((album) async {
+          final matches = await _albumPlaylistMatchesArtist(
+            album,
+            profileArtistKey,
+          );
+          return (album: album, matches: matches);
+        }),
+      );
 
-    if (!mounted || requestEpoch != _albumLoadEpoch) return;
-    final verified = <_SearchAlbumResult>[
-      for (final item in verification)
-        if (item.matches) item.album,
-    ];
-    if (verified.isNotEmpty) {
-      final verifiedIds = verified.map((item) => item.playlistId).toSet();
-      final existing = _artistAlbums;
-      final rest = existing
-          .where((item) => !verifiedIds.contains(item.playlistId))
-          .toList(growable: false);
+      if (!mounted || requestEpoch != _albumLoadEpoch) return;
+      final verified = <_SearchAlbumResult>[
+        for (final item in verification)
+          if (item.matches) item.album,
+      ];
+      final finalResults = verified.isNotEmpty ? verified : quickResults;
       setState(() {
-        // Refinamiento no destructivo: prioriza verificados, pero no elimina
-        // los resultados ya mostrados para evitar "aparecen y desaparecen".
-        _artistAlbums = [...verified, ...rest];
-        _suggestedAlbum = verified.first;
+        _artistAlbums = finalResults;
+        _suggestedAlbum = finalResults.isNotEmpty ? finalResults.first : null;
       });
       _storeArtistCache(albumsResolved: true);
-    }
+    }());
   }
 
   void _openSuggestedAlbum(_SearchAlbumResult album) {
@@ -6087,6 +6176,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
 
   @override
   void dispose() {
+    // Invalida callbacks async pendientes para evitar setState tardío.
+    _albumLoadEpoch++;
     _artistScrollController.dispose();
     _yt.close();
     super.dispose();
