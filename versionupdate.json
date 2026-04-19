@@ -8,7 +8,7 @@
     {
       "label": "Actualizar - National Oilwell",
       "urlIos": "https://youtube.com",
-      "urlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete.1"
+      "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist"
     },
     {
       "label": "Actualizar - XL AXIATA",
