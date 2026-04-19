@@ -208,11 +208,19 @@ class _AppUpdateGate extends StatefulWidget {
 
 class _AppUpdateGateState extends State<_AppUpdateGate> {
   bool _didCheck = false;
+  bool _isChecking = false;
   final AppUpdateService _updateService = AppUpdateService();
+  AppLifecycleService? _lifecycleService;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final nextLifecycle = context.read<AppLifecycleService?>();
+    if (!identical(_lifecycleService, nextLifecycle)) {
+      _lifecycleService?.removeListener(_handleLifecycleChanged);
+      _lifecycleService = nextLifecycle;
+      _lifecycleService?.addListener(_handleLifecycleChanged);
+    }
     if (_didCheck) return;
     _didCheck = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -220,12 +228,25 @@ class _AppUpdateGateState extends State<_AppUpdateGate> {
     });
   }
 
-  Future<void> _checkAndPromptUpdate() async {
-    await Future<void>.delayed(const Duration(milliseconds: 900));
+  void _handleLifecycleChanged() {
     if (!mounted) return;
-    final info = await _updateService.checkForUpdate();
-    if (!mounted || info == null) return;
-    await _showUpdateDialog(info);
+    final lifecycle = _lifecycleService;
+    if (lifecycle == null || !lifecycle.isForeground) return;
+    unawaited(_checkAndPromptUpdate());
+  }
+
+  Future<void> _checkAndPromptUpdate() async {
+    if (_isChecking) return;
+    _isChecking = true;
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    try {
+      if (!mounted) return;
+      final info = await _updateService.checkForUpdate();
+      if (!mounted || info == null) return;
+      await _showUpdateDialog(info);
+    } finally {
+      _isChecking = false;
+    }
   }
 
   Future<void> _showUpdateDialog(AppUpdateInfo info) async {
@@ -250,20 +271,27 @@ class _AppUpdateGateState extends State<_AppUpdateGate> {
                   onPressed: () => Navigator.of(dialogContext).pop(),
                   child: const Text('Más tarde'),
                 ),
-              CupertinoDialogAction(
-                isDefaultAction: true,
-                onPressed: () async {
-                  final uri = Uri.tryParse(info.storeUrl);
-                  if (uri != null) {
-                    await launchUrl(uri, mode: LaunchMode.externalApplication);
-                  }
-                  if (!dialogContext.mounted) return;
-                  if (!info.force) {
-                    Navigator.of(dialogContext).pop();
-                  }
-                },
-                child: const Text('Actualizar'),
-              ),
+              ...info.actions.asMap().entries.map((entry) {
+                final index = entry.key;
+                final action = entry.value;
+                return CupertinoDialogAction(
+                  isDefaultAction: index == 0,
+                  onPressed: () async {
+                    final uri = Uri.tryParse(action.url);
+                    if (uri != null) {
+                      await launchUrl(
+                        uri,
+                        mode: LaunchMode.externalApplication,
+                      );
+                    }
+                    if (!dialogContext.mounted) return;
+                    if (!info.force) {
+                      Navigator.of(dialogContext).pop();
+                    }
+                  },
+                  child: Text(action.label),
+                );
+              }),
             ],
           ),
         );
@@ -274,6 +302,12 @@ class _AppUpdateGateState extends State<_AppUpdateGate> {
   @override
   Widget build(BuildContext context) {
     return const SizedBox.shrink();
+  }
+
+  @override
+  void dispose() {
+    _lifecycleService?.removeListener(_handleLifecycleChanged);
+    super.dispose();
   }
 }
 

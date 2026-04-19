@@ -6,31 +6,35 @@ import 'package:flutter/foundation.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 class AppUpdateInfo {
+  final List<AppUpdateAction> actions;
   final String currentVersion;
   final String latestVersion;
   final bool force;
   final String title;
   final String message;
-  final String storeUrl;
 
   const AppUpdateInfo({
+    required this.actions,
     required this.currentVersion,
     required this.latestVersion,
     required this.force,
     required this.title,
     required this.message,
-    required this.storeUrl,
   });
+}
+
+class AppUpdateAction {
+  final String label;
+  final String url;
+
+  const AppUpdateAction({required this.label, required this.url});
 }
 
 class AppUpdateService {
   static const String _configUrl =
       'https://raw.githubusercontent.com/AlexVM1060/VM-Music-Beta-1.0/refs/heads/master/versionupdate.json';
-  static bool _checkedThisSession = false;
 
   Future<AppUpdateInfo?> checkForUpdate() async {
-    if (_checkedThisSession) return null;
-    _checkedThisSession = true;
     if (kIsWeb) return null;
     if (!Platform.isIOS && !Platform.isAndroid) return null;
 
@@ -54,11 +58,9 @@ class AppUpdateService {
           ? (payload['message'] as String).trim()
           : 'Hay una nueva versión de la app.';
 
-      final storeUrl = Platform.isIOS
-          ? (payload['storeUrlIos'] ?? '').toString().trim()
-          : (payload['storeUrlAndroid'] ?? '').toString().trim();
-      if (storeUrl.isEmpty) return null;
       if (latestVersion.isEmpty) return null;
+      final actions = _parseActions(payload);
+      if (actions.isEmpty) return null;
 
       final hasUpdate = _compareVersions(currentVersion, latestVersion) < 0;
       final belowMinimum =
@@ -69,16 +71,49 @@ class AppUpdateService {
       if (!hasUpdate && !forceUpdate) return null;
 
       return AppUpdateInfo(
+        actions: actions,
         currentVersion: currentVersion,
         latestVersion: latestVersion,
         force: forceUpdate,
         title: title,
         message: message,
-        storeUrl: storeUrl,
       );
     } catch (_) {
       return null;
     }
+  }
+
+  List<AppUpdateAction> _parseActions(Map<String, dynamic> payload) {
+    final output = <AppUpdateAction>[];
+    final rawActions = payload['actions'];
+    if (rawActions is List) {
+      for (final item in rawActions) {
+        if (item is! Map) continue;
+        final map = Map<String, dynamic>.from(item.cast<dynamic, dynamic>());
+        final label = (map['label'] ?? '').toString().trim();
+        final url = _platformUrlFromMap(map);
+        if (label.isEmpty || url.isEmpty) continue;
+        output.add(AppUpdateAction(label: label, url: url));
+      }
+    }
+    if (output.isNotEmpty) return output;
+
+    final fallbackUrl = _platformUrlFromMap(payload);
+    if (fallbackUrl.isEmpty) return const <AppUpdateAction>[];
+    return <AppUpdateAction>[
+      AppUpdateAction(label: 'Actualizar', url: fallbackUrl),
+    ];
+  }
+
+  String _platformUrlFromMap(Map<String, dynamic> map) {
+    final generic = (map['url'] ?? '').toString().trim();
+    if (generic.isNotEmpty) return generic;
+    if (Platform.isIOS) {
+      return (map['storeUrlIos'] ?? map['urlIos'] ?? '').toString().trim();
+    }
+    return (map['storeUrlAndroid'] ?? map['urlAndroid'] ?? '')
+        .toString()
+        .trim();
   }
 
   Future<Map<String, dynamic>?> _fetchRemotePayload() async {

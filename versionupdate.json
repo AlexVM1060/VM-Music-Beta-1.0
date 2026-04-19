@@ -1,9 +1,19 @@
 {
-  "latestVersion": "0.2.7",
-  "minimumSupportedVersion": "0.2.7",
+  "latestVersion": "0.2.8",
+  "minimumSupportedVersion": "0.2.8",
   "force": false,
   "title": "Nueva versión disponible",
-  "message": "Mejoras de rendimiento, se han disminuido transparencias y actualizaciones en segundo plano para optimizar rendimiento\nVM Music by AlexVM",
-  "storeUrlIos": "https://google.com.mx",
-  "storeUrlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete"
+  "message": "Mejoras de rendimiento y correcciones",
+  "actions": [
+    {
+      "label": "Actualizar - National Oilwell",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist",
+      "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist"
+    },
+    {
+      "label": "Actualizar - XL AXIATA",
+      "urlIos": "https://google.com.mx",
+      "urlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete.2"
+    }
+  ]
 }

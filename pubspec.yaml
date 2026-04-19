@@ -45,6 +45,7 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   hive_generator: ^2.0.1
   build_runner: ^2.4.13
+  flutter_launcher_icons: ^0.14.4
 
 # Anulación correcta:
 # Forzamos a todo el proyecto (incluyendo las dependencias de youtube_player_flutter)
@@ -56,3 +57,9 @@ flutter:
   uses-material-design: true
   assets:
     - assets/iconloadscreen.png
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/logo.jpg
+  remove_alpha_ios: true
