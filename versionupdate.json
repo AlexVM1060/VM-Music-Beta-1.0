@@ -1,6 +1,6 @@
 {
   "latestVersion": "0.2.8",
-  "minimumSupportedVersion": "0.2.7",
+  "minimumSupportedVersion": "0.2.8",
   "force": false,
   "title": "Nueva versión disponible",
   "message": "Mejoras de rendimiento y correcciones",
