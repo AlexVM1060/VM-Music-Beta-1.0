@@ -143,6 +143,22 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
   }
 }
 
+class _PerformanceBackdrop extends StatelessWidget {
+  final ImageFilter filter;
+  final Widget child;
+
+  const _PerformanceBackdrop({required this.filter, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final lightweightUi = context.select<VideoPlayerManager, bool>(
+      (manager) => manager.shouldUseLightweightPlayerUi,
+    );
+    if (lightweightUi) return child;
+    return BackdropFilter(filter: filter, child: child);
+  }
+}
+
 class _MiniPlayer extends StatefulWidget {
   final VideoPlayerManager manager;
 
@@ -233,7 +249,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
               child: ClipRRect(
                 clipBehavior: Clip.antiAlias,
                 borderRadius: BorderRadius.circular(dynamicRadius),
-                child: BackdropFilter(
+                child: _PerformanceBackdrop(
                   filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                   child: CupertinoButton(
                     padding: EdgeInsets.zero,
@@ -1452,7 +1468,7 @@ class _InlineLyricsButtonState extends State<_InlineLyricsButton>
             ),
             child: ClipRRect(
               borderRadius: borderRadius,
-              child: BackdropFilter(
+              child: _PerformanceBackdrop(
                 filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
                 child: Container(
                   height: 30,
@@ -1595,7 +1611,7 @@ class _InlineAutoplayButtonState extends State<_InlineAutoplayButton>
             ),
             child: ClipRRect(
               borderRadius: borderRadius,
-              child: BackdropFilter(
+              child: _PerformanceBackdrop(
                 filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
                 child: Container(
                   height: 30,
@@ -2044,7 +2060,7 @@ class _CompactNowPlayingHeader extends StatelessWidget {
     return ClipRRect(
       key: key,
       borderRadius: BorderRadius.circular(18),
-      child: BackdropFilter(
+      child: _PerformanceBackdrop(
         filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
         child: Container(
           padding: const EdgeInsets.all(10),
@@ -2237,7 +2253,7 @@ class _IosTopToastState extends State<_IosTopToast>
         position: _slide,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(14),
-          child: BackdropFilter(
+          child: _PerformanceBackdrop(
             filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
             child: Container(
               constraints: const BoxConstraints(maxWidth: 330),
@@ -2316,7 +2332,7 @@ class _GlassControlsGroup extends StatelessWidget {
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(36),
-      child: BackdropFilter(
+      child: _PerformanceBackdrop(
         filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -2344,7 +2360,7 @@ class _IosLoadingControls extends StatelessWidget {
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
+      child: _PerformanceBackdrop(
         filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -2564,7 +2580,7 @@ class _QueueRow extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 10),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
-        child: BackdropFilter(
+        child: _PerformanceBackdrop(
           filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
           child: Material(
             color: rowColor,
@@ -2735,7 +2751,7 @@ class _QueueRow extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(26),
-              child: BackdropFilter(
+              child: _PerformanceBackdrop(
                 filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                 child: Container(
                   decoration: BoxDecoration(
@@ -2934,7 +2950,7 @@ class _QueueRow extends StatelessWidget {
         ),
         content: ClipRRect(
           borderRadius: BorderRadius.circular(14),
-          child: BackdropFilter(
+          child: _PerformanceBackdrop(
             filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -2978,7 +2994,7 @@ class _QueueShell extends StatelessWidget {
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(22),
-      child: BackdropFilter(
+      child: _PerformanceBackdrop(
         filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
         child: Container(
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
@@ -3041,7 +3057,7 @@ class _QueueGlassSheetActionRow extends StatelessWidget {
         : CupertinoColors.label.resolveFrom(context);
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
+      child: _PerformanceBackdrop(
         filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Material(
           color: Colors.white.withValues(alpha: 0.05),
@@ -3207,7 +3223,7 @@ class _ProgressSection extends StatelessWidget {
           constraints: const BoxConstraints(maxWidth: 360),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(16),
-            child: BackdropFilter(
+            child: _PerformanceBackdrop(
               filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
               child: Container(
                 padding: const EdgeInsets.symmetric(
@@ -3393,7 +3409,13 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   Duration _visualLyricsPosition = Duration.zero;
   DateTime _visualLyricsWallClock = DateTime.fromMillisecondsSinceEpoch(0);
   Duration _lastVisualClockManagerPosition = Duration.zero;
-  static const Duration _lyricsVisualTickInterval = Duration(milliseconds: 110);
+  static const Duration _lyricsVisualTickIntervalNormal = Duration(
+    milliseconds: 110,
+  );
+  static const Duration _lyricsVisualTickIntervalLowPower = Duration(
+    milliseconds: 190,
+  );
+  Duration? _activeLyricsVisualTickInterval;
 
   void _pauseAutoFollowForManualScroll() {
     _resumeAutoFollowTimer?.cancel();
@@ -3751,7 +3773,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         onTapDown: (_) => widget.onInteraction?.call(),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(panelRadius),
-          child: BackdropFilter(
+          child: _PerformanceBackdrop(
             filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
             child: Container(
               width: double.infinity,
@@ -3834,6 +3856,9 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     required VideoPlayerManager manager,
     required bool liveLyricsEnabled,
   }) {
+    final targetTickInterval = manager.isLowPowerModeEnabled
+        ? _lyricsVisualTickIntervalLowPower
+        : _lyricsVisualTickIntervalNormal;
     final shouldRun = _isVisualLyricsClockActive(
       manager: manager,
       liveLyricsEnabled: liveLyricsEnabled,
@@ -3841,10 +3866,17 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     if (!shouldRun) {
       _lyricsVisualTicker?.cancel();
       _lyricsVisualTicker = null;
+      _activeLyricsVisualTickInterval = null;
       _visualLyricsPosition = manager.position;
       _visualLyricsWallClock = DateTime.now();
       _lastVisualClockManagerPosition = manager.position;
       return;
+    }
+
+    if (_lyricsVisualTicker != null &&
+        _activeLyricsVisualTickInterval != targetTickInterval) {
+      _lyricsVisualTicker?.cancel();
+      _lyricsVisualTicker = null;
     }
 
     if (_lyricsVisualTicker == null) {
@@ -3864,12 +3896,13 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       }
     }
 
-    _lyricsVisualTicker ??= Timer.periodic(_lyricsVisualTickInterval, (_) {
+    _lyricsVisualTicker ??= Timer.periodic(targetTickInterval, (_) {
       if (!mounted) return;
       final m = widget.manager;
       if (!_isVisualLyricsClockActive(manager: m, liveLyricsEnabled: true)) {
         _lyricsVisualTicker?.cancel();
         _lyricsVisualTicker = null;
+        _activeLyricsVisualTickInterval = null;
         _visualLyricsPosition = m.position;
         _visualLyricsWallClock = DateTime.now();
         _lastVisualClockManagerPosition = m.position;
@@ -3891,6 +3924,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       _visualLyricsPosition = next;
       setState(() {});
     });
+    _activeLyricsVisualTickInterval = targetTickInterval;
   }
 
   Duration _resolveLineEnd({
@@ -4556,7 +4590,7 @@ class _LyricsKaraokeButtonState extends State<_LyricsKaraokeButton>
             ),
             child: ClipRRect(
               borderRadius: borderRadius,
-              child: BackdropFilter(
+              child: _PerformanceBackdrop(
                 filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
                 child: Container(
                   width: 36,
@@ -4996,6 +5030,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
   static const Duration _aiLoopSwapLeadTime = Duration(milliseconds: 360);
   String? _aiVideoSource;
   bool _aiVideoReady = false;
+  bool _heavyArtworkEffectsSuspended = false;
 
   @override
   void initState() {
@@ -5066,27 +5101,40 @@ class _ArtworkImageState extends State<_ArtworkImage>
   Widget build(BuildContext context) {
     final settings = context.watch<AppSettingsService?>();
     final dataSaverMode = settings?.dataSaverMode ?? false;
-    _maybeResolveAiAnimatedCover();
+    final manager = context.watch<VideoPlayerManager>();
+    final lowPowerMode = manager.isLowPowerModeEnabled;
+    final appInForeground = manager.isAppInForeground;
+    final canRunHeavyArtworkEffects =
+        widget.animated &&
+        !dataSaverMode &&
+        appInForeground &&
+        (!lowPowerMode || !widget.isPlaying);
+    _syncHeavyArtworkEffectsBudget(enabled: canRunHeavyArtworkEffects);
+    if (canRunHeavyArtworkEffects) {
+      _maybeResolveAiAnimatedCover();
+    }
     final displayImageSource = _displayArtworkSourceUrl();
     final hasImage = displayImageSource.isNotEmpty;
     final isAiVideoSource = _looksLikeVideoSource(displayImageSource);
     final fallbackStillSource = widget.url?.trim() ?? '';
-    _syncAiVideoControllerForSource(displayImageSource);
+    if (canRunHeavyArtworkEffects) {
+      _syncAiVideoControllerForSource(displayImageSource);
+    }
     final animatedCutoutEnabled = settings?.animatedCutoutCovers ?? true;
     final hasAiAnimatedCandidate =
-        widget.animated &&
+        canRunHeavyArtworkEffects &&
         (_aiAnimatedCoverUrl != null && _aiAnimatedCoverUrl!.trim().isNotEmpty);
     // Cuando ya existe resultado IA, evitamos el parallax manual para no
     // enmascarar la animación generativa de objetos/personas.
     final enableMotion =
-        widget.animated &&
+        canRunHeavyArtworkEffects &&
         hasImage &&
         animatedCutoutEnabled &&
         !hasAiAnimatedCandidate;
     final enableObjectMotion =
-        widget.animated && hasImage && animatedCutoutEnabled;
+        canRunHeavyArtworkEffects && hasImage && animatedCutoutEnabled;
 
-    if (!widget.animated) {
+    if (!canRunHeavyArtworkEffects) {
       return _buildStaticArtworkFrame(
         context,
         imageSource: displayImageSource,
@@ -5123,7 +5171,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
             color: Theme.of(context).colorScheme.primary,
           );
     if (animatedCutoutEnabled &&
-        widget.animated &&
+        canRunHeavyArtworkEffects &&
         hasImage &&
         _subjectCutoutBytes == null) {
       unawaited(_resolveSubjectCutout());
@@ -5422,7 +5470,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
                                         child: Image.memory(
                                           _subjectCutoutBytes!,
                                           fit: BoxFit.contain,
-                                          filterQuality: FilterQuality.high,
+                                          filterQuality: FilterQuality.low,
                                           gaplessPlayback: true,
                                         ),
                                       ),
@@ -5455,7 +5503,7 @@ class _ArtworkImageState extends State<_ArtworkImage>
                             child: Image.memory(
                               focusObjectLayer.bytes,
                               fit: BoxFit.contain,
-                              filterQuality: FilterQuality.high,
+                              filterQuality: FilterQuality.low,
                               gaplessPlayback: true,
                             ),
                           ),
@@ -6243,12 +6291,22 @@ class _ArtworkImageState extends State<_ArtworkImage>
     _motionController ??= AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 11500),
-    )..repeat(reverse: true);
+    );
 
     _pulseController ??= AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 2200),
     );
+
+    final motion = _motionController!;
+    if (widget.isPlaying) {
+      if (!motion.isAnimating) {
+        motion.repeat(reverse: true);
+      }
+    } else {
+      motion.stop(canceled: false);
+      motion.value = 0.5;
+    }
 
     final pulse = _pulseController!;
     if (widget.isPlaying) {
@@ -6268,6 +6326,29 @@ class _ArtworkImageState extends State<_ArtworkImage>
       duration: const Duration(milliseconds: 280),
       curve: Curves.easeOutCubic,
     );
+  }
+
+  void _syncHeavyArtworkEffectsBudget({required bool enabled}) {
+    if (enabled) {
+      if (!_heavyArtworkEffectsSuspended) return;
+      _heavyArtworkEffectsSuspended = false;
+      _syncAnimationControllers();
+      return;
+    }
+
+    if (_heavyArtworkEffectsSuspended) return;
+    _heavyArtworkEffectsSuspended = true;
+    _motionController?.stop(canceled: false);
+    _pulseController?.stop(canceled: false);
+    _aiLoopToken++;
+    _aiLoopSwapTimer?.cancel();
+    _aiLoopSwapTimer = null;
+    _aiLoopBlendController
+      ?..stop(canceled: false)
+      ..value = 0;
+    _aiVideoReady = false;
+    _aiVideoSource = null;
+    unawaited(_disposeAiVideoControllers());
   }
 
   void _rememberPaletteColor(String key, Color value) {

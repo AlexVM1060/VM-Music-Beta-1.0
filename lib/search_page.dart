@@ -1253,12 +1253,6 @@ class _SearchPageState extends State<SearchPage>
     _textController.addListener(_onSearchTextChanged);
     _ensureSearchBarGlowController();
     _searchFocusNode.addListener(() {
-      final glow = _ensureSearchBarGlowController();
-      if (_searchFocusNode.hasFocus) {
-        glow.repeat();
-      } else {
-        glow.stop();
-      }
       if (mounted) setState(() {});
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2815,118 +2809,138 @@ class _SearchPageState extends State<SearchPage>
   Widget _buildSearchBar() {
     final borderRadius = BorderRadius.circular(18);
     final focused = _searchFocusNode.hasFocus;
+    final dataSaverMode =
+        context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
     final glow = _ensureSearchBarGlowController();
+    final shouldAnimateGlow = !dataSaverMode && focused;
+    if (shouldAnimateGlow) {
+      if (!glow.isAnimating) glow.repeat();
+    } else if (glow.isAnimating) {
+      glow.stop(canceled: false);
+    }
+
+    Widget buildSearchFieldShell(double rotation) {
+      return Container(
+        height: 42,
+        padding: const EdgeInsets.all(1.25),
+        decoration: BoxDecoration(
+          borderRadius: borderRadius,
+          gradient: dataSaverMode
+              ? const LinearGradient(
+                  colors: [Color(0xFFFF4F7A), Color(0xFFFF8A00)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : SweepGradient(
+                  transform: GradientRotation(rotation),
+                  colors: const [
+                    Color(0xFFFF004D),
+                    Color(0xFFFF7A00),
+                    Color(0xFF7A5CFF),
+                    Color(0xFFFF004D),
+                  ],
+                ),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(
+                0xFF581A95,
+              ).withValues(alpha: focused ? 0.34 : 0.14),
+              blurRadius: focused ? (dataSaverMode ? 14 : 20) : 10,
+              spreadRadius: focused ? 0.9 : 0,
+              offset: const Offset(0, 2),
+            ),
+            BoxShadow(
+              color: const Color(
+                0xFFFF2A6D,
+              ).withValues(alpha: focused ? 0.24 : 0.08),
+              blurRadius: focused ? (dataSaverMode ? 16 : 26) : 12,
+              spreadRadius: focused ? 1.2 : 0,
+              offset: const Offset(0, 5),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: borderRadius,
+          child: dataSaverMode
+              ? _buildSearchFieldContent(borderRadius, focused)
+              : BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                  child: _buildSearchFieldContent(borderRadius, focused),
+                ),
+        ),
+      );
+    }
+
+    if (dataSaverMode) {
+      return buildSearchFieldShell(0);
+    }
 
     return AnimatedBuilder(
       animation: glow,
-      builder: (context, _) {
-        final rotation = glow.value * math.pi * 2;
-        return Container(
-          height: 42,
-          padding: const EdgeInsets.all(1.25),
-          decoration: BoxDecoration(
-            borderRadius: borderRadius,
-            gradient: SweepGradient(
-              transform: GradientRotation(rotation),
-              colors: [
-                const Color(0xFFFF004D),
-                const Color(0xFFFF7A00),
-                const Color(0xFF7A5CFF),
-                const Color(0xFFFF004D),
-              ],
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(
-                  0xFF581A95,
-                ).withValues(alpha: focused ? 0.34 : 0.14),
-                blurRadius: focused ? 20 : 10,
-                spreadRadius: focused ? 0.9 : 0,
-                offset: const Offset(0, 2),
-              ),
-              BoxShadow(
-                color: const Color(
-                  0xFFFF2A6D,
-                ).withValues(alpha: focused ? 0.24 : 0.08),
-                blurRadius: focused ? 26 : 12,
-                spreadRadius: focused ? 1.2 : 0,
-                offset: const Offset(0, 5),
-              ),
-            ],
+      builder: (context, _) => buildSearchFieldShell(glow.value * math.pi * 2),
+    );
+  }
+
+  Widget _buildSearchFieldContent(BorderRadius borderRadius, bool focused) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A0D14).withValues(alpha: 0.83),
+        borderRadius: borderRadius,
+      ),
+      child: TextField(
+        focusNode: _searchFocusNode,
+        controller: _textController,
+        textInputAction: TextInputAction.search,
+        onSubmitted: (_) => _searchVideos(),
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+        decoration: InputDecoration(
+          hintText: 'Buscar en VM Music...',
+          hintStyle: TextStyle(
+            color: Colors.white.withValues(alpha: 0.58),
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
           ),
-          child: ClipRRect(
-            borderRadius: borderRadius,
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-              child: Container(
-                decoration: BoxDecoration(
-                  color: const Color(0xFF0A0D14).withValues(alpha: 0.83),
-                  borderRadius: borderRadius,
-                ),
-                child: TextField(
-                  focusNode: _searchFocusNode,
-                  controller: _textController,
-                  textInputAction: TextInputAction.search,
-                  onSubmitted: (_) => _searchVideos(),
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w500,
-                  ),
-                  decoration: InputDecoration(
-                    hintText: 'Buscar en VM Music...',
-                    hintStyle: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.58),
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
-                    prefixIcon: Align(
-                      widthFactor: 1,
-                      heightFactor: 1,
-                      child: Icon(
-                        CupertinoIcons.search,
-                        size: 17,
-                        color: focused
-                            ? const Color(0xFFFF7A9C)
-                            : Colors.white.withValues(alpha: 0.75),
-                      ),
-                    ),
-                    prefixIconConstraints: const BoxConstraints(
-                      minWidth: 36,
-                      minHeight: 42,
-                    ),
-                    suffixIcon: _textController.text.trim().isEmpty
-                        ? null
-                        : CupertinoButton(
-                            padding: EdgeInsets.zero,
-                            minimumSize: Size.zero,
-                            onPressed: () {
-                              unawaited(
-                                _clearSearchAndShowInitialRecommendations(),
-                              );
-                            },
-                            child: Icon(
-                              CupertinoIcons.xmark_circle_fill,
-                              size: 17,
-                              color: Colors.white.withValues(alpha: 0.72),
-                            ),
-                          ),
-                    suffixIconConstraints: const BoxConstraints(
-                      minWidth: 36,
-                      minHeight: 42,
-                    ),
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(
-                      vertical: 12,
-                      horizontal: 4,
-                    ),
-                    border: InputBorder.none,
-                  ),
-                ),
-              ),
+          prefixIcon: Align(
+            widthFactor: 1,
+            heightFactor: 1,
+            child: Icon(
+              CupertinoIcons.search,
+              size: 17,
+              color: focused
+                  ? const Color(0xFFFF7A9C)
+                  : Colors.white.withValues(alpha: 0.75),
             ),
           ),
-        );
-      },
+          prefixIconConstraints: const BoxConstraints(
+            minWidth: 36,
+            minHeight: 42,
+          ),
+          suffixIcon: _textController.text.trim().isEmpty
+              ? null
+              : CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  onPressed: () {
+                    unawaited(_clearSearchAndShowInitialRecommendations());
+                  },
+                  child: Icon(
+                    CupertinoIcons.xmark_circle_fill,
+                    size: 17,
+                    color: Colors.white.withValues(alpha: 0.72),
+                  ),
+                ),
+          suffixIconConstraints: const BoxConstraints(
+            minWidth: 36,
+            minHeight: 42,
+          ),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(
+            vertical: 12,
+            horizontal: 4,
+          ),
+          border: InputBorder.none,
+        ),
+      ),
     );
   }
 
@@ -4585,6 +4599,12 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
   bool _error = false;
 
   @override
+  void setState(VoidCallback fn) {
+    if (!mounted) return;
+    super.setState(fn);
+  }
+
+  @override
   void initState() {
     super.initState();
     final cached = _artistSessionCache[_artistCacheKey];
@@ -5000,10 +5020,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
           maxAttempts: 1,
         );
 
-        final pair = await Future.wait([
-          initialFuture,
-          defaultFuture,
-        ]);
+        final pair = await Future.wait([initialFuture, defaultFuture]);
         collectFromPayload(pair[0]);
         collectFromPayload(pair[1]);
 
@@ -5023,9 +5040,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       for (var i = 0; i < queries.length; i += 3) {
         final batch = queries.skip(i).take(3).toList(growable: false);
         if (batch.isEmpty) break;
-        final batchResults = await Future.wait(
-          batch.map(loadAlbumsForQuery),
-        );
+        final batchResults = await Future.wait(batch.map(loadAlbumsForQuery));
         for (final local in batchResults) {
           for (final album in local) {
             final id = album.playlistId.trim();
@@ -5058,7 +5073,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       final byId = <String, _SearchAlbumResult>{};
       final appQueries = <String>[
         if (display.isNotEmpty) display,
-        if (noAccents.isNotEmpty && noAccents.toLowerCase() != display.toLowerCase())
+        if (noAccents.isNotEmpty &&
+            noAccents.toLowerCase() != display.toLowerCase())
           noAccents,
       ];
       if (appQueries.isNotEmpty) {

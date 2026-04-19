@@ -3,6 +3,7 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -29,6 +30,7 @@ import 'package:path_provider/path_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _configureImageCacheForMobile();
 
   // Inicialización de Hive
   final appDocumentDir = await getApplicationDocumentsDirectory();
@@ -69,6 +71,18 @@ void main() async {
   );
 
   unawaited(_configureAudioSessionSafe());
+}
+
+void _configureImageCacheForMobile() {
+  if (kIsWeb) return;
+  if (defaultTargetPlatform != TargetPlatform.iOS &&
+      defaultTargetPlatform != TargetPlatform.android) {
+    return;
+  }
+  final imageCache = PaintingBinding.instance.imageCache;
+  // Reduce picos de memoria/decodificación para bajar presión térmica.
+  imageCache.maximumSize = 180;
+  imageCache.maximumSizeBytes = 70 << 20; // 70 MiB
 }
 
 Future<void> _configureAudioSessionSafe() async {

@@ -9,12 +9,14 @@ import MediaPlayer
   private let artworkCutoutChannelName = "com.vm.music.beta/artwork_cutout"
   private let lockScreenFavoriteChannelName = "com.vm.music.beta/ios_lock_screen_favorite"
   private let songShareChannelName = "com.vm.music.beta/song_share"
+  private let powerModeChannelName = "com.vm.music.beta/power_mode"
   private let appleMusicMigrationChannelName = "com.vm.music.beta/apple_music_migration"
   private let backgroundTaskChannelName = "com.vm.music.beta/background_task"
   private let sharedSongPendingKey = "com.vm.music.beta.pending_shared_song"
   private let ciContext = CIContext(options: nil)
   private var lockScreenFavoriteChannel: FlutterMethodChannel?
   private var songShareChannel: FlutterMethodChannel?
+  private var powerModeChannel: FlutterMethodChannel?
   private var activeBackgroundTasks: [String: UIBackgroundTaskIdentifier] = [:]
 
   override func application(
@@ -54,6 +56,23 @@ import MediaPlayer
       }
     }
 
+    if let registrar = self.registrar(forPlugin: "PowerModeChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: powerModeChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      powerModeChannel = channel
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handlePowerMode(call: call, result: result)
+      }
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(handlePowerModeChangedNotification),
+        name: Notification.Name.NSProcessInfoPowerStateDidChange,
+        object: nil
+      )
+    }
+
     if let registrar = self.registrar(forPlugin: "AppleMusicMigrationChannelPlugin") {
       let channel = FlutterMethodChannel(
         name: appleMusicMigrationChannelName,
@@ -80,6 +99,14 @@ import MediaPlayer
 
     GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  deinit {
+    NotificationCenter.default.removeObserver(
+      self,
+      name: Notification.Name.NSProcessInfoPowerStateDidChange,
+      object: nil
+    )
   }
 
   override func application(
@@ -156,6 +183,21 @@ import MediaPlayer
       return
     }
     result(FlutterMethodNotImplemented)
+  }
+
+  private func handlePowerMode(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    if call.method == "getLowPowerModeEnabled" {
+      result(ProcessInfo.processInfo.isLowPowerModeEnabled)
+      return
+    }
+    result(FlutterMethodNotImplemented)
+  }
+
+  @objc private func handlePowerModeChangedNotification() {
+    let enabled = ProcessInfo.processInfo.isLowPowerModeEnabled
+    DispatchQueue.main.async { [weak self] in
+      self?.powerModeChannel?.invokeMethod("onPowerModeChanged", arguments: enabled)
+    }
   }
 
   private func captureSharedSong(from url: URL) -> Bool {

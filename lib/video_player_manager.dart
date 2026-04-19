@@ -138,6 +138,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const MethodChannel _songShareChannel = MethodChannel(
     'com.vm.music.beta/song_share',
   );
+  static const MethodChannel _iosPowerModeChannel = MethodChannel(
+    'com.vm.music.beta/power_mode',
+  );
   final HistoryService _historyService = HistoryService();
   final PlaylistService _playlistService = PlaylistService();
   final AudioHandler _audioHandler;
@@ -159,6 +162,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String? _currentVideoId;
   bool _isMinimized = false;
   bool _isFullScreen = false;
+  bool _appInForeground = true;
+  bool _isLowPowerModeEnabled = false;
 
   String? _trackTitle;
   String? _trackThumbnailUrl;
@@ -251,9 +256,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _backgroundEngineSwitchTimer;
   Timer? _resumeSharedSongTimer;
   bool _isConsumingPendingSharedSong = false;
-  DateTime _lastPendingSharedSongConsumeAt = DateTime.fromMillisecondsSinceEpoch(
-    0,
-  );
+  DateTime _lastPendingSharedSongConsumeAt =
+      DateTime.fromMillisecondsSinceEpoch(0);
   Box? _playerSessionBox;
   bool _didAttemptSessionRestore = false;
   int _sessionRestoreEpoch = 0;
@@ -262,16 +266,27 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
   static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
-  static const Duration _playbackUiNotifyMinInterval = Duration(
-    milliseconds: 420,
+  static const Duration _playbackUiNotifyMinIntervalNormal = Duration(
+    milliseconds: 620,
   );
-  static const Duration _playbackUiNotifyMinPositionDelta = Duration(
-    milliseconds: 360,
+  static const Duration _playbackUiNotifyMinIntervalLowPower = Duration(
+    milliseconds: 750,
+  );
+  static const Duration _playbackUiNotifyMinPositionDeltaNormal = Duration(
+    milliseconds: 520,
+  );
+  static const Duration _playbackUiNotifyMinPositionDeltaLowPower = Duration(
+    milliseconds: 650,
   );
   static const Duration _playbackUiNotifyMinBufferedDelta = Duration(
     milliseconds: 950,
   );
-  static const Duration _playbackOpsTickInterval = Duration(milliseconds: 620);
+  static const Duration _playbackOpsTickIntervalNormal = Duration(
+    milliseconds: 820,
+  );
+  static const Duration _playbackOpsTickIntervalLowPower = Duration(
+    milliseconds: 1000,
+  );
   static const Duration _searchVideosCacheTtl = Duration(minutes: 12);
   static const int _searchVideosCacheMaxEntries = 220;
   static const double _defaultPlaybackVolume = 3;
@@ -318,10 +333,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _bindSystemMediaControls();
     _bindIosLockScreenFavoriteCommand();
     _bindSharedSongChannel();
+    _bindIosPowerModeChannel();
     WidgetsBinding.instance.addObserver(this);
     _attachActivePlayerSubscriptions();
+    unawaited(_refreshLowPowerModeStatus());
     unawaited(_initPlayerSessionPersistence());
   }
+
+  Duration get _playbackUiNotifyMinInterval => _isLowPowerModeEnabled
+      ? _playbackUiNotifyMinIntervalLowPower
+      : _playbackUiNotifyMinIntervalNormal;
+
+  Duration get _playbackUiNotifyMinPositionDelta => _isLowPowerModeEnabled
+      ? _playbackUiNotifyMinPositionDeltaLowPower
+      : _playbackUiNotifyMinPositionDeltaNormal;
+
+  Duration get _playbackOpsTickInterval => _isLowPowerModeEnabled
+      ? _playbackOpsTickIntervalLowPower
+      : _playbackOpsTickIntervalNormal;
 
   void _attachActivePlayerSubscriptions() {
     _detachActivePlayerSubscriptions();
@@ -334,8 +363,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     _positionSub = _player
         .createPositionStream(
-          steps: 320,
-          minPeriod: const Duration(milliseconds: 340),
+          steps: _isLowPowerModeEnabled ? 170 : 220,
+          minPeriod: Duration(milliseconds: _isLowPowerModeEnabled ? 620 : 520),
           maxPeriod: const Duration(milliseconds: 1400),
         )
         .listen((position) {
@@ -425,6 +454,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String? get currentVideoId => _currentVideoId;
   bool get isMinimized => _isMinimized;
   bool get isFullScreen => _isFullScreen;
+  bool get isAppInForeground => _appInForeground;
+  bool get isLowPowerModeEnabled => _isLowPowerModeEnabled;
+  bool get shouldUseLightweightPlayerUi =>
+      _settingsService.dataSaverMode ||
+      _isMinimized ||
+      !_appInForeground ||
+      _isLowPowerModeEnabled;
   String? get trackTitle => _trackTitle;
   String? get trackThumbnailUrl => _trackThumbnailUrl;
   String? get trackArtist {
@@ -990,6 +1026,39 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_consumePendingSharedSongRequest());
   }
 
+  void _bindIosPowerModeChannel() {
+    if (kIsWeb || !Platform.isIOS) return;
+    _iosPowerModeChannel.setMethodCallHandler((call) async {
+      if (call.method != 'onPowerModeChanged') {
+        throw MissingPluginException('Método no implementado: ${call.method}');
+      }
+      final enabled = call.arguments == true;
+      _handleLowPowerModeChanged(enabled);
+    });
+  }
+
+  Future<void> _refreshLowPowerModeStatus() async {
+    if (kIsWeb || !Platform.isIOS) {
+      _handleLowPowerModeChanged(false);
+      return;
+    }
+    try {
+      final enabled = await _iosPowerModeChannel
+          .invokeMethod<bool>('getLowPowerModeEnabled')
+          .timeout(const Duration(milliseconds: 1200));
+      _handleLowPowerModeChanged(enabled == true);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  void _handleLowPowerModeChanged(bool enabled) {
+    if (_isLowPowerModeEnabled == enabled) return;
+    _isLowPowerModeEnabled = enabled;
+    _attachActivePlayerSubscriptions();
+    notifyListeners();
+  }
+
   Future<void> _consumePendingSharedSongRequest() async {
     if (_isConsumingPendingSharedSong) return;
     final now = DateTime.now();
@@ -1125,7 +1194,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    final nextForeground = state == AppLifecycleState.resumed;
+    if (_appInForeground != nextForeground) {
+      _appInForeground = nextForeground;
+      notifyListeners();
+    }
     if (state == AppLifecycleState.resumed) {
+      unawaited(_refreshLowPowerModeStatus());
       _backgroundEngineSwitchTimer?.cancel();
       _resumeSharedSongTimer?.cancel();
       _resumeSharedSongTimer = Timer(const Duration(milliseconds: 380), () {
@@ -2777,9 +2852,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (!isMusicLikeHost) return false;
 
       final full = '$value ${uri.path}';
-      final match = RegExp(r'w(\d+)-h(\d+)', caseSensitive: false).firstMatch(
-        full,
-      );
+      final match = RegExp(
+        r'w(\d+)-h(\d+)',
+        caseSensitive: false,
+      ).firstMatch(full);
       if (match != null) {
         final w = int.tryParse(match.group(1) ?? '');
         final h = int.tryParse(match.group(2) ?? '');
@@ -6481,7 +6557,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _isCrossfadeTransitioning = true;
       final incomingDuration = nextPlayer.duration ?? Duration.zero;
       final incomingFirstLyricOffset = _settingsService.djMode
-          ? await _resolveFirstLyricOffsetForQueueItem(next, allowNetwork: false)
+          ? await _resolveFirstLyricOffsetForQueueItem(
+              next,
+              allowNetwork: false,
+            )
           : null;
       final djPlan = _settingsService.djMode
           ? await _resolveDjTransitionPlanForQueueItem(
@@ -6542,7 +6621,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           }
         }
         if (incomingDuration > Duration.zero) {
-          final maxOffset = incomingDuration - const Duration(milliseconds: 900);
+          final maxOffset =
+              incomingDuration - const Duration(milliseconds: 900);
           if (maxOffset > Duration.zero && incomingStartOffset > maxOffset) {
             incomingStartOffset = maxOffset;
           }
@@ -6607,8 +6687,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         );
         final preferredOutgoingSpeed = djPlan?.preferredOutgoingSpeed;
         if (preferredOutgoingSpeed != null && preferredOutgoingSpeed > 0) {
-          outgoingSpeed = ((outgoingSpeed * 0.62) + (preferredOutgoingSpeed * 0.38))
-              .clamp(1.0, 1.06);
+          outgoingSpeed =
+              ((outgoingSpeed * 0.62) + (preferredOutgoingSpeed * 0.38)).clamp(
+                1.0,
+                1.06,
+              );
           if (outgoingSpeed > 1.005) {
             outgoingSpeed = await _setPlayerSpeedSmooth(
               currentPlayer,
@@ -6620,8 +6703,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
         final preferredIncomingSpeed = djPlan?.preferredIncomingSpeed;
         if (preferredIncomingSpeed != null && preferredIncomingSpeed > 0) {
-          incomingSpeed = ((incomingSpeed * 0.6) + (preferredIncomingSpeed * 0.4))
-              .clamp(0.97, 1.05);
+          incomingSpeed =
+              ((incomingSpeed * 0.6) + (preferredIncomingSpeed * 0.4)).clamp(
+                0.97,
+                1.05,
+              );
         }
         if ((incomingSpeed - 1.0).abs() > 0.005) {
           incomingSpeed = await _setPlayerSpeedSmooth(
@@ -6633,7 +6719,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         final lyricDistanceMs =
-            incomingFirstLyricOffset == null || incomingFirstLyricOffset <= Duration.zero
+            incomingFirstLyricOffset == null ||
+                incomingFirstLyricOffset <= Duration.zero
             ? null
             : (incomingFirstLyricOffset - incomingStartOffset).inMilliseconds;
         if (lyricDistanceMs != null && lyricDistanceMs > 0) {
@@ -6673,9 +6760,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           outVol = targetVolume;
           final elapsedMs = (ratio * totalMs).round();
           if (elapsedMs >= outgoingCutStartMs) {
-            final fadeWindowMs = math.max(1, outgoingCutEndMs - outgoingCutStartMs);
+            final fadeWindowMs = math.max(
+              1,
+              outgoingCutEndMs - outgoingCutStartMs,
+            );
             final fadeProgress =
-                ((elapsedMs - outgoingCutStartMs) / fadeWindowMs).clamp(0.0, 1.0);
+                ((elapsedMs - outgoingCutStartMs) / fadeWindowMs).clamp(
+                  0.0,
+                  1.0,
+                );
             final fadeGain = math.cos(fadeProgress * math.pi / 2);
             outVol *= fadeGain;
           }
@@ -7212,7 +7305,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       artist: next.artist,
     );
     final energyDelta = incomingEnergy - outgoingEnergy;
-    final hasLyricAnchor = incomingFirstLyricOffset != null &&
+    final hasLyricAnchor =
+        incomingFirstLyricOffset != null &&
         incomingFirstLyricOffset > Duration.zero;
 
     final baseMix = _resolveMixDuration(
@@ -7230,7 +7324,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     var triggerMs = mixDuration.inMilliseconds + (hasLyricAnchor ? 1900 : 2400);
     if (energyDelta > 0.22) triggerMs += 450;
     if (energyDelta < -0.2) triggerMs -= 450;
-    final triggerLeadTime = Duration(milliseconds: triggerMs.clamp(7000, 14000));
+    final triggerLeadTime = Duration(
+      milliseconds: triggerMs.clamp(7000, 14000),
+    );
 
     final incomingOffset = _resolveDjIncomingStartOffset(
       firstLyricOffset: incomingFirstLyricOffset,
@@ -7244,8 +7340,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return _DjTransitionPlan(
       preferredMixDuration: mixDuration,
       preferredTriggerLeadTime: triggerLeadTime,
-      preferredIncomingStartOffset:
-          incomingOffset > Duration.zero ? incomingOffset : null,
+      preferredIncomingStartOffset: incomingOffset > Duration.zero
+          ? incomingOffset
+          : null,
       preferredOutgoingSpeed: null,
       preferredIncomingSpeed: null,
       incomingCurvePower: incomingCurvePower,
@@ -7266,7 +7363,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final cached = _djTransitionPlanCache[pairKey];
     if (cached != null) return cached;
 
-    final resolvedIncomingFirstLyric = incomingFirstLyricOffset ??
+    final resolvedIncomingFirstLyric =
+        incomingFirstLyricOffset ??
         await _resolveFirstLyricOffsetForQueueItem(
           next,
           allowNetwork: allowNetwork,
