@@ -1,0 +1,9 @@
+{
+  "latestVersion": "0.2.7",
+  "minimumSupportedVersion": "0.2.7",
+  "force": false,
+  "title": "Nueva versión disponible",
+  "message": "Mejoras de rendimiento y correcciones",
+  "storeUrlIos": "https://apps.apple.com/app/idTU_APP_ID",
+  "storeUrlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete"
+}
