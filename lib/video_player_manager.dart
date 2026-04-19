@@ -4746,7 +4746,32 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> playNextInQueue() async {
+    if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) {
+      await _hydrateQueueForManualNext();
+    }
     await _playNextFromQueue();
+  }
+
+  Future<void> _hydrateQueueForManualNext() async {
+    final currentVideoId = _currentVideoId;
+    if (currentVideoId == null) return;
+
+    if (_isQueueLoading) {
+      var attempts = 0;
+      while (_isQueueLoading && attempts < 20) {
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        attempts++;
+      }
+    }
+    if (_manualPlaybackQueue.isNotEmpty || _playbackQueue.isNotEmpty) return;
+
+    if (_isLocal) {
+      await _loadLocalQueue(currentVideoId: currentVideoId);
+    } else {
+      await _loadOnlineQueueFallbackFromCurrentContext(
+        currentVideoId: currentVideoId,
+      );
+    }
   }
 
   Future<void> playPreviousInQueue() async {
