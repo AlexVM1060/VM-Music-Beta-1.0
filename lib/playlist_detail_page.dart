@@ -84,146 +84,132 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       _currentPlaylist.name,
     );
 
-    return Scaffold(
-      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
-        context,
-      ),
-      appBar: CupertinoNavigationBar(
-        transitionBetweenRoutes: false,
-        backgroundColor: CupertinoColors.systemGroupedBackground
-            .resolveFrom(context)
-            .withValues(alpha: 0.92),
-        border: Border(
-          bottom: BorderSide(
-            color: CupertinoColors.separator
-                .resolveFrom(context)
-                .withValues(alpha: 0.18),
-            width: 0.0,
-          ),
+    return _IosEdgeSwipeBack(
+      onBack: _handleBackFromEdgeSwipe,
+      child: Scaffold(
+        backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
+          context,
         ),
-        leading: widget.onBack != null
-            ? CupertinoButton(
-                padding: EdgeInsets.zero,
-                minimumSize: const Size(28, 28),
-                onPressed: widget.onBack,
-                child: const Icon(CupertinoIcons.back, size: 22),
-              )
-            : null,
-        middle: Text(
-          _currentPlaylist.name,
-          style: const TextStyle(
-            fontFamily: '.SF Pro Text',
-            fontWeight: FontWeight.w700,
-            fontSize: 17,
+        appBar: CupertinoNavigationBar(
+          transitionBetweenRoutes: false,
+          backgroundColor: CupertinoColors.systemGroupedBackground
+              .resolveFrom(context)
+              .withValues(alpha: 0.92),
+          border: Border(
+            bottom: BorderSide(
+              color: CupertinoColors.separator
+                  .resolveFrom(context)
+                  .withValues(alpha: 0.18),
+              width: 0.0,
+            ),
           ),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: _isFavoritesPlaylist
-            ? null
-            : CupertinoButton(
-                padding: EdgeInsets.zero,
-                minimumSize: const Size(28, 28),
-                onPressed: () => _showEditPlaylistDialog(
-                  playlistService: playlistService,
-                  downloadService: downloadService,
-                ),
-                child: const Icon(CupertinoIcons.pencil, size: 20),
-              ),
-      ),
-      body: FutureBuilder<List<DownloadedVideo>>(
-        future: downloadService.getDownloadedVideos(),
-        builder: (context, snapshot) {
-          if (!snapshot.hasData) {
-            return const Center(child: CupertinoActivityIndicator(radius: 14));
-          }
-          final downloadedVideos = snapshot.data!;
-          final downloadedById = <String, DownloadedVideo>{
-            for (final item in downloadedVideos) item.videoId: item,
-          };
-          final videos = _currentPlaylist.videos;
-          final displayVideos = _isFavoritesPlaylist
-              ? videos.reversed.toList(growable: false)
-              : videos;
-          final isEmpty = displayVideos.isEmpty;
-
-          return ListView.builder(
-            padding: EdgeInsets.only(bottom: _bottomOverlayReserve(context)),
-            itemCount: isEmpty ? 3 : displayVideos.length + 2,
-            itemBuilder: (context, index) {
-              if (index == 0) {
-                return _buildPlaylistCoverHeader(
-                  context,
-                  displayVideos: displayVideos,
-                  downloadedById: downloadedById,
-                  downloadService: downloadService,
-                  videoManager: videoManager,
-                );
-              }
-
-              if (index == 1) {
-                return _buildAutoDownloadCard(
-                  context: context,
-                  downloadService: downloadService,
-                  videoManager: videoManager,
-                  isAutoDownload: isAutoDownload,
-                );
-              }
-
-              if (isEmpty) {
-                return const Padding(
-                  padding: EdgeInsets.fromLTRB(12, 36, 12, 12),
-                  child: Center(
-                    child: Text('Esta playlist no contiene canciones.'),
+          leading: widget.onBack != null
+              ? CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(28, 28),
+                  onPressed: widget.onBack,
+                  child: const Icon(CupertinoIcons.back, size: 22),
+                )
+              : null,
+          middle: Text(
+            _currentPlaylist.name,
+            style: const TextStyle(
+              fontFamily: '.SF Pro Text',
+              fontWeight: FontWeight.w700,
+              fontSize: 17,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          trailing: _isFavoritesPlaylist
+              ? null
+              : CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(28, 28),
+                  onPressed: () => _showEditPlaylistDialog(
+                    playlistService: playlistService,
+                    downloadService: downloadService,
                   ),
-                );
-              }
-
-              final videoIndex = index - 2;
-              final video = displayVideos[videoIndex];
-              final downloadedVideo = downloadedVideos.firstWhereOrNull(
-                (v) => v.videoId == video.videoId,
-              );
-              final localThumbPath = downloadedVideo?.localThumbnailPath;
-              final hasLocalThumb =
-                  localThumbPath != null &&
-                  localThumbPath.isNotEmpty &&
-                  File(localThumbPath).existsSync();
-
-              return Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 2,
+                  child: const Icon(CupertinoIcons.pencil, size: 20),
                 ),
-                child: Slidable(
-                  key: ValueKey('playlist_track_${video.videoId}_$videoIndex'),
-                  startActionPane: ActionPane(
-                    motion: const StretchMotion(),
-                    extentRatio: 0.46,
-                    dismissible: DismissiblePane(
-                      onDismissed: () {},
-                      closeOnCancel: true,
-                      confirmDismiss: () async {
-                        final added = _queuePlaylistVideo(
-                          video,
-                          downloadedVideo: downloadedVideo,
-                          insertMode: ManualQueueInsertMode.next,
-                        );
-                        _showQueueIosToast(
-                          context,
-                          message: added
-                              ? 'Se añadió como siguiente'
-                              : 'Esta canción ya está en cola',
-                          icon: added
-                              ? CupertinoIcons.check_mark_circled_solid
-                              : CupertinoIcons.info_circle_fill,
-                        );
-                        return false;
-                      },
+        ),
+        body: FutureBuilder<List<DownloadedVideo>>(
+          future: downloadService.getDownloadedVideos(),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) {
+              return const Center(
+                child: CupertinoActivityIndicator(radius: 14),
+              );
+            }
+            final downloadedVideos = snapshot.data!;
+            final downloadedById = <String, DownloadedVideo>{
+              for (final item in downloadedVideos) item.videoId: item,
+            };
+            final videos = _currentPlaylist.videos;
+            final displayVideos = _isFavoritesPlaylist
+                ? videos.reversed.toList(growable: false)
+                : videos;
+            final isEmpty = displayVideos.isEmpty;
+
+            return ListView.builder(
+              padding: EdgeInsets.only(bottom: _bottomOverlayReserve(context)),
+              itemCount: isEmpty ? 3 : displayVideos.length + 2,
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return _buildPlaylistCoverHeader(
+                    context,
+                    displayVideos: displayVideos,
+                    downloadedById: downloadedById,
+                    downloadService: downloadService,
+                    videoManager: videoManager,
+                  );
+                }
+
+                if (index == 1) {
+                  return _buildAutoDownloadCard(
+                    context: context,
+                    downloadService: downloadService,
+                    videoManager: videoManager,
+                    isAutoDownload: isAutoDownload,
+                  );
+                }
+
+                if (isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.fromLTRB(12, 36, 12, 12),
+                    child: Center(
+                      child: Text('Esta playlist no contiene canciones.'),
                     ),
-                    children: [
-                      QueueSwipeActionButton(
-                        onTap: () {
+                  );
+                }
+
+                final videoIndex = index - 2;
+                final video = displayVideos[videoIndex];
+                final downloadedVideo = downloadedVideos.firstWhereOrNull(
+                  (v) => v.videoId == video.videoId,
+                );
+                final localThumbPath = downloadedVideo?.localThumbnailPath;
+                final hasLocalThumb =
+                    localThumbPath != null &&
+                    localThumbPath.isNotEmpty &&
+                    File(localThumbPath).existsSync();
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 2,
+                  ),
+                  child: Slidable(
+                    key: ValueKey(
+                      'playlist_track_${video.videoId}_$videoIndex',
+                    ),
+                    startActionPane: ActionPane(
+                      motion: const StretchMotion(),
+                      extentRatio: 0.46,
+                      dismissible: DismissiblePane(
+                        onDismissed: () {},
+                        closeOnCancel: true,
+                        confirmDismiss: () async {
                           final added = _queuePlaylistVideo(
                             video,
                             downloadedVideo: downloadedVideo,
@@ -238,229 +224,262 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                 ? CupertinoIcons.check_mark_circled_solid
                                 : CupertinoIcons.info_circle_fill,
                           );
+                          return false;
                         },
-                        baseColor: CupertinoColors.systemPink.resolveFrom(
-                          context,
-                        ),
-                        icon: CupertinoIcons.text_insert,
-                        label: 'Siguiente',
                       ),
-                      QueueSwipeActionButton(
-                        onTap: () {
-                          final added = _queuePlaylistVideo(
-                            video,
-                            downloadedVideo: downloadedVideo,
-                            insertMode: ManualQueueInsertMode.end,
-                          );
-                          _showQueueIosToast(
+                      children: [
+                        QueueSwipeActionButton(
+                          onTap: () {
+                            final added = _queuePlaylistVideo(
+                              video,
+                              downloadedVideo: downloadedVideo,
+                              insertMode: ManualQueueInsertMode.next,
+                            );
+                            _showQueueIosToast(
+                              context,
+                              message: added
+                                  ? 'Se añadió como siguiente'
+                                  : 'Esta canción ya está en cola',
+                              icon: added
+                                  ? CupertinoIcons.check_mark_circled_solid
+                                  : CupertinoIcons.info_circle_fill,
+                            );
+                          },
+                          baseColor: CupertinoColors.systemPink.resolveFrom(
                             context,
-                            message: added
-                                ? 'Se ha añadido a la cola'
-                                : 'Esta canción ya está en cola',
-                            icon: added
-                                ? CupertinoIcons.check_mark_circled_solid
-                                : CupertinoIcons.info_circle_fill,
-                          );
-                        },
-                        baseColor: CupertinoColors.systemBlue.resolveFrom(
-                          context,
+                          ),
+                          icon: CupertinoIcons.text_insert,
+                          label: 'Siguiente',
                         ),
-                        icon: CupertinoIcons.text_append,
-                        label: 'Al final',
-                      ),
-                    ],
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(14),
-                    child: Material(
-                      color: trackCardColor,
-                      surfaceTintColor: Colors.transparent,
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(14),
-                        onTap: () async {
-                          await _playPlaylistTrackAtIndex(
-                            downloadService: downloadService,
-                            videoManager: videoManager,
-                            displayVideos: displayVideos,
-                            downloadedById: downloadedById,
-                            startIndex: videoIndex,
-                          );
-                        },
-                        child: Container(
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: trackCardBorder,
-                              width: 0.5,
-                            ),
+                        QueueSwipeActionButton(
+                          onTap: () {
+                            final added = _queuePlaylistVideo(
+                              video,
+                              downloadedVideo: downloadedVideo,
+                              insertMode: ManualQueueInsertMode.end,
+                            );
+                            _showQueueIosToast(
+                              context,
+                              message: added
+                                  ? 'Se ha añadido a la cola'
+                                  : 'Esta canción ya está en cola',
+                              icon: added
+                                  ? CupertinoIcons.check_mark_circled_solid
+                                  : CupertinoIcons.info_circle_fill,
+                            );
+                          },
+                          baseColor: CupertinoColors.systemBlue.resolveFrom(
+                            context,
                           ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12.0,
-                            vertical: 5.0,
-                          ),
-                          child: Row(
-                            children: [
-                              hasLocalThumb
-                                  ? SquareThumbnail.file(
-                                      filePath: localThumbPath,
-                                      size: 64,
-                                      borderRadius: 10,
-                                      zoom: 1,
-                                      fallback: Container(
-                                        color: CupertinoColors
-                                            .tertiarySystemFill
-                                            .resolveFrom(context),
-                                        alignment: Alignment.center,
-                                        child: const Icon(
-                                          CupertinoIcons.music_note,
-                                        ),
-                                      ),
-                                    )
-                                  : SquareThumbnail.network(
-                                      imageUrl: video.thumbnailUrl,
-                                      size: 64,
-                                      borderRadius: 10,
-                                      zoom: 1,
-                                      fallback: Container(
-                                        color: CupertinoColors
-                                            .tertiarySystemFill
-                                            .resolveFrom(context),
-                                        alignment: Alignment.center,
-                                        child: const Icon(
-                                          CupertinoIcons.music_note,
-                                        ),
-                                      ),
-                                    ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      video.title,
-                                      style: CupertinoTheme.of(context)
-                                          .textTheme
-                                          .textStyle
-                                          .copyWith(
-                                            fontSize: 16,
-                                            fontWeight: FontWeight.w700,
-                                            color: CupertinoColors.label
-                                                .resolveFrom(context),
-                                            letterSpacing: -0.1,
-                                          ),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      video.channelTitle,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: CupertinoTheme.of(context)
-                                          .textTheme
-                                          .textStyle
-                                          .copyWith(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w500,
-                                            color: CupertinoColors
-                                                .secondaryLabel
-                                                .resolveFrom(context),
-                                          ),
-                                    ),
-                                  ],
-                                ),
+                          icon: CupertinoIcons.text_append,
+                          label: 'Al final',
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(14),
+                      child: Material(
+                        color: trackCardColor,
+                        surfaceTintColor: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () async {
+                            await _playPlaylistTrackAtIndex(
+                              downloadService: downloadService,
+                              videoManager: videoManager,
+                              displayVideos: displayVideos,
+                              downloadedById: downloadedById,
+                              startIndex: videoIndex,
+                            );
+                          },
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: trackCardBorder,
+                                width: 0.5,
                               ),
-                              const SizedBox(width: 8),
-                              if (downloadedVideo != null) ...[
-                                Container(
-                                  padding: const EdgeInsets.all(5),
-                                  decoration: BoxDecoration(
-                                    color: CupertinoColors.tertiarySystemFill
-                                        .resolveFrom(context),
-                                    borderRadius: BorderRadius.circular(999),
-                                    border: Border.all(
-                                      color: CupertinoColors.separator
-                                          .resolveFrom(context)
-                                          .withValues(alpha: 0.32),
-                                      width: 0.5,
-                                    ),
-                                  ),
-                                  child: const Icon(
-                                    CupertinoIcons.arrow_down_circle_fill,
-                                    size: 14,
-                                    color: CupertinoColors.systemGreen,
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12.0,
+                              vertical: 5.0,
+                            ),
+                            child: Row(
+                              children: [
+                                hasLocalThumb
+                                    ? SquareThumbnail.file(
+                                        filePath: localThumbPath,
+                                        size: 64,
+                                        borderRadius: 10,
+                                        zoom: 1,
+                                        fallback: Container(
+                                          color: CupertinoColors
+                                              .tertiarySystemFill
+                                              .resolveFrom(context),
+                                          alignment: Alignment.center,
+                                          child: const Icon(
+                                            CupertinoIcons.music_note,
+                                          ),
+                                        ),
+                                      )
+                                    : SquareThumbnail.network(
+                                        imageUrl: video.thumbnailUrl,
+                                        size: 64,
+                                        borderRadius: 10,
+                                        zoom: 1,
+                                        fallback: Container(
+                                          color: CupertinoColors
+                                              .tertiarySystemFill
+                                              .resolveFrom(context),
+                                          alignment: Alignment.center,
+                                          child: const Icon(
+                                            CupertinoIcons.music_note,
+                                          ),
+                                        ),
+                                      ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        video.title,
+                                        style: CupertinoTheme.of(context)
+                                            .textTheme
+                                            .textStyle
+                                            .copyWith(
+                                              fontSize: 16,
+                                              fontWeight: FontWeight.w700,
+                                              color: CupertinoColors.label
+                                                  .resolveFrom(context),
+                                              letterSpacing: -0.1,
+                                            ),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        video.channelTitle,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: CupertinoTheme.of(context)
+                                            .textTheme
+                                            .textStyle
+                                            .copyWith(
+                                              fontSize: 13,
+                                              fontWeight: FontWeight.w500,
+                                              color: CupertinoColors
+                                                  .secondaryLabel
+                                                  .resolveFrom(context),
+                                            ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                              ],
-                              CupertinoButton(
-                                padding: EdgeInsets.zero,
-                                minimumSize: const Size(32, 32),
-                                onPressed: () async {
-                                  final action =
-                                      await showCupertinoModalPopup<String>(
-                                        context: context,
-                                        builder: (sheetContext) {
-                                          return CupertinoActionSheet(
-                                            title: Text(
-                                              video.title,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                            actions: [
-                                              CupertinoActionSheetAction(
-                                                isDestructiveAction: true,
-                                                onPressed: () {
-                                                  Navigator.of(
-                                                    sheetContext,
-                                                  ).pop('remove');
-                                                },
-                                                child: const Text(
-                                                  'Eliminar de la playlist',
-                                                ),
+                                if (downloadedVideo != null) ...[
+                                  Container(
+                                    padding: const EdgeInsets.all(5),
+                                    decoration: BoxDecoration(
+                                      color: CupertinoColors.tertiarySystemFill
+                                          .resolveFrom(context),
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(
+                                        color: CupertinoColors.separator
+                                            .resolveFrom(context)
+                                            .withValues(alpha: 0.32),
+                                        width: 0.5,
+                                      ),
+                                    ),
+                                    child: const Icon(
+                                      CupertinoIcons.arrow_down_circle_fill,
+                                      size: 14,
+                                      color: CupertinoColors.systemGreen,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                ],
+                                CupertinoButton(
+                                  padding: EdgeInsets.zero,
+                                  minimumSize: const Size(32, 32),
+                                  onPressed: () async {
+                                    final action =
+                                        await showCupertinoModalPopup<String>(
+                                          context: context,
+                                          builder: (sheetContext) {
+                                            return CupertinoActionSheet(
+                                              title: Text(
+                                                video.title,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
                                               ),
-                                            ],
-                                            cancelButton:
+                                              actions: [
                                                 CupertinoActionSheetAction(
+                                                  isDestructiveAction: true,
                                                   onPressed: () {
                                                     Navigator.of(
                                                       sheetContext,
-                                                    ).pop();
+                                                    ).pop('remove');
                                                   },
-                                                  child: const Text('Cancelar'),
+                                                  child: const Text(
+                                                    'Eliminar de la playlist',
+                                                  ),
                                                 ),
-                                          );
-                                        },
-                                      );
-                                  if (!context.mounted || action != 'remove') {
-                                    return;
-                                  }
-                                  await _removeTrackFromPlaylistAndLocal(
-                                    video: video,
-                                    playlistService: playlistService,
-                                    downloadService: downloadService,
-                                  );
-                                },
-                                child: Icon(
-                                  CupertinoIcons.ellipsis_circle,
-                                  size: 24,
-                                  color: CupertinoColors.secondaryLabel
-                                      .resolveFrom(context),
+                                              ],
+                                              cancelButton:
+                                                  CupertinoActionSheetAction(
+                                                    onPressed: () {
+                                                      Navigator.of(
+                                                        sheetContext,
+                                                      ).pop();
+                                                    },
+                                                    child: const Text(
+                                                      'Cancelar',
+                                                    ),
+                                                  ),
+                                            );
+                                          },
+                                        );
+                                    if (!context.mounted ||
+                                        action != 'remove') {
+                                      return;
+                                    }
+                                    await _removeTrackFromPlaylistAndLocal(
+                                      video: video,
+                                      playlistService: playlistService,
+                                      downloadService: downloadService,
+                                    );
+                                  },
+                                  child: Icon(
+                                    CupertinoIcons.ellipsis_circle,
+                                    size: 24,
+                                    color: CupertinoColors.secondaryLabel
+                                        .resolveFrom(context),
+                                  ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-              );
-            },
-          );
-        },
+                );
+              },
+            );
+          },
+        ),
       ),
     );
+  }
+
+  void _handleBackFromEdgeSwipe() {
+    if (widget.onBack != null) {
+      widget.onBack!();
+      return;
+    }
+    Navigator.of(context).maybePop();
   }
 
   double _bottomOverlayReserve(BuildContext context) {
@@ -1371,6 +1390,77 @@ class _PlaylistActionButton extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _IosEdgeSwipeBack extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onBack;
+
+  const _IosEdgeSwipeBack({required this.child, required this.onBack});
+
+  @override
+  State<_IosEdgeSwipeBack> createState() => _IosEdgeSwipeBackState();
+}
+
+class _IosEdgeSwipeBackState extends State<_IosEdgeSwipeBack> {
+  static const double _edgeWidth = 24;
+  static const double _distanceThreshold = 72;
+  static const double _velocityThreshold = 700;
+  double _dragDistance = 0;
+  bool _fired = false;
+
+  void _resetGesture() {
+    _dragDistance = 0;
+    _fired = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        widget.child,
+        Positioned(
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: _edgeWidth,
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: (_) {
+              _dragDistance = 0;
+              _fired = false;
+            },
+            onHorizontalDragUpdate: (details) {
+              if (_fired) return;
+              final delta = details.primaryDelta ?? 0;
+              if (delta > 0) {
+                _dragDistance += delta;
+              } else if (_dragDistance > 0) {
+                _dragDistance = (_dragDistance + delta).clamp(
+                  0,
+                  double.infinity,
+                );
+              }
+            },
+            onHorizontalDragEnd: (details) {
+              if (_fired) return;
+              final velocity = details.primaryVelocity ?? 0;
+              final shouldBack =
+                  _dragDistance >= _distanceThreshold ||
+                  velocity >= _velocityThreshold;
+              if (shouldBack) {
+                _fired = true;
+                widget.onBack();
+              }
+              _resetGesture();
+            },
+            onHorizontalDragCancel: _resetGesture,
+          ),
+        ),
+      ],
     );
   }
 }

@@ -3372,13 +3372,10 @@ class _LyricsPanel extends StatefulWidget {
 
 class _LyricsPanelState extends State<_LyricsPanel> {
   final ScrollController _syncedScrollController = ScrollController();
-  final IosLiveLyricsAlignmentService _iosAlignmentService =
-      IosLiveLyricsAlignmentService();
   final Map<int, GlobalKey> _syncedLineKeys = <int, GlobalKey>{};
   int _lastSyncedIndex = -1;
   int _lastSyncedLength = 0;
   String? _lastVideoId;
-  bool _isAligningWords = false;
   DateTime _lastFollowScrollAt = DateTime.fromMillisecondsSinceEpoch(0);
   String? _alignedTrackKey;
   List<LiveLyricWordTiming> _alignedWords = const [];
@@ -3395,6 +3392,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   int _latestResolvedCurrentIndex = -1;
   Duration _visualLyricsPosition = Duration.zero;
   DateTime _visualLyricsWallClock = DateTime.fromMillisecondsSinceEpoch(0);
+  Duration _lastVisualClockManagerPosition = Duration.zero;
   static const Duration _lyricsVisualTickInterval = Duration(milliseconds: 110);
 
   void _pauseAutoFollowForManualScroll() {
@@ -3436,6 +3434,9 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       _autoFollowCurrentLyric = true;
     }
     _latestResolvedCurrentIndex = index;
+    _visualLyricsPosition = target;
+    _visualLyricsWallClock = DateTime.now();
+    _lastVisualClockManagerPosition = target;
     widget.onInteraction?.call();
     unawaited(HapticFeedback.selectionClick());
     await manager.seekTo(target);
@@ -3582,6 +3583,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       _resumeAutoFollowTimer?.cancel();
       _visualLyricsPosition = manager.position;
       _visualLyricsWallClock = DateTime.now();
+      _lastVisualClockManagerPosition = manager.position;
     }
     final textStyle = CupertinoTheme.of(context).textTheme.textStyle.copyWith(
       fontSize: baseFontSize,
@@ -3633,7 +3635,6 @@ class _LyricsPanelState extends State<_LyricsPanel> {
           _scrollToCurrentLyric(currentIndex);
         }
         content = ListView.builder(
-          key: ValueKey('synced_${manager.currentVideoId}'),
           controller: _syncedScrollController,
           physics: const BouncingScrollPhysics(),
           itemCount: syncedLyrics.length,
@@ -3842,13 +3843,25 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       _lyricsVisualTicker = null;
       _visualLyricsPosition = manager.position;
       _visualLyricsWallClock = DateTime.now();
+      _lastVisualClockManagerPosition = manager.position;
       return;
     }
 
-    if ((_visualLyricsPosition - manager.position).abs() >
-        const Duration(milliseconds: 420)) {
+    if (_lyricsVisualTicker == null) {
       _visualLyricsPosition = manager.position;
       _visualLyricsWallClock = DateTime.now();
+      _lastVisualClockManagerPosition = manager.position;
+    }
+
+    final managerAdvance =
+        (manager.position - _lastVisualClockManagerPosition).inMilliseconds;
+    if (managerAdvance.abs() >= 40) {
+      _lastVisualClockManagerPosition = manager.position;
+      if ((_visualLyricsPosition - manager.position).abs() >
+          const Duration(milliseconds: 520)) {
+        _visualLyricsPosition = manager.position;
+        _visualLyricsWallClock = DateTime.now();
+      }
     }
 
     _lyricsVisualTicker ??= Timer.periodic(_lyricsVisualTickInterval, (_) {
@@ -3859,6 +3872,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         _lyricsVisualTicker = null;
         _visualLyricsPosition = m.position;
         _visualLyricsWallClock = DateTime.now();
+        _lastVisualClockManagerPosition = m.position;
         return;
       }
       final now = DateTime.now();
@@ -4206,39 +4220,17 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     required VideoPlayerManager manager,
     required bool liveLyricsEnabled,
   }) async {
-    if (_isAligningWords) return;
-    final shouldRun =
-        liveLyricsEnabled &&
-        manager.isLyricsLayout &&
-        manager.hasSyncedLyrics &&
-        manager.isPlaying &&
-        manager.isLocal &&
-        !kIsWeb &&
-        Platform.isIOS;
-    if (!shouldRun) {
+    if (!liveLyricsEnabled || !manager.hasSyncedLyrics) {
+      if (_alignedTrackKey == null && _alignedWords.isEmpty) return;
       _alignedTrackKey = null;
       _alignedWords = const [];
+      if (mounted) setState(() {});
       return;
     }
-
-    final filePath = manager.currentStreamUrl?.trim() ?? '';
-    final trackId = manager.currentVideoId?.trim() ?? '';
-    if (filePath.isEmpty || trackId.isEmpty) return;
-    final key = '$trackId::$filePath';
-    if (_alignedTrackKey == key && _alignedWords.isNotEmpty) return;
-
-    _isAligningWords = true;
-    try {
-      final words = await _iosAlignmentService.transcribeLocalFile(
-        filePath: filePath,
-      );
-      if (!mounted) return;
-      _alignedTrackKey = key;
-      _alignedWords = words;
-      setState(() {});
-    } finally {
-      _isAligningWords = false;
-    }
+    if (_alignedTrackKey == null && _alignedWords.isEmpty) return;
+    _alignedTrackKey = null;
+    _alignedWords = const [];
+    if (mounted) setState(() {});
   }
 
   String _normalizeWord(String value) {

@@ -65,7 +65,7 @@ class NowPlayingArtworkService {
   }
 
   Future<Directory> _cacheDir() async {
-    final base = await getTemporaryDirectory();
+    final base = await getApplicationSupportDirectory();
     final dir = Directory('${base.path}/$_cacheDirName');
     if (!await dir.exists()) {
       await dir.create(recursive: true);

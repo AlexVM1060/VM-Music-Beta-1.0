@@ -2713,13 +2713,17 @@ class _SearchPageState extends State<SearchPage>
         child: selectedAlbum != null
             ? KeyedSubtree(
                 key: ValueKey('album_${selectedAlbum.playlistId}'),
-                child: AlbumTracksPage(
-                  playlistId: selectedAlbum.playlistId,
-                  albumTitle: selectedAlbum.albumTitle,
-                  artistName: selectedAlbum.artistName,
-                  seedThumbnailUrl: selectedAlbum.seedThumbnailUrl,
-                  embedded: true,
+                child: _IosEdgeSwipeBack(
+                  enabled: true,
                   onBack: _closeAlbumView,
+                  child: AlbumTracksPage(
+                    playlistId: selectedAlbum.playlistId,
+                    albumTitle: selectedAlbum.albumTitle,
+                    artistName: selectedAlbum.artistName,
+                    seedThumbnailUrl: selectedAlbum.seedThumbnailUrl,
+                    embedded: true,
+                    onBack: _closeAlbumView,
+                  ),
                 ),
               )
             : selectedArtist == null
@@ -4912,9 +4916,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
           });
         // Verificamos más de un autor para no perder casos donde
         // el artista buscado aparece en segunda posición (ej. "otro y artista").
-        final candidateKeys = <String>{
-          ...ranked.take(4).map((e) => e.key),
-        };
+        final candidateKeys = <String>{...ranked.take(4).map((e) => e.key)};
         matches = candidateKeys.any((candidateKey) {
           return _matchesArtistKeyOrLeadingYCollab(
             canonicalArtistKey: canonicalArtistKey,
@@ -6179,69 +6181,79 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
             body: appleTypographyBody,
           );
 
-    return PopScope(
-      canPop: selectedAlbum == null,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop && selectedAlbum != null) {
+    return _IosEdgeSwipeBack(
+      enabled: widget.embedded,
+      onBack: () {
+        if (selectedAlbum != null) {
           _closeEmbeddedAlbumView();
           return;
         }
-        if (!didPop && selectedAlbum == null && widget.embedded) {
-          widget.onBack?.call();
-        }
+        widget.onBack?.call();
       },
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 520),
-        reverseDuration: const Duration(milliseconds: 420),
-        switchInCurve: Curves.easeOutCubic,
-        switchOutCurve: Curves.easeInCubic,
-        layoutBuilder: (currentChild, previousChildren) {
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              ...previousChildren,
-              if (currentChild != null) currentChild,
-            ],
-          );
+      child: PopScope(
+        canPop: selectedAlbum == null,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop && selectedAlbum != null) {
+            _closeEmbeddedAlbumView();
+            return;
+          }
+          if (!didPop && selectedAlbum == null && widget.embedded) {
+            widget.onBack?.call();
+          }
         },
-        transitionBuilder: (child, animation) {
-          final beginX = _albumTransitionDirection > 0 ? 0.22 : -0.18;
-          final curved = CurvedAnimation(
-            parent: animation,
-            curve: Curves.easeOutCubic,
-            reverseCurve: Curves.easeInCubic,
-          );
-          final slide = Tween<Offset>(
-            begin: Offset(beginX, 0),
-            end: Offset.zero,
-          ).animate(curved);
-          final scale = Tween<double>(begin: 0.94, end: 1.0).animate(curved);
-          return FadeTransition(
-            opacity: curved,
-            child: ClipRect(
-              child: SlideTransition(
-                position: slide,
-                child: ScaleTransition(scale: scale, child: child),
-              ),
-            ),
-          );
-        },
-        child: selectedAlbum != null
-            ? KeyedSubtree(
-                key: ValueKey('artist_album_${selectedAlbum.playlistId}'),
-                child: AlbumTracksPage(
-                  playlistId: selectedAlbum.playlistId,
-                  albumTitle: selectedAlbum.albumTitle,
-                  artistName: selectedAlbum.artistName,
-                  seedThumbnailUrl: selectedAlbum.seedThumbnailUrl,
-                  embedded: true,
-                  onBack: _closeEmbeddedAlbumView,
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 520),
+          reverseDuration: const Duration(milliseconds: 420),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          layoutBuilder: (currentChild, previousChildren) {
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                ...previousChildren,
+                if (currentChild != null) currentChild,
+              ],
+            );
+          },
+          transitionBuilder: (child, animation) {
+            final beginX = _albumTransitionDirection > 0 ? 0.22 : -0.18;
+            final curved = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+              reverseCurve: Curves.easeInCubic,
+            );
+            final slide = Tween<Offset>(
+              begin: Offset(beginX, 0),
+              end: Offset.zero,
+            ).animate(curved);
+            final scale = Tween<double>(begin: 0.94, end: 1.0).animate(curved);
+            return FadeTransition(
+              opacity: curved,
+              child: ClipRect(
+                child: SlideTransition(
+                  position: slide,
+                  child: ScaleTransition(scale: scale, child: child),
                 ),
-              )
-            : KeyedSubtree(
-                key: ValueKey('artist_home_${widget.channelId}'),
-                child: artistContent,
               ),
+            );
+          },
+          child: selectedAlbum != null
+              ? KeyedSubtree(
+                  key: ValueKey('artist_album_${selectedAlbum.playlistId}'),
+                  child: AlbumTracksPage(
+                    playlistId: selectedAlbum.playlistId,
+                    albumTitle: selectedAlbum.albumTitle,
+                    artistName: selectedAlbum.artistName,
+                    seedThumbnailUrl: selectedAlbum.seedThumbnailUrl,
+                    embedded: true,
+                    onBack: _closeEmbeddedAlbumView,
+                  ),
+                )
+              : KeyedSubtree(
+                  key: ValueKey('artist_home_${widget.channelId}'),
+                  child: artistContent,
+                ),
+        ),
       ),
     );
   }
@@ -7309,6 +7321,83 @@ class _NoGlowScrollBehavior extends ScrollBehavior {
     ScrollableDetails details,
   ) {
     return child;
+  }
+}
+
+class _IosEdgeSwipeBack extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onBack;
+  final bool enabled;
+
+  const _IosEdgeSwipeBack({
+    required this.child,
+    required this.onBack,
+    this.enabled = true,
+  });
+
+  @override
+  State<_IosEdgeSwipeBack> createState() => _IosEdgeSwipeBackState();
+}
+
+class _IosEdgeSwipeBackState extends State<_IosEdgeSwipeBack> {
+  static const double _edgeWidth = 24;
+  static const double _distanceThreshold = 72;
+  static const double _velocityThreshold = 700;
+  double _dragDistance = 0;
+  bool _fired = false;
+
+  void _resetGesture() {
+    _dragDistance = 0;
+    _fired = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.enabled) return widget.child;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        widget.child,
+        Positioned(
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: _edgeWidth,
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: (_) {
+              _dragDistance = 0;
+              _fired = false;
+            },
+            onHorizontalDragUpdate: (details) {
+              if (_fired) return;
+              final delta = details.primaryDelta ?? 0;
+              if (delta > 0) {
+                _dragDistance += delta;
+              } else if (_dragDistance > 0) {
+                _dragDistance = (_dragDistance + delta).clamp(
+                  0,
+                  double.infinity,
+                );
+              }
+            },
+            onHorizontalDragEnd: (details) {
+              if (_fired) return;
+              final velocity = details.primaryVelocity ?? 0;
+              final shouldBack =
+                  _dragDistance >= _distanceThreshold ||
+                  velocity >= _velocityThreshold;
+              if (shouldBack) {
+                _fired = true;
+                widget.onBack();
+              }
+              _resetGesture();
+            },
+            onHorizontalDragCancel: _resetGesture,
+          ),
+        ),
+      ],
+    );
   }
 }
 

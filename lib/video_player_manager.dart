@@ -115,9 +115,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const MethodChannel _iosLockScreenFavoriteChannel = MethodChannel(
     'com.vm.music.beta/ios_lock_screen_favorite',
   );
-  static const MethodChannel _iosSiriPlaybackChannel = MethodChannel(
-    'com.vm.music.beta/siri_playback',
-  );
   static const MethodChannel _songShareChannel = MethodChannel(
     'com.vm.music.beta/song_share',
   );
@@ -203,15 +200,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final AiStemsService _aiStemsService = AiStemsService();
   final Map<String, Uri> _systemArtworkByVideoId = {};
   final Map<String, String> _systemArtworkSourceByVideoId = {};
+  String? _lastNowPlayingArtVideoId;
+  Uri? _lastNowPlayingArtUri;
   final MyAudioHandler? _appAudioHandler;
   DateTime _lastSystemPlaybackSync = DateTime.fromMillisecondsSinceEpoch(0);
+  int _nowPlayingArtworkEpoch = 0;
   DateTime _lastPlaybackUiNotifyAt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastPlaybackOpsTickAt = DateTime.fromMillisecondsSinceEpoch(0);
   Duration _lastNotifiedPosition = Duration.zero;
   Duration _lastNotifiedBufferedPosition = Duration.zero;
   bool _lastNotifiedPlaying = false;
   bool _lastNotifiedBuffering = false;
-  int _nowPlayingArtworkEpoch = 0;
   int _volumeFadeEpoch = 0;
   bool _crossfadeTriggeredForCurrent = false;
   bool _isCrossfadeTransitioning = false;
@@ -227,8 +226,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   DateTime? _youtubeSlowModeUntil;
   int _lyricsEpoch = 0;
   bool _iosLockScreenFavoriteBound = false;
-  bool _iosSiriPlaybackBound = false;
   bool _songShareBound = false;
+  Timer? _backgroundEngineSwitchTimer;
+  Timer? _resumeSharedSongTimer;
+  bool _isConsumingPendingSharedSong = false;
+  DateTime _lastPendingSharedSongConsumeAt = DateTime.fromMillisecondsSinceEpoch(
+    0,
+  );
   Box? _playerSessionBox;
   bool _didAttemptSessionRestore = false;
   int _sessionRestoreEpoch = 0;
@@ -292,7 +296,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_applyUserAudioPreferences());
     _bindSystemMediaControls();
     _bindIosLockScreenFavoriteCommand();
-    _bindIosSiriPlaybackCommand();
     _bindSharedSongChannel();
     WidgetsBinding.instance.addObserver(this);
     _attachActivePlayerSubscriptions();
@@ -764,27 +767,30 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  Uri? _buildArtUri(String? rawThumb) {
-    if (rawThumb == null || rawThumb.trim().isEmpty) return null;
-    final value = rawThumb.trim();
-    if (value.startsWith('/')) {
-      return Uri.file(value);
-    }
-    return Uri.tryParse(value);
-  }
-
   Uri? _cachedSystemArtUri({
     required String videoId,
-    required String? thumbnailSource,
+    String? thumbnailSource,
+    bool requireSourceMatch = true,
   }) {
+    final cached = _systemArtworkByVideoId[videoId];
+    if (cached == null) return null;
+    if (cached.scheme == 'file') {
+      final file = File.fromUri(cached);
+      if (!file.existsSync()) {
+        _systemArtworkByVideoId.remove(videoId);
+        _systemArtworkSourceByVideoId.remove(videoId);
+        return null;
+      }
+    }
+    if (!requireSourceMatch) {
+      return cached;
+    }
     final source = thumbnailSource?.trim() ?? '';
     if (source.isEmpty) return null;
     final storedSource = _systemArtworkSourceByVideoId[videoId];
     if (storedSource == source) {
-      return _systemArtworkByVideoId[videoId];
+      return cached;
     }
-    _systemArtworkByVideoId.remove(videoId);
-    _systemArtworkSourceByVideoId.remove(videoId);
     return null;
   }
 
@@ -797,6 +803,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final cached = _cachedSystemArtUri(
       videoId: videoId,
       thumbnailSource: source,
+      requireSourceMatch: true,
     );
     if (cached != null) return cached;
     final processed = await _nowPlayingArtworkService.resolveNowPlayingArtUri(
@@ -823,6 +830,20 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Iterable<PlaybackQueueItem> _queueArtworkCandidates({int limit = 12}) sync* {
+    var emitted = 0;
+    for (final item in _manualPlaybackQueue) {
+      if (emitted >= limit) return;
+      yield item;
+      emitted++;
+    }
+    for (final item in _playbackQueue) {
+      if (emitted >= limit) return;
+      yield item;
+      emitted++;
+    }
+  }
+
   void _syncSystemNowPlaying() {
     final handler = _appAudioHandler;
     if (handler == null) return;
@@ -831,15 +852,18 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final artist = cleanArtistName(_trackArtist);
     final thumb = _trackThumbnailUrl;
     if (videoId == null || videoId.isEmpty || title.isEmpty) return;
-    final fallbackArtUri = _buildArtUri(thumb);
     final cachedArtUri = _cachedSystemArtUri(
       videoId: videoId,
       thumbnailSource: thumb,
+      requireSourceMatch: false,
     );
-    // Enviamos una carátula inmediata (cacheada o fallback) para que el
-    // lockscreen en iOS no se quede sin imagen cuando la canción cambia en
-    // background. Si luego existe versión procesada, la reemplazamos.
-    final initialArtUri = cachedArtUri ?? fallbackArtUri;
+    final previousArtForSameVideo = _lastNowPlayingArtVideoId == videoId
+        ? _lastNowPlayingArtUri
+        : null;
+    // Enviamos solamente carátula procesada (cuadrada/recortada). Si todavía
+    // no está lista, mandamos metadata y actualizamos cuando termine de
+    // procesarse, sin usar URL cruda del thumbnail.
+    final initialArtUri = cachedArtUri ?? previousArtForSameVideo;
     handler.syncNowPlaying(
       id: videoId,
       title: title,
@@ -848,28 +872,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       duration: _trackDuration > Duration.zero ? _trackDuration : null,
       extras: {'isLocal': _isLocal},
     );
+    if (initialArtUri != null) {
+      _lastNowPlayingArtVideoId = videoId;
+      _lastNowPlayingArtUri = initialArtUri;
+    }
     unawaited(_syncIosLockScreenFavoriteState(videoIdOverride: videoId));
 
-    if (thumb == null || thumb.trim().isEmpty) return;
+    final normalizedThumb = thumb?.trim() ?? '';
+    if (normalizedThumb.isEmpty) return;
+
     final requestEpoch = ++_nowPlayingArtworkEpoch;
     unawaited(() async {
       final processedUri = await _prepareSystemArtwork(
         videoId: videoId,
-        thumbnailSource: thumb,
+        thumbnailSource: normalizedThumb,
       );
       if (processedUri == null) return;
       if (requestEpoch != _nowPlayingArtworkEpoch) return;
       if (_currentVideoId != videoId) return;
-      if ((_trackThumbnailUrl ?? '').trim() != thumb.trim()) return;
-      if (initialArtUri?.toString() == processedUri.toString()) return;
+      if ((_trackThumbnailUrl ?? '').trim() != normalizedThumb) return;
+      final latestTitle = (_trackTitle ?? '').trim();
+      if (latestTitle.isEmpty) return;
+      final latestArtist = cleanArtistName(_trackArtist);
       handler.syncNowPlaying(
         id: videoId,
-        title: title,
-        artist: artist.isEmpty ? 'Artista desconocido' : artist,
+        title: latestTitle,
+        artist: latestArtist.isEmpty ? 'Artista desconocido' : latestArtist,
         artUri: processedUri,
         duration: _trackDuration > Duration.zero ? _trackDuration : null,
         extras: {'isLocal': _isLocal},
       );
+      _lastNowPlayingArtVideoId = videoId;
+      _lastNowPlayingArtUri = processedUri;
       unawaited(_syncIosLockScreenFavoriteState(videoIdOverride: videoId));
     }());
   }
@@ -895,6 +929,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   void _clearSystemNowPlaying() {
     _nowPlayingArtworkEpoch++;
+    _lastNowPlayingArtVideoId = null;
+    _lastNowPlayingArtUri = null;
     _appAudioHandler?.clearNowPlaying();
     _appAudioHandler?.syncStopped();
     unawaited(_syncIosLockScreenFavoriteState(disable: true));
@@ -911,41 +947,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       throw MissingPluginException('Método no implementado: ${call.method}');
     });
     unawaited(_syncIosLockScreenFavoriteState());
-  }
-
-  void _bindIosSiriPlaybackCommand() {
-    if (kIsWeb || !Platform.isIOS || _iosSiriPlaybackBound) return;
-    _iosSiriPlaybackBound = true;
-    _iosSiriPlaybackChannel.setMethodCallHandler((call) async {
-      if (call.method == 'onSiriPlayRequest') {
-        final args = call.arguments;
-        final map = (args is Map)
-            ? Map<String, dynamic>.from(args.cast<dynamic, dynamic>())
-            : const <String, dynamic>{};
-        final song = (map['song'] ?? '').toString();
-        final artist = (map['artist'] ?? '').toString();
-        await _playRequestedSongFromSiri(song: song, artist: artist);
-        return;
-      }
-      throw MissingPluginException('Método no implementado: ${call.method}');
-    });
-    unawaited(_consumePendingIosSiriRequest());
-  }
-
-  Future<void> _consumePendingIosSiriRequest() async {
-    if (kIsWeb || !Platform.isIOS) return;
-    try {
-      final raw = await _iosSiriPlaybackChannel
-          .invokeMethod<Map<Object?, Object?>?>(
-            'consumePendingSiriPlayRequest',
-          );
-      if (raw == null) return;
-      final payload = Map<String, dynamic>.from(raw);
-      final song = (payload['song'] ?? '').toString();
-      final artist = (payload['artist'] ?? '').toString();
-      if (song.trim().isEmpty) return;
-      await _playRequestedSongFromSiri(song: song, artist: artist);
-    } catch (_) {}
   }
 
   void _bindSharedSongChannel() {
@@ -969,14 +970,26 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _consumePendingSharedSongRequest() async {
+    if (_isConsumingPendingSharedSong) return;
+    final now = DateTime.now();
+    if (now.difference(_lastPendingSharedSongConsumeAt) <
+        const Duration(seconds: 2)) {
+      return;
+    }
+    _isConsumingPendingSharedSong = true;
+    _lastPendingSharedSongConsumeAt = now;
     try {
-      final raw = await _songShareChannel.invokeMethod<Map<Object?, Object?>?>(
-        'consumePendingSharedSong',
-      );
+      final raw = await _songShareChannel
+          .invokeMethod<Map<Object?, Object?>?>('consumePendingSharedSong')
+          .timeout(const Duration(milliseconds: 900));
       if (raw == null) return;
       final payload = Map<String, dynamic>.from(raw);
       await _playSharedSongPayload(payload);
-    } catch (_) {}
+    } catch (_) {
+      // Best effort: no bloqueamos retorno a la app por shared-song.
+    } finally {
+      _isConsumingPendingSharedSong = false;
+    }
   }
 
   Future<void> _playSharedSongPayload(Map<String, dynamic> payload) async {
@@ -996,103 +1009,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       preferredTitle: title.isEmpty ? null : title,
       preferredArtist: artist.isEmpty ? null : artist,
       preferredDuration: preferredDuration,
-    );
-  }
-
-  Future<void> _playRequestedSongFromSiri({
-    required String song,
-    required String artist,
-  }) async {
-    final songQuery = song.trim();
-    if (songQuery.isEmpty) return;
-    final artistQuery = artist.trim();
-    final query = artistQuery.isEmpty ? songQuery : '$songQuery $artistQuery';
-
-    List<Video> results = const [];
-    try {
-      results = await _safeSearchVideos(query, limit: 20);
-      if (results.isEmpty && artistQuery.isNotEmpty) {
-        results = await _safeSearchVideos(songQuery, limit: 20);
-      }
-    } catch (_) {
-      return;
-    }
-    if (results.isEmpty) return;
-
-    String norm(String v) => v
-        .toLowerCase()
-        .replaceAll(RegExp(r'[^a-z0-9áéíóúüñ ]'), ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    final songNorm = norm(songQuery);
-    final artistNorm = norm(artistQuery);
-    final songTokens = songNorm.split(' ').where((e) => e.isNotEmpty).toList();
-    final artistTokens = artistNorm
-        .split(' ')
-        .where((e) => e.isNotEmpty)
-        .toList();
-    final hasArtist = artistTokens.isNotEmpty;
-
-    int scoreVideo(Video video) {
-      final title = norm(video.title);
-      final author = norm(video.author);
-      var score = 0;
-      var matchedSongTokens = 0;
-
-      if (title == songNorm) score += 220;
-      if (title.contains(songNorm)) score += 140;
-      for (final token in songTokens) {
-        if (title.contains(token)) {
-          matchedSongTokens += 1;
-          score += 18;
-        }
-      }
-      if (songTokens.isNotEmpty) {
-        final coverage = matchedSongTokens / songTokens.length;
-        if (coverage >= 0.9) score += 90;
-        if (coverage >= 0.7) score += 50;
-        if (!hasArtist && coverage < 0.4) score -= 120;
-      }
-
-      if (artistTokens.isNotEmpty) {
-        if (author == artistNorm) score += 170;
-        if (author.contains(artistNorm)) score += 110;
-        for (final token in artistTokens) {
-          if (author.contains(token)) score += 22;
-        }
-      }
-
-      final views = video.engagement.viewCount;
-      if (views > 0) {
-        if (hasArtist) {
-          score += (views / 350000).floor().clamp(0, 70);
-        } else {
-          // Sin artista explícito: priorizamos la opción más popular que siga siendo buen match.
-          score += (views / 120000).floor().clamp(0, 220);
-        }
-      }
-
-      if (_isTopicAuthor(author)) score += 12;
-      return score;
-    }
-
-    results.sort((a, b) {
-      final byScore = scoreVideo(b).compareTo(scoreVideo(a));
-      if (byScore != 0) return byScore;
-      if (!hasArtist) {
-        return b.engagement.viewCount.compareTo(a.engagement.viewCount);
-      }
-      return 0;
-    });
-    final best = results.first;
-    await play(
-      best.id.value,
-      preferredThumbnailUrl: bestThumbnailForVideo(
-        best,
-        preferLowResolution: _settingsService.dataSaverMode,
-      ),
-      preferredTitle: best.title,
-      preferredArtist: best.author,
     );
   }
 
@@ -1189,13 +1105,20 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
-      unawaited(_consumePendingIosSiriRequest());
-      unawaited(_consumePendingSharedSongRequest());
+      _backgroundEngineSwitchTimer?.cancel();
+      _resumeSharedSongTimer?.cancel();
+      _resumeSharedSongTimer = Timer(const Duration(milliseconds: 380), () {
+        unawaited(_consumePendingSharedSongRequest());
+      });
     }
     if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.inactive) &&
         _usingHiddenVideo) {
-      unawaited(_switchHiddenVideoToAudioEngine());
+      _backgroundEngineSwitchTimer?.cancel();
+      _backgroundEngineSwitchTimer = Timer(
+        const Duration(milliseconds: 650),
+        () => unawaited(_switchHiddenVideoToAudioEngine()),
+      );
     }
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
@@ -1411,9 +1334,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             preferLowResolution: false,
           );
           _trackTitle = video.title;
-          _trackThumbnailUrl = metadataThumbnail.isNotEmpty
-              ? metadataThumbnail
-              : effectivePreferredThumbnail;
+          _trackThumbnailUrl = _mergeThumbnailKeepingMusicSquare(
+            existing: _trackThumbnailUrl,
+            candidate: metadataThumbnail.isNotEmpty
+                ? metadataThumbnail
+                : effectivePreferredThumbnail,
+          );
           _trackArtist = cleanArtistName(video.author);
           _trackDuration = video.duration ?? Duration.zero;
           _syncSystemNowPlaying();
@@ -1577,7 +1503,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _manifestRequests.remove(videoId);
     }
   }
-Future<Video> _getVideoWithRetry(String videoId) async {
+
+  Future<Video> _getVideoWithRetry(String videoId) async {
     final cached = _videoCache[videoId];
     if (cached != null) return cached;
     final inFlight = _videoRequests[videoId];
@@ -2798,6 +2725,73 @@ Future<Video> _getVideoWithRetry(String videoId) async {
         ? 'mqdefault'
         : 'hqdefault';
     return 'https://i.ytimg.com/vi/$videoId/$qualitySuffix.jpg';
+  }
+
+  bool _isYoutubeVideoFrameThumbnail(String? url) {
+    final value = url?.trim() ?? '';
+    if (value.isEmpty) return false;
+    try {
+      final uri = Uri.parse(value);
+      final host = uri.host.toLowerCase();
+      if (!host.contains('ytimg.com') && !host.contains('youtube.com')) {
+        return false;
+      }
+      final path = uri.path.toLowerCase();
+      return path.contains('/vi/') || path.contains('/vi_webp/');
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool _isLikelyYoutubeMusicSquareThumbnail(String? url) {
+    final value = url?.trim() ?? '';
+    if (value.isEmpty) return false;
+    try {
+      final uri = Uri.parse(value);
+      final host = uri.host.toLowerCase();
+      final isMusicLikeHost =
+          host.contains('googleusercontent.com') ||
+          host.contains('ggpht.com') ||
+          host.contains('yt3.ggpht.com');
+      if (!isMusicLikeHost) return false;
+
+      final full = '$value ${uri.path}';
+      final match = RegExp(r'w(\d+)-h(\d+)', caseSensitive: false).firstMatch(
+        full,
+      );
+      if (match != null) {
+        final w = int.tryParse(match.group(1) ?? '');
+        final h = int.tryParse(match.group(2) ?? '');
+        if (w != null && h != null && w > 0 && h > 0) {
+          return (w - h).abs() <= 2;
+        }
+      }
+
+      final wq = int.tryParse(uri.queryParameters['w'] ?? '');
+      final hq = int.tryParse(uri.queryParameters['h'] ?? '');
+      if (wq != null && hq != null && wq > 0 && hq > 0) {
+        return (wq - hq).abs() <= 2;
+      }
+
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  String? _mergeThumbnailKeepingMusicSquare({
+    required String? existing,
+    required String? candidate,
+  }) {
+    final current = existing?.trim() ?? '';
+    final next = candidate?.trim() ?? '';
+    if (next.isEmpty) return current.isEmpty ? null : current;
+    if (current.isEmpty) return next;
+    if (_isLikelyYoutubeMusicSquareThumbnail(current) &&
+        _isYoutubeVideoFrameThumbnail(next)) {
+      return current;
+    }
+    return next;
   }
 
   Future<List<PlaybackQueueItem>> _buildRelatedQueueFromYoutubeFallback(
@@ -4633,6 +4627,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
         thumbnailSource: item.thumbnailUrl,
       ),
     );
+    unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());
     notifyListeners();
     return true;
@@ -4661,6 +4656,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
     _queueSeedVideoId = null;
     _queueTitle = 'En cola';
     _clearPreloadedNextTrack();
+    unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());
     notifyListeners();
   }
@@ -4673,6 +4669,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
     _queueSeedVideoId = null;
     _queueTitle = queueTitle;
     _clearPreloadedNextTrack();
+    unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());
     notifyListeners();
   }
@@ -4694,6 +4691,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
     _queueSeedVideoId = null;
     _queueTitle = 'En cola';
     _clearPreloadedNextTrack();
+    unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());
     notifyListeners();
   }
@@ -5363,6 +5361,8 @@ Future<Video> _getVideoWithRetry(String videoId) async {
 
   @override
   void dispose() {
+    _backgroundEngineSwitchTimer?.cancel();
+    _resumeSharedSongTimer?.cancel();
     unawaited(_persistPlaybackSession(force: true));
     _settingsService.removeListener(_onSettingsChanged);
     WidgetsBinding.instance.removeObserver(this);
@@ -5793,7 +5793,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
       _playbackQueue = related;
       _queueSeedVideoId = currentVideoId;
       _rememberRecommendedQueue(_playbackQueue);
-      unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
+      unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
       unawaited(_maybePreloadUpcomingQueueTrack());
     } catch (e, s) {
       log('Error cargando recomendados', error: e, stackTrace: s);
@@ -5834,7 +5834,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
       _playbackQueue = queue;
       _queueSeedVideoId = currentVideoId;
       _rememberRecommendedQueue(_playbackQueue);
-      unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
+      unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
       unawaited(_maybePreloadUpcomingQueueTrack());
     } catch (e, s) {
       log(
@@ -5895,7 +5895,7 @@ Future<Video> _getVideoWithRetry(String videoId) async {
       }
       _playbackQueue = queue;
       _queueSeedVideoId = currentVideoId;
-      unawaited(_precacheQueueArtwork(_playbackQueue.take(8)));
+      unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
       unawaited(_maybePreloadUpcomingQueueTrack());
     } catch (e, s) {
       log('Error cargando cola local', error: e, stackTrace: s);
@@ -6000,7 +6000,9 @@ Future<Video> _getVideoWithRetry(String videoId) async {
     }
   }
 
-  Future<bool> _tryInstantTransitionToPreparedItem(PlaybackQueueItem next) async {
+  Future<bool> _tryInstantTransitionToPreparedItem(
+    PlaybackQueueItem next,
+  ) async {
     final currentVideoId = _currentVideoId;
     if (currentVideoId == null) return false;
 
@@ -6114,9 +6116,12 @@ Future<Video> _getVideoWithRetry(String videoId) async {
           if (_currentVideoId != next.videoId) return;
           _trackTitle = video.title;
           _trackArtist = cleanArtistName(video.author);
-          _trackThumbnailUrl = bestThumbnailForVideo(
-            video,
-            preferLowResolution: _settingsService.dataSaverMode,
+          _trackThumbnailUrl = _mergeThumbnailKeepingMusicSquare(
+            existing: _trackThumbnailUrl,
+            candidate: bestThumbnailForVideo(
+              video,
+              preferLowResolution: _settingsService.dataSaverMode,
+            ),
           );
           _trackDuration = video.duration ?? Duration.zero;
           _syncSystemNowPlaying();
@@ -6543,9 +6548,12 @@ Future<Video> _getVideoWithRetry(String videoId) async {
           if (_currentVideoId != next.videoId) return;
           _trackTitle = video.title;
           _trackArtist = cleanArtistName(video.author);
-          _trackThumbnailUrl = bestThumbnailForVideo(
-            video,
-            preferLowResolution: _settingsService.dataSaverMode,
+          _trackThumbnailUrl = _mergeThumbnailKeepingMusicSquare(
+            existing: _trackThumbnailUrl,
+            candidate: bestThumbnailForVideo(
+              video,
+              preferLowResolution: _settingsService.dataSaverMode,
+            ),
           );
           _trackDuration = video.duration ?? Duration.zero;
           _syncSystemNowPlaying();
