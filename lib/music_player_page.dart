@@ -1292,27 +1292,47 @@ class _FullPlayerState extends State<_FullPlayer> {
   }
 
   Future<void> _openArtistProfile(BuildContext context) async {
+    final currentVideoId = (manager.currentVideoId ?? '').trim();
     final rawArtist = manager.trackArtist?.trim();
-    if (rawArtist == null || rawArtist.isEmpty) {
+    if (currentVideoId.isEmpty && (rawArtist == null || rawArtist.isEmpty)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No se encontró el nombre del artista.')),
       );
       return;
     }
 
-    final normalizedArtist = rawArtist
-        .replaceAll(RegExp(r'\s*[-–—]\s*topic$', caseSensitive: false), '')
-        .trim()
-        .toLowerCase();
-
     final yt = YoutubeExplode();
     try {
-      final raw = await yt.search.searchContent(
-        rawArtist,
-        filter: TypeFilters.channel,
-      );
-      final channels = raw.whereType<SearchChannel>().take(12).toList();
-      if (channels.isEmpty) {
+      String? channelId;
+      String? channelName;
+      String thumb = manager.trackThumbnailUrl ?? '';
+
+      if (currentVideoId.isNotEmpty) {
+        // Igual que en Buscar: el canal sale del video actual para evitar mismatches.
+        final details = await yt.channels.getByVideo(currentVideoId);
+        channelId = details.id.value;
+        channelName = details.title;
+        thumb = details.logoUrl.isNotEmpty ? details.logoUrl : thumb;
+      } else if (rawArtist != null && rawArtist.isNotEmpty) {
+        final raw = await yt.search.searchContent(
+          rawArtist,
+          filter: TypeFilters.channel,
+        );
+        final channels = raw.whereType<SearchChannel>().take(1).toList();
+        if (channels.isNotEmpty) {
+          final best = channels.first;
+          channelId = best.id.value;
+          channelName = best.name;
+          thumb = best.thumbnails.isNotEmpty
+              ? best.thumbnails.first.url.toString()
+              : thumb;
+        }
+      }
+
+      if (channelId == null ||
+          channelId.trim().isEmpty ||
+          channelName == null ||
+          channelName.trim().isEmpty) {
         if (!context.mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -1322,33 +1342,15 @@ class _FullPlayerState extends State<_FullPlayer> {
         return;
       }
 
-      SearchChannel best = channels.first;
-      var bestScore = -1;
-      for (final channel in channels) {
-        final name = channel.name.toLowerCase();
-        final description = channel.description.toLowerCase();
-        var score = 0;
-        if (name.contains(normalizedArtist)) score += 5;
-        if (description.contains(normalizedArtist)) score += 2;
-        if (name.endsWith('- topic') || name.endsWith('topic')) score += 6;
-        if (score > bestScore) {
-          bestScore = score;
-          best = channel;
-        }
-      }
-
-      final thumb = best.thumbnails.isNotEmpty
-          ? best.thumbnails.first.url.toString()
-          : (manager.trackThumbnailUrl ?? '');
       if (!context.mounted) return;
       context.read<SearchViewState>().requestOpenArtistProfile(
         PendingArtistProfile(
-          channelId: best.id.value,
-          channelName: best.name,
+          channelId: channelId,
+          channelName: channelName,
           channelThumbnailUrl: thumb,
         ),
       );
-      context.read<AppTabState?>()?.setIndex(0);
+      context.read<AppTabState?>()?.setIndex(1);
       manager.minimize();
     } catch (e, s) {
       developer.log(

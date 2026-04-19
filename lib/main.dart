@@ -348,48 +348,46 @@ class OverlayVideoPlayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<VideoPlayerManager>(
-      builder: (context, manager, child) {
-        final hasTrack = manager.currentVideoId != null;
-        return IgnorePointer(
-          ignoring: !hasTrack,
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 520),
-            reverseDuration: const Duration(milliseconds: 420),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            layoutBuilder: (currentChild, previousChildren) {
-              return Stack(
-                fit: StackFit.expand,
-                alignment: Alignment.bottomCenter,
-                children: [
-                  ...previousChildren,
-                  if (currentChild != null) currentChild,
-                ],
-              );
-            },
-            transitionBuilder: (child, animation) {
-              final curved = CurvedAnimation(
-                parent: animation,
-                curve: Curves.easeOutCubic,
-                reverseCurve: Curves.easeInCubic,
-              );
-              final fade = Tween<double>(begin: 0.0, end: 1.0).animate(curved);
-              final slide = Tween<Offset>(
-                begin: const Offset(0, 0.05),
-                end: Offset.zero,
-              ).animate(curved);
-              return FadeTransition(
-                opacity: fade,
-                child: SlideTransition(position: slide, child: child),
-              );
-            },
-            child: hasTrack
-                ? const MusicPlayerPage(key: ValueKey('overlay_player'))
-                : const SizedBox.shrink(key: ValueKey('overlay_empty')),
-          ),
-        );
-      },
+    final hasTrack = context.select<VideoPlayerManager, bool>(
+      (manager) => manager.currentVideoId != null,
+    );
+    return IgnorePointer(
+      ignoring: !hasTrack,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 520),
+        reverseDuration: const Duration(milliseconds: 420),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        layoutBuilder: (currentChild, previousChildren) {
+          return Stack(
+            fit: StackFit.expand,
+            alignment: Alignment.bottomCenter,
+            children: [
+              ...previousChildren,
+              if (currentChild != null) currentChild,
+            ],
+          );
+        },
+        transitionBuilder: (child, animation) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          final fade = Tween<double>(begin: 0.0, end: 1.0).animate(curved);
+          final slide = Tween<Offset>(
+            begin: const Offset(0, 0.05),
+            end: Offset.zero,
+          ).animate(curved);
+          return FadeTransition(
+            opacity: fade,
+            child: SlideTransition(position: slide, child: child),
+          );
+        },
+        child: hasTrack
+            ? const MusicPlayerPage(key: ValueKey('overlay_player'))
+            : const SizedBox.shrink(key: ValueKey('overlay_empty')),
+      ),
     );
   }
 }
@@ -441,21 +439,36 @@ class _MainTabsState extends State<MainTabs> {
   Widget build(BuildContext context) {
     final tabState = context.watch<AppTabState?>();
     final selectedIndex = tabState?.selectedIndex ?? _fallbackSelectedIndex;
+    final isSearchFullscreen = context.select<SearchViewState, bool>(
+      (state) => state.isArtistFullscreen,
+    );
     _pageController ??= PageController(initialPage: _displayedPageIndex);
     final controller = _pageController!;
-    final playerManager = context.watch<VideoPlayerManager>();
-    final isFullScreen = playerManager.isFullScreen;
+    final playerState = context
+        .select<
+          VideoPlayerManager,
+          ({String? currentVideoId, bool isMinimized, bool isFullScreen})
+        >(
+          (manager) => (
+            currentVideoId: manager.currentVideoId,
+            isMinimized: manager.isMinimized,
+            isFullScreen: manager.isFullScreen,
+          ),
+        );
+    final isFullScreen = playerState.isFullScreen;
     final isExpandedPlayerVisible =
-        playerManager.currentVideoId != null && !playerManager.isMinimized;
+        playerState.currentVideoId != null && !playerState.isMinimized;
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final shellBackground = isDark
         ? Colors.black
         : CupertinoColors.systemGroupedBackground.resolveFrom(context);
-    final hideMainAppBar = selectedIndex == 3;
+    final hideMainAppBar =
+        selectedIndex == 3 || (selectedIndex == 1 && isSearchFullscreen);
     final pagesWithTickerMode = List<Widget>.generate(
       _pages.length,
-      (index) => TickerMode(enabled: index == selectedIndex, child: _pages[index]),
+      (index) =>
+          TickerMode(enabled: index == selectedIndex, child: _pages[index]),
       growable: false,
     );
 
@@ -600,7 +613,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
       child: ClipRRect(
         borderRadius: BorderRadius.circular(24),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
           child: Container(
             padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
             decoration: BoxDecoration(

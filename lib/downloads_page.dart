@@ -55,9 +55,10 @@ class _DownloadsPageState extends State<DownloadsPage> {
   Widget build(BuildContext context) {
     final downloadService = context.watch<DownloadService>();
     final manager = context.read<VideoPlayerManager>();
-    final playerManager = context.watch<VideoPlayerManager>();
-    final hasMiniPlayer =
-        playerManager.currentVideoId != null && playerManager.isMinimized;
+    final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
+      (playerManager) =>
+          playerManager.currentVideoId != null && playerManager.isMinimized,
+    );
     final bottomInset = MediaQuery.of(context).padding.bottom;
     const tabBarReserve = 108.0;
     const miniPlayerReserve = 64.0;
@@ -138,7 +139,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
         physics: const AlwaysScrollableScrollPhysics(),
         children: [
           const SizedBox(height: 180),
-          const Center(child: Text('No encontramos canciones con esa búsqueda.')),
+          const Center(
+            child: Text('No encontramos canciones con esa búsqueda.'),
+          ),
           SizedBox(height: bottomReserve),
         ],
       );
@@ -209,10 +212,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
                 child: Container(
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: cardBorder,
-                      width: 0.5,
-                    ),
+                    border: Border.all(color: cardBorder, width: 0.5),
                   ),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 12.0,

@@ -58,6 +58,9 @@ class _HomePageState extends State<HomePage> {
 
     final history = await historyService.getHistory();
     final downloads = await downloadService.getDownloadedVideos();
+    final downloadsById = <String, DownloadedVideo>{
+      for (final item in downloads) item.videoId: item,
+    };
     final trendingSeed = await _readTrendingCache();
     final searchSeed = await _loadSearchStyleRecommendationSeed(history);
 
@@ -69,7 +72,7 @@ class _HomePageState extends State<HomePage> {
     );
     final relisten = history
         .take(20)
-        .map(_HomeTrack.fromHistory)
+        .map((item) => _homeTrackFromHistory(item, downloadsById))
         .toList(growable: false);
     final mixes = _buildDailyMixes(
       suggestions: suggestions,
@@ -81,6 +84,25 @@ class _HomePageState extends State<HomePage> {
       suggestions: suggestions,
       relisten: relisten,
       mixes: mixes,
+    );
+  }
+
+  _HomeTrack _homeTrackFromHistory(
+    VideoHistory item,
+    Map<String, DownloadedVideo> downloadsById,
+  ) {
+    final downloaded = downloadsById[item.videoId];
+    if (downloaded == null) return _HomeTrack.fromHistory(item);
+
+    final localThumbPath = downloaded.localThumbnailPath?.trim() ?? '';
+    final localThumbExists =
+        localThumbPath.isNotEmpty && File(localThumbPath).existsSync();
+    return _HomeTrack(
+      videoId: item.videoId,
+      title: item.title,
+      artist: cleanArtistName(item.channelTitle),
+      thumbnailUrl: localThumbExists ? localThumbPath : downloaded.thumbnailUrl,
+      isLocal: false,
     );
   }
 
@@ -738,9 +760,10 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final playerManager = context.watch<VideoPlayerManager>();
-    final hasMiniPlayer =
-        playerManager.currentVideoId != null && playerManager.isMinimized;
+    final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
+      (playerManager) =>
+          playerManager.currentVideoId != null && playerManager.isMinimized,
+    );
     final bottomInset = MediaQuery.of(context).padding.bottom;
     const tabBarReserve = 108.0;
     const miniPlayerReserve = 64.0;
@@ -1568,9 +1591,7 @@ class _AdaptiveThumb extends StatelessWidget {
       child: const Icon(CupertinoIcons.music_note),
     );
 
-    if (item.isLocal &&
-        item.thumbnailUrl.isNotEmpty &&
-        item.thumbnailUrl.startsWith('/')) {
+    if (item.thumbnailUrl.isNotEmpty && item.thumbnailUrl.startsWith('/')) {
       final file = File(item.thumbnailUrl);
       if (file.existsSync()) {
         return SquareThumbnail.file(

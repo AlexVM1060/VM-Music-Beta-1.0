@@ -30,9 +30,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     final bottomInset = MediaQuery.of(context).padding.bottom;
     const baseReserve = 108.0;
     const miniPlayerReserve = 64.0;
-    return baseReserve +
-        (hasMiniPlayer ? miniPlayerReserve : 0) +
-        bottomInset;
+    return baseReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
   }
 
   @override
@@ -99,9 +97,10 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
   @override
   Widget build(BuildContext context) {
     final downloadService = context.watch<DownloadService>();
-    final playerManager = context.watch<VideoPlayerManager>();
-    final hasMiniPlayer =
-        playerManager.currentVideoId != null && playerManager.isMinimized;
+    final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
+      (playerManager) =>
+          playerManager.currentVideoId != null && playerManager.isMinimized,
+    );
     return FutureBuilder<List<Playlist>>(
       future: _playlistsFuture,
       builder: (context, snapshot) {
