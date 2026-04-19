@@ -1,6 +1,6 @@
 {
-  "latestVersion": "0.2.8",
-  "minimumSupportedVersion": "0.2.8",
+  "latestVersion": "0.2.9",
+  "minimumSupportedVersion": "0.2.9",
   "force": false,
   "title": "Nueva versión disponible",
   "message": "Mejoras de rendimiento, se han disminuido transparencias y actualizaciones en segundo plano para optimizar rendimiento\nVM Music by AlexVM",
