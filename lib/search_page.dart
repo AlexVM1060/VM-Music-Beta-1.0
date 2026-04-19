@@ -214,11 +214,13 @@ class _ResolvedAlbumRef {
   final String playlistId;
   final String title;
   final String artist;
+  final String thumbnailUrl;
 
   const _ResolvedAlbumRef({
     required this.playlistId,
     required this.title,
     required this.artist,
+    this.thumbnailUrl = '',
   });
 }
 
@@ -1092,7 +1094,10 @@ Future<_ResolvedAlbumRef?> _resolveAlbumFromAppSearchEngine(Video video) async {
     title: title.isNotEmpty ? title : 'Álbum',
     artist: artist.isNotEmpty
         ? artist
-        : (compactArtist.isNotEmpty ? compactArtist : cleanArtistName(video.author)),
+        : (compactArtist.isNotEmpty
+              ? compactArtist
+              : cleanArtistName(video.author)),
+    thumbnailUrl: best.thumbnailUrl.trim(),
   );
 }
 
@@ -1813,7 +1818,9 @@ class _SearchPageState extends State<SearchPage>
         playlistId: album.playlistId,
         albumTitle: album.title,
         artistName: album.artist,
-        seedThumbnailUrl: _bestQualityThumbnail(video),
+        seedThumbnailUrl: album.thumbnailUrl.isNotEmpty
+            ? album.thumbnailUrl
+            : _bestQualityThumbnail(video),
       );
     } catch (_) {
       if (!mounted) return;
@@ -5318,7 +5325,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
           playlistId: album.playlistId,
           albumTitle: album.title,
           artistName: album.artist,
-          seedThumbnailUrl: _bestQualityThumbnail(video),
+          seedThumbnailUrl: album.thumbnailUrl.isNotEmpty
+              ? album.thumbnailUrl
+              : _bestQualityThumbnail(video),
         );
       });
     } catch (_) {
