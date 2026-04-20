@@ -3,11 +3,11 @@
   "minimumSupportedVersion": "0.2.9",
   "force": false,
   "title": "Nueva versión disponible",
-  "message": "19/04/26 9:46p.m\nMejoras de rendimiento\nCorrección del minireproductor demasiado transparente\n\nSolucion de errores en el Lyrics\n\nAhora puedes maximizar la cancion estando en el lyrics dando clic en la caratula de la canción\n\nCorrección de errores menores",
+  "message": "20/04/26 6:02a.m\nMejoras de rendimiento\nCorrección del minireproductor demasiado transparente\n\nSolucion de errores en el Lyrics\n\nAhora puedes maximizar la cancion estando en el lyrics dando clic en la caratula de la canción\n\nCorrección de errores menores",
   "actions": [
     {
       "label": "Actualizar - National Oilwell",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/223eb731f8be.plist",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/b456addc2282.plist",
       "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist"
     },
     {
