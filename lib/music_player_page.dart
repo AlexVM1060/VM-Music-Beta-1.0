@@ -44,16 +44,25 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<VideoPlayerManager>(
-      builder: (context, manager, child) {
-        final error = manager.errorMessage;
+    final manager = context.read<VideoPlayerManager>();
+    return Selector<
+      VideoPlayerManager,
+      ({String? currentVideoId, bool isMinimized, String? errorMessage})
+    >(
+      selector: (_, manager) => (
+        currentVideoId: manager.currentVideoId,
+        isMinimized: manager.isMinimized,
+        errorMessage: manager.errorMessage,
+      ),
+      builder: (context, playerState, child) {
+        final error = playerState.errorMessage;
         if (error != null && error.isNotEmpty) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _showPlaybackErrorDialog(error);
           });
         }
 
-        if (manager.currentVideoId == null) {
+        if (playerState.currentVideoId == null) {
           return const SizedBox.shrink();
         }
 
@@ -98,7 +107,7 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
               ),
             );
           },
-          child: manager.isMinimized
+          child: playerState.isMinimized
               ? _MiniPlayer(
                   key: const ValueKey('mini_player'),
                   manager: manager,
@@ -195,7 +204,19 @@ class _MiniPlayerState extends State<_MiniPlayer> {
 
   @override
   Widget build(BuildContext context) {
+    final miniState = context.select<
+      VideoPlayerManager,
+      ({String? trackTitle, String? trackArtist, String? trackThumbnailUrl, bool isPlaying})
+    >(
+      (manager) => (
+        trackTitle: manager.trackTitle,
+        trackArtist: manager.trackArtist,
+        trackThumbnailUrl: manager.trackThumbnailUrl,
+        isPlaying: manager.isPlaying,
+      ),
+    );
     final bottomInset = MediaQuery.of(context).padding.bottom;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     const miniPlayerHeight = 56.0;
     const miniPlayerBottomNavReserve = 75.0;
     final progress = _dragProgress;
@@ -259,14 +280,21 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                         gradient: LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
-                          colors: [
-                            CupertinoColors.systemBackground
-                                .resolveFrom(context)
-                                .withValues(alpha: 0.40),
-                            CupertinoColors.systemGrey6
-                                .resolveFrom(context)
-                                .withValues(alpha: 0.28),
-                          ],
+                          colors: isDark
+                              ? [
+                                  Colors.white.withValues(alpha: 0.18),
+                                  Colors.white.withValues(alpha: 0.10),
+                                ]
+                              : [
+                                  Colors.white.withValues(alpha: 0.80),
+                                  Colors.white.withValues(alpha: 0.58),
+                                ],
+                        ),
+                        border: Border.all(
+                          color: isDark
+                              ? Colors.white.withValues(alpha: 0.22)
+                              : Colors.white.withValues(alpha: 0.78),
+                          width: 0.8,
                         ),
                         boxShadow: [
                           BoxShadow(
@@ -282,7 +310,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                       child: Row(
                         children: [
                           _ArtworkImage(
-                            url: widget.manager.trackThumbnailUrl,
+                            url: miniState.trackThumbnailUrl,
                             size: 44,
                             borderRadius: 10,
                           ),
@@ -293,7 +321,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  widget.manager.trackTitle ?? 'Reproduciendo',
+                                  miniState.trackTitle ?? 'Reproduciendo',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: CupertinoTheme.of(context)
@@ -305,7 +333,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                                       ),
                                 ),
                                 Text(
-                                  widget.manager.trackArtist ??
+                                  miniState.trackArtist ??
                                       'Artista desconocido',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
@@ -325,7 +353,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                             padding: EdgeInsets.zero,
                             onPressed: widget.manager.togglePlayPause,
                             child: Icon(
-                              widget.manager.isPlaying
+                              miniState.isPlaying
                                   ? CupertinoIcons.pause_circle_fill
                                   : CupertinoIcons.play_circle_fill,
                               size: 28,
@@ -370,6 +398,7 @@ class _FullPlayer extends StatefulWidget {
 class _FullPlayerState extends State<_FullPlayer> {
   static const double _pullToMinimizeThreshold = 76;
   static const Duration _lyricsUiInactivityDelay = Duration(seconds: 4);
+  static final bool _dynamicAlbumBackgroundEnabled = false;
   static const int _maxPaletteCacheEntries = 120;
   static final Map<String, Color> _backgroundPaletteCache = <String, Color>{};
   static final Map<String, Future<Color?>> _backgroundPaletteRequests =
@@ -393,19 +422,16 @@ class _FullPlayerState extends State<_FullPlayer> {
   }
 
   void _maybeResolveAlbumBackgroundTint() {
+    if (!_dynamicAlbumBackgroundEnabled) return;
     final raw = manager.trackThumbnailUrl?.trim() ?? '';
     if (raw.isEmpty || raw == _lastPaletteArtworkUrl) return;
     _lastPaletteArtworkUrl = raw;
 
     final cached = _backgroundPaletteCache[raw];
     if (cached != null) {
-      if (mounted) {
-        setState(() {
-          _albumBackgroundTint = cached;
-        });
-      } else {
-        _albumBackgroundTint = cached;
-      }
+      // Este método se invoca desde build; aquí actualizamos de forma directa
+      // para evitar setState() durante la fase de construcción.
+      _albumBackgroundTint = cached;
       return;
     }
 
@@ -500,16 +526,8 @@ class _FullPlayerState extends State<_FullPlayer> {
             ),
           ),
         ),
-        if (artworkLayer != null && !thermalSaver)
-          Opacity(
-            opacity: 0.58,
-            child: ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 44, sigmaY: 44),
-              child: artworkLayer,
-            ),
-          )
-        else if (artworkLayer != null)
-          Opacity(opacity: 0.18, child: artworkLayer),
+        if (artworkLayer != null)
+          Opacity(opacity: thermalSaver ? 0.18 : 0.20, child: artworkLayer),
         DecoratedBox(
           decoration: BoxDecoration(
             gradient: RadialGradient(
@@ -660,34 +678,77 @@ class _FullPlayerState extends State<_FullPlayer> {
 
   @override
   Widget build(BuildContext context) {
-    final downloadService = context.watch<DownloadService>();
-    final settings = context.watch<AppSettingsService?>();
-    final playlistService = context.read<PlaylistService>();
-    final videoId = manager.currentVideoId;
-    final canDownload = videoId != null && !manager.isLocal;
-    final canAddToPlaylist = videoId != null;
-    final thermalSaverMode = manager.isLowPowerModeEnabled;
-    final animatedCoverEnabled =
-        (settings?.animatedCutoutCovers ?? true) && !thermalSaverMode;
-    _maybeResolveAlbumBackgroundTint();
-    _syncLyricsImmersiveMode(manager.isLyricsLayout);
-    final lyricsImmersive = manager.isLyricsLayout && !_lyricsChromeVisible;
-    final showLyricsControls = !manager.isLyricsLayout || _lyricsChromeVisible;
+    return Selector<
+      VideoPlayerManager,
+      ({
+        String? currentVideoId,
+        String? trackTitle,
+        String? trackArtist,
+        String? trackThumbnailUrl,
+        bool isLocal,
+        bool isLowPowerModeEnabled,
+        bool isAppInForeground,
+        bool isLyricsLayout,
+        bool isLyricsLoading,
+        String? lyricsError,
+        String? lyricsText,
+        int syncedLyricsCount,
+        bool isLoading,
+        bool isPlaying,
+        bool autoplayEnabled,
+        String? currentStreamUrl,
+        bool isUsingVideoFallback,
+      })
+    >(
+      selector: (_, manager) => (
+        currentVideoId: manager.currentVideoId,
+        trackTitle: manager.trackTitle,
+        trackArtist: manager.trackArtist,
+        trackThumbnailUrl: manager.trackThumbnailUrl,
+        isLocal: manager.isLocal,
+        isLowPowerModeEnabled: manager.isLowPowerModeEnabled,
+        isAppInForeground: manager.isAppInForeground,
+        isLyricsLayout: manager.isLyricsLayout,
+        isLyricsLoading: manager.isLyricsLoading,
+        lyricsError: manager.lyricsError,
+        lyricsText: manager.lyricsText,
+        syncedLyricsCount: manager.syncedLyrics.length,
+        isLoading: manager.isLoading,
+        isPlaying: manager.isPlaying,
+        autoplayEnabled: manager.autoplayEnabled,
+        currentStreamUrl: manager.currentStreamUrl,
+        isUsingVideoFallback: manager.isUsingVideoFallback,
+      ),
+      builder: (context, _, child) {
+        final downloadService = context.watch<DownloadService>();
+        final settings = context.watch<AppSettingsService?>();
+        final playlistService = context.read<PlaylistService>();
+        final videoId = manager.currentVideoId;
+        final canDownload = videoId != null && !manager.isLocal;
+        final canAddToPlaylist = videoId != null;
+        final thermalSaverMode = manager.isLowPowerModeEnabled;
+        final animatedCoverEnabled =
+            (settings?.animatedCutoutCovers ?? true) && !thermalSaverMode;
+        _maybeResolveAlbumBackgroundTint();
+        _syncLyricsImmersiveMode(manager.isLyricsLayout);
+        final lyricsImmersive = manager.isLyricsLayout && !_lyricsChromeVisible;
+        final showLyricsControls =
+            !manager.isLyricsLayout || _lyricsChromeVisible;
 
-    return SizedBox.expand(
-      child: Material(
-        color: Colors.transparent,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            _buildAlbumBlurBackground(
-              context,
-              thermalSaver: thermalSaverMode,
-            ),
-            SafeArea(
-              child: Listener(
-                onPointerDown: (_) => _onLyricsPanelInteraction(),
-                child: Column(
+        return SizedBox.expand(
+          child: Material(
+            color: Colors.transparent,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _buildAlbumBlurBackground(
+                  context,
+                  thermalSaver: thermalSaverMode,
+                ),
+                SafeArea(
+                  child: Listener(
+                    onPointerDown: (_) => _onLyricsPanelInteraction(),
+                    child: Column(
                   children: [
                     Center(
                       child: Container(
@@ -956,9 +1017,7 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                         _IosLoadingControls(),
                                                   )
                                                 else ...[
-                                                  _ProgressSection(
-                                                    manager: manager,
-                                                  ),
+                                                  const _ProgressSection(),
                                                   const SizedBox(height: 16),
                                                   _GlassControlsGroup(
                                                     child: Row(
@@ -1007,7 +1066,7 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                   ),
                                                 ],
                                                 const SizedBox(height: 26),
-                                                _QueueSection(manager: manager),
+                                                const _QueueSection(),
                                               ],
                                             ),
                                           ),
@@ -1026,9 +1085,11 @@ class _FullPlayerState extends State<_FullPlayer> {
                 ),
               ),
             ),
-          ],
-        ),
-      ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1181,11 +1242,9 @@ class _FullPlayerState extends State<_FullPlayer> {
       showDragHandle: true,
       builder: (sheetContext) {
         return SafeArea(
-          child: Consumer<VideoPlayerManager>(
-            builder: (context, manager, _) => SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-              child: _QueueSection(manager: manager),
-            ),
+          child: const SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
+            child: _QueueSection(),
           ),
         );
       },
@@ -2291,9 +2350,7 @@ class _IosLoadingControls extends StatelessWidget {
 }
 
 class _QueueSection extends StatefulWidget {
-  final VideoPlayerManager manager;
-
-  const _QueueSection({required this.manager});
+  const _QueueSection();
 
   @override
   State<_QueueSection> createState() => _QueueSectionState();
@@ -2303,6 +2360,15 @@ class _QueueSectionState extends State<_QueueSection> {
   static const double _reorderHapticStepPx = 66;
   bool _isTrackingReorderDrag = false;
   double _dragAccumulatorPx = 0;
+  VideoPlayerManager? _manager;
+
+  VideoPlayerManager get manager => _manager!;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _manager ??= context.read<VideoPlayerManager>();
+  }
 
   void _onReorderStart(int _) {
     _isTrackingReorderDrag = true;
@@ -2317,7 +2383,7 @@ class _QueueSectionState extends State<_QueueSection> {
   }
 
   void _onReorder(int oldIndex, int newIndex) {
-    widget.manager.reorderPlaybackQueue(oldIndex, newIndex);
+    manager.reorderPlaybackQueue(oldIndex, newIndex);
     unawaited(HapticFeedback.lightImpact());
   }
 
@@ -2334,13 +2400,22 @@ class _QueueSectionState extends State<_QueueSection> {
 
   @override
   Widget build(BuildContext context) {
-    final manager = widget.manager;
-    final queue = manager.playbackQueue;
+    final queueState = context.select<
+      VideoPlayerManager,
+      ({bool isQueueLoading, String queueTitle, List<PlaybackQueueItem> queue})
+    >(
+      (manager) => (
+        isQueueLoading: manager.isQueueLoading,
+        queueTitle: manager.queueTitle,
+        queue: manager.playbackQueue,
+      ),
+    );
+    final queue = queueState.queue;
     final textTheme = CupertinoTheme.of(context).textTheme;
     final titleColor = CupertinoColors.label.resolveFrom(context);
     final subtitleColor = CupertinoColors.secondaryLabel.resolveFrom(context);
 
-    if (manager.isQueueLoading) {
+    if (queueState.isQueueLoading) {
       return _QueueShell(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -2400,7 +2475,7 @@ class _QueueSectionState extends State<_QueueSection> {
           ),
           const SizedBox(height: 4),
           Text(
-            '${manager.queueTitle} · ${queue.length} canciones',
+            '${queueState.queueTitle} · ${queue.length} canciones',
             style: textTheme.textStyle.copyWith(
               fontSize: 13,
               color: subtitleColor,
@@ -3041,25 +3116,37 @@ class _NativePrimaryPlayButton extends StatelessWidget {
 }
 
 class _ProgressSection extends StatelessWidget {
-  final VideoPlayerManager manager;
-
-  const _ProgressSection({required this.manager});
+  const _ProgressSection();
 
   @override
   Widget build(BuildContext context) {
-    final totalMs = manager.trackDuration.inMilliseconds;
+    final manager = context.read<VideoPlayerManager>();
+    final progressState = context.select<
+      VideoPlayerManager,
+      ({Duration duration, Duration position, Duration bufferedPosition})
+    >(
+      (manager) => (
+        duration: manager.trackDuration,
+        position: manager.position,
+        bufferedPosition: manager.bufferedPosition,
+      ),
+    );
+    final totalMs = progressState.duration.inMilliseconds;
     final safeTotal = math.max(
       1,
       math.max(
         totalMs,
         math.max(
-          manager.position.inMilliseconds,
-          manager.bufferedPosition.inMilliseconds,
+          progressState.position.inMilliseconds,
+          progressState.bufferedPosition.inMilliseconds,
         ),
       ),
     );
-    final positionMs = manager.position.inMilliseconds.clamp(0, safeTotal);
-    final bufferedMs = manager.bufferedPosition.inMilliseconds.clamp(
+    final positionMs = progressState.position.inMilliseconds.clamp(
+      0,
+      safeTotal,
+    );
+    final bufferedMs = progressState.bufferedPosition.inMilliseconds.clamp(
       positionMs,
       safeTotal,
     );
@@ -3172,7 +3259,7 @@ class _ProgressSection extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(
-              _formatDuration(manager.position),
+              _formatDuration(progressState.position),
               style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                 fontSize: 13,
                 color: CupertinoColors.secondaryLabel.resolveFrom(context),
@@ -4981,16 +5068,26 @@ class _ArtworkImageState extends State<_ArtworkImage>
   Widget build(BuildContext context) {
     final settings = context.watch<AppSettingsService?>();
     final dataSaverMode = settings?.dataSaverMode ?? false;
-    final manager = context.watch<VideoPlayerManager>();
-    final lowPowerMode = manager.isLowPowerModeEnabled;
-    final appInForeground = manager.isAppInForeground;
-    final shouldForceStaticArtwork = manager.isMinimized || !appInForeground;
+    final playerUiState = context.select<
+      VideoPlayerManager,
+      ({bool isLowPowerModeEnabled, bool isAppInForeground, bool isMinimized})
+    >(
+      (manager) => (
+        isLowPowerModeEnabled: manager.isLowPowerModeEnabled,
+        isAppInForeground: manager.isAppInForeground,
+        isMinimized: manager.isMinimized,
+      ),
+    );
+    final lowPowerMode = playerUiState.isLowPowerModeEnabled;
+    final appInForeground = playerUiState.isAppInForeground;
+    final shouldForceStaticArtwork =
+        playerUiState.isMinimized || !appInForeground;
     final canRunHeavyArtworkEffects =
         widget.animated &&
         !dataSaverMode &&
         appInForeground &&
         !lowPowerMode &&
-        !manager.isMinimized;
+        !playerUiState.isMinimized;
     if (shouldForceStaticArtwork) {
       _syncHeavyArtworkEffectsBudget(enabled: false);
       final staticSource = _displayArtworkSourceUrl();

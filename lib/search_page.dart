@@ -30,6 +30,30 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 enum SearchState { initial, loading, success, error, noResults }
 
+class _AdaptiveBackdropFilter extends StatelessWidget {
+  final ImageFilter filter;
+  final Widget child;
+
+  const _AdaptiveBackdropFilter({
+    required this.filter,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final appInForeground =
+        context.select<AppLifecycleService?, bool>((s) => s?.isForeground ?? true);
+    final dataSaverMode =
+        context.select<AppSettingsService?, bool>((s) => s?.dataSaverMode ?? false);
+    final disableBackdrop =
+        dataSaverMode ||
+        !appInForeground ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    if (disableBackdrop) return child;
+    return BackdropFilter(filter: filter, child: child);
+  }
+}
+
 String _bestQualityThumbnail(Video video) {
   return bestThumbnailForVideo(video);
 }
@@ -1917,7 +1941,7 @@ class _SearchPageState extends State<SearchPage>
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(26),
-              child: BackdropFilter(
+              child: _AdaptiveBackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                 child: Container(
                   decoration: BoxDecoration(
@@ -2811,9 +2835,9 @@ class _SearchPageState extends State<SearchPage>
     final borderRadius = BorderRadius.circular(18);
     final focused = _searchFocusNode.hasFocus;
     final appInForeground =
-        context.watch<AppLifecycleService?>()?.isForeground ?? true;
+        context.select<AppLifecycleService?, bool>((s) => s?.isForeground ?? true);
     final dataSaverMode =
-        context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
+        context.select<AppSettingsService?, bool>((s) => s?.dataSaverMode ?? false);
     final shouldUseLightweightUi =
         dataSaverMode ||
         !appInForeground ||
@@ -2870,7 +2894,7 @@ class _SearchPageState extends State<SearchPage>
           borderRadius: borderRadius,
           child: shouldUseLightweightUi
               ? _buildSearchFieldContent(borderRadius, focused)
-              : BackdropFilter(
+              : _AdaptiveBackdropFilter(
                   filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
                   child: _buildSearchFieldContent(borderRadius, focused),
                 ),
@@ -2981,7 +3005,6 @@ class _SearchPageState extends State<SearchPage>
       case SearchState.noResults:
         return const Center(child: Text('No se encontraron videos.'));
       case SearchState.initial:
-        final downloadService = context.watch<DownloadService>();
         if (_initialRecommendationsLoading && _initialRecommendations.isEmpty) {
           return const Center(child: CupertinoActivityIndicator(radius: 14));
         }
@@ -3011,9 +3034,6 @@ class _SearchPageState extends State<SearchPage>
             ..._initialRecommendations.map(
               (video) => VideoCard(
                 video: video,
-                isDownloaded:
-                    downloadService.getDownloadStatus(video.id.value) ==
-                    DownloadStatus.downloaded,
                 onPlay: () => _playVideoPreferLocal(video),
                 onQueueNext: () =>
                     _queueVideo(video, insertMode: ManualQueueInsertMode.next),
@@ -3026,7 +3046,6 @@ class _SearchPageState extends State<SearchPage>
           ],
         );
       case SearchState.success:
-        final downloadService = context.watch<DownloadService>();
         final prioritizedVideos = _prioritizedVideos(_videos);
         final albumResults = _albums;
         final displayChannels = _orderedChannelsForDisplay(
@@ -3131,9 +3150,6 @@ class _SearchPageState extends State<SearchPage>
                 .map(
                   (video) => VideoCard(
                     video: video,
-                    isDownloaded:
-                        downloadService.getDownloadStatus(video.id.value) ==
-                        DownloadStatus.downloaded,
                     onPlay: () => _playVideoPreferLocal(video),
                     onQueueNext: () => _queueVideo(
                       video,
@@ -4143,7 +4159,7 @@ class VideoCard extends StatelessWidget {
   final VoidCallback? onQueueNext;
   final VoidCallback? onQueueEnd;
   final VoidCallback onMenuTap;
-  final bool isDownloaded;
+  final bool? isDownloaded;
   final bool highlightTop;
 
   const VideoCard({
@@ -4153,12 +4169,17 @@ class VideoCard extends StatelessWidget {
     this.onQueueNext,
     this.onQueueEnd,
     required this.onMenuTap,
-    this.isDownloaded = false,
+    this.isDownloaded,
     this.highlightTop = false,
   });
 
   @override
   Widget build(BuildContext context) {
+    final effectiveIsDownloaded = isDownloaded ?? (() {
+      final downloadService = context.watch<DownloadService>();
+      return downloadService.getDownloadStatus(video.id.value) ==
+          DownloadStatus.downloaded;
+    })();
     final borderRadius = BorderRadius.circular(14);
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final cardColor = isDark
@@ -4244,7 +4265,7 @@ class VideoCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                if (isDownloaded) ...[
+                if (effectiveIsDownloaded) ...[
                   Container(
                     padding: const EdgeInsets.all(5),
                     decoration: BoxDecoration(
@@ -4359,7 +4380,7 @@ class _GlassSheetActionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
+      child: _AdaptiveBackdropFilter(
         filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Material(
           color: Colors.white.withValues(alpha: 0.05),
@@ -4501,7 +4522,7 @@ class _IosTopToastState extends State<_IosTopToast>
         position: _slide,
         child: ClipRRect(
           borderRadius: BorderRadius.circular(14),
-          child: BackdropFilter(
+          child: _AdaptiveBackdropFilter(
             filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
             child: Container(
               constraints: const BoxConstraints(maxWidth: 330),
@@ -5542,7 +5563,6 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
 
   Widget _buildTopSongsSection(
     BuildContext context,
-    DownloadService downloadService,
   ) {
     final columns = _buildTopSongColumns(_videos);
     if (columns.isEmpty) return const SizedBox.shrink();
@@ -5584,14 +5604,12 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                       _buildTopSongCompactCard(
                         context,
                         pair.first,
-                        downloadService,
                       ),
                       const SizedBox(height: 6),
                       if (pair.length > 1)
                         _buildTopSongCompactCard(
                           context,
                           pair[1],
-                          downloadService,
                         )
                       else
                         const Spacer(),
@@ -5609,7 +5627,6 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
   Widget _buildTopSongCompactCard(
     BuildContext context,
     Video video,
-    DownloadService downloadService,
   ) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final cardColor = isDark
@@ -5622,6 +5639,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
               .withValues(alpha: 0.12);
     final actionBg = CupertinoColors.tertiarySystemFill.resolveFrom(context);
     final actionAccent = CupertinoColors.systemPink.resolveFrom(context);
+    final downloadService = context.watch<DownloadService>();
     final isDownloaded =
         downloadService.getDownloadStatus(video.id.value) ==
         DownloadStatus.downloaded;
@@ -5854,7 +5872,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(26),
-              child: BackdropFilter(
+              child: _AdaptiveBackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                 child: Container(
                   decoration: BoxDecoration(
@@ -6108,7 +6126,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                     child: Stack(
                       fit: StackFit.expand,
                       children: [
-                        BackdropFilter(
+                        _AdaptiveBackdropFilter(
                           filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
                           child: const SizedBox.expand(),
                         ),
@@ -6197,7 +6215,6 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
   @override
   Widget build(BuildContext context) {
     final selectedAlbum = _selectedAlbumView;
-    final downloadService = context.watch<DownloadService>();
     final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
       (playerManager) =>
           playerManager.currentVideoId != null && playerManager.isMinimized,
@@ -6227,7 +6244,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
             delegate: SliverChildListDelegate([
               _buildArtistHeroSection(context),
               _buildSuggestedAlbumSection(context),
-              _buildTopSongsSection(context, downloadService),
+              _buildTopSongsSection(context),
               _buildArtistAlbumsSection(context),
               SizedBox(height: bottomReserve),
             ]),
@@ -6739,7 +6756,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(26),
-              child: BackdropFilter(
+              child: _AdaptiveBackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
                 child: Container(
                   decoration: BoxDecoration(
@@ -6998,10 +7015,11 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
     );
   }
 
-  Widget _buildPlaylistStyleAlbumHeader(BuildContext context) {
+  Widget _buildPlaylistStyleAlbumHeader(
+    BuildContext context, {
+    required bool animatedCutoutEnabled,
+  }) {
     final cover = _effectiveCoverUrl();
-    final animatedCutoutEnabled =
-        context.watch<AppSettingsService?>()?.animatedCutoutCovers ?? true;
     final screenWidth = MediaQuery.of(context).size.width;
     final coverHeight = (screenWidth * 1.30).clamp(420.0, 740.0).toDouble();
     final fallback = CupertinoColors.tertiarySystemFill.resolveFrom(context);
@@ -7194,8 +7212,11 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
   Widget _buildPlaylistStyleAlbumTrackTile(
     BuildContext context,
     Video video,
-    bool isDownloaded,
   ) {
+    final downloadService = context.watch<DownloadService>();
+    final isDownloaded =
+        downloadService.getDownloadStatus(video.id.value) ==
+        DownloadStatus.downloaded;
     final card = DecoratedBox(
       decoration: BoxDecoration(
         color: CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
@@ -7302,7 +7323,8 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
 
   @override
   Widget build(BuildContext context) {
-    final downloadService = context.watch<DownloadService>();
+    final animatedCutoutEnabled =
+        context.watch<AppSettingsService?>()?.animatedCutoutCovers ?? true;
     final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
       (playerManager) =>
           playerManager.currentVideoId != null && playerManager.isMinimized,
@@ -7314,7 +7336,10 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
     final content = _loading
         ? SliverList(
             delegate: SliverChildListDelegate([
-              _buildPlaylistStyleAlbumHeader(context),
+              _buildPlaylistStyleAlbumHeader(
+                context,
+                animatedCutoutEnabled: animatedCutoutEnabled,
+              ),
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 18),
                 child: Center(child: CupertinoActivityIndicator(radius: 14)),
@@ -7364,20 +7389,21 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
           )
         : SliverList(
             delegate: SliverChildBuilderDelegate((context, index) {
-              if (index == 0) return _buildPlaylistStyleAlbumHeader(context);
+              if (index == 0) {
+                return _buildPlaylistStyleAlbumHeader(
+                  context,
+                  animatedCutoutEnabled: animatedCutoutEnabled,
+                );
+              }
               if (index == _tracks.length + 1) {
                 return SizedBox(height: bottomReserve);
               }
               final video = _tracks[index - 1];
-              final isDownloaded =
-                  downloadService.getDownloadStatus(video.id.value) ==
-                  DownloadStatus.downloaded;
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: _buildPlaylistStyleAlbumTrackTile(
                   context,
                   video,
-                  isDownloaded,
                 ),
               );
             }, childCount: _tracks.length + 2),
@@ -7388,7 +7414,9 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       child: Stack(
         children: [
           Positioned.fill(
-            child: IgnorePointer(child: _buildAlbumBlurBackground(context)),
+            child: IgnorePointer(
+              child: _buildAlbumBlurBackground(context),
+            ),
           ),
           ScrollConfiguration(
             behavior: const _NoGlowScrollBehavior(),
@@ -7526,7 +7554,7 @@ class _AlbumHeaderActionButton extends StatelessWidget {
       onPressed: onPressed,
       child: ClipRRect(
         borderRadius: borderRadius,
-        child: BackdropFilter(
+        child: _AdaptiveBackdropFilter(
           filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
           child: Container(
             height: 34,

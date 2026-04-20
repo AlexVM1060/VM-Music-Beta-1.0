@@ -359,6 +359,29 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             ? _playbackOpsTickIntervalLowPower
             : _playbackOpsTickIntervalNormal);
 
+  Duration _maxDuration(Duration a, Duration b) =>
+      a >= b ? a : b;
+
+  Duration get _effectivePlaybackUiNotifyMinInterval {
+    var value = _playbackUiNotifyMinInterval;
+    if (!_appInForeground) {
+      value = _maxDuration(value, const Duration(milliseconds: 1300));
+    } else if (_isMinimized && !_isLyricsLayout) {
+      value = _maxDuration(value, const Duration(milliseconds: 1200));
+    }
+    return value;
+  }
+
+  Duration get _effectivePlaybackUiNotifyMinPositionDelta {
+    var value = _playbackUiNotifyMinPositionDelta;
+    if (!_appInForeground) {
+      value = _maxDuration(value, const Duration(milliseconds: 1000));
+    } else if (_isMinimized && !_isLyricsLayout) {
+      value = _maxDuration(value, const Duration(milliseconds: 900));
+    }
+    return value;
+  }
+
   void _attachActivePlayerSubscriptions() {
     _detachActivePlayerSubscriptions();
     _lastPlaybackUiNotifyAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -428,7 +451,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final now = DateTime.now();
     final positionChangedEnough =
         (_position - _lastNotifiedPosition).abs() >=
-        _playbackUiNotifyMinPositionDelta;
+        _effectivePlaybackUiNotifyMinPositionDelta;
     final bufferedChangedEnough =
         (_bufferedPosition - _lastNotifiedBufferedPosition).abs() >=
         _playbackUiNotifyMinBufferedDelta;
@@ -437,7 +460,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _isBuffering != _lastNotifiedBuffering;
 
     final intervalElapsed =
-        now.difference(_lastPlaybackUiNotifyAt) >= _playbackUiNotifyMinInterval;
+        now.difference(_lastPlaybackUiNotifyAt) >=
+        _effectivePlaybackUiNotifyMinInterval;
     if (!force && !flagsChanged && !intervalElapsed) return;
     if (!force &&
         !flagsChanged &&
