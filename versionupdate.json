@@ -3,16 +3,16 @@
   "minimumSupportedVersion": "0.2.7",
   "force": false,
   "title": "Nueva versión disponible",
-  "message": "Mejoras de rendimiento\nCorrección del minireproductor demasiado transparente\n\nSolucion de errores en el Lyrics\n\nAhora puedes maximizar la cancion estando en el lyrics dando clic en la caratula de la canción\n\nCorrección de errores menores",
+  "message": "19/04/26 9:46p.m\nMejoras de rendimiento\nCorrección del minireproductor demasiado transparente\n\nSolucion de errores en el Lyrics\n\nAhora puedes maximizar la cancion estando en el lyrics dando clic en la caratula de la canción\n\nCorrección de errores menores",
   "actions": [
     {
       "label": "Actualizar - National Oilwell",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/223eb731f8be.plist",
       "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist"
     },
     {
       "label": "Actualizar - XL AXIATA",
-      "urlIos": "https://google.com.mx",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/4d9f8f29d273.plist",
       "urlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete.2"
     }
   ]
