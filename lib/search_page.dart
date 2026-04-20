@@ -2814,7 +2814,10 @@ class _SearchPageState extends State<SearchPage>
         context.watch<AppLifecycleService?>()?.isForeground ?? true;
     final dataSaverMode =
         context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
-    final shouldUseLightweightUi = dataSaverMode || !appInForeground;
+    final shouldUseLightweightUi =
+        dataSaverMode ||
+        !appInForeground ||
+        defaultTargetPlatform == TargetPlatform.iOS;
     final glow = _ensureSearchBarGlowController();
     final shouldAnimateGlow = !shouldUseLightweightUi && focused;
     if (shouldAnimateGlow) {

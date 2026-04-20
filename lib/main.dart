@@ -538,13 +538,22 @@ class _MainTabsState extends State<MainTabs> {
   int _fallbackSelectedIndex = 0;
   PageController? _pageController;
   int _displayedPageIndex = 0;
+  final Set<int> _visitedTabIndexes = <int>{0};
 
-  static const List<Widget> _pages = <Widget>[
-    _KeepAlivePage(child: HomePage()),
-    _KeepAlivePage(child: SearchPage()),
-    _KeepAlivePage(child: DownloadsPage()),
-    _KeepAlivePage(child: AccountPage()),
-  ];
+  Widget _buildTabPage(int index) {
+    switch (index) {
+      case 0:
+        return const _KeepAlivePage(child: HomePage());
+      case 1:
+        return const _KeepAlivePage(child: SearchPage());
+      case 2:
+        return const _KeepAlivePage(child: DownloadsPage());
+      case 3:
+        return const _KeepAlivePage(child: AccountPage());
+      default:
+        return const SizedBox.shrink();
+    }
+  }
 
   @override
   void initState() {
@@ -561,12 +570,14 @@ class _MainTabsState extends State<MainTabs> {
   void _onItemTapped(int index) {
     final tabState = context.read<AppTabState?>();
     if (tabState != null) {
+      _visitedTabIndexes.add(index);
       tabState.setIndex(index);
       return;
     }
     if (_fallbackSelectedIndex == index) return;
     setState(() {
       _fallbackSelectedIndex = index;
+      _visitedTabIndexes.add(index);
     });
   }
 
@@ -574,6 +585,7 @@ class _MainTabsState extends State<MainTabs> {
   Widget build(BuildContext context) {
     final tabState = context.watch<AppTabState?>();
     final selectedIndex = tabState?.selectedIndex ?? _fallbackSelectedIndex;
+    _visitedTabIndexes.add(selectedIndex);
     final isSearchFullscreen = context.select<SearchViewState, bool>(
       (state) => state.isArtistFullscreen,
     );
@@ -601,9 +613,13 @@ class _MainTabsState extends State<MainTabs> {
     final hideMainAppBar =
         selectedIndex == 3 || (selectedIndex == 1 && isSearchFullscreen);
     final pagesWithTickerMode = List<Widget>.generate(
-      _pages.length,
-      (index) =>
-          TickerMode(enabled: index == selectedIndex, child: _pages[index]),
+      4,
+      (index) => TickerMode(
+        enabled: index == selectedIndex,
+        child: _visitedTabIndexes.contains(index)
+            ? _buildTabPage(index)
+            : const SizedBox.shrink(),
+      ),
       growable: false,
     );
 
@@ -736,6 +752,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
     final inactive = CupertinoColors.secondaryLabel.resolveFrom(context);
     final active = CupertinoColors.systemPink.resolveFrom(context);
     final lightweightEffects =
+        defaultTargetPlatform == TargetPlatform.iOS ||
         context.select<AppLifecycleService, bool>((s) => !s.isForeground) ||
         (context.select<AppSettingsService?, bool>(
           (s) => s?.dataSaverMode ?? false,

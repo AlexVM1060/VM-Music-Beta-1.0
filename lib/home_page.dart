@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
@@ -1761,6 +1762,7 @@ class _QueueIosToastState extends State<_QueueIosToast>
   @override
   Widget build(BuildContext context) {
     final lightweightEffects =
+        defaultTargetPlatform == TargetPlatform.iOS ||
         context.select<AppLifecycleService, bool>((s) => !s.isForeground) ||
         (context.select<AppSettingsService?, bool>(
           (s) => s?.dataSaverMode ?? false,
