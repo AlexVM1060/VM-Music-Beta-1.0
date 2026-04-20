@@ -105,6 +105,22 @@ class _YouTubeMusicQueueCandidate {
   });
 }
 
+class _CookieAwareYoutubeHttpClient extends YoutubeHttpClient {
+  final String? cookieHeader;
+
+  _CookieAwareYoutubeHttpClient({this.cookieHeader});
+
+  @override
+  Map<String, String> get headers {
+    final merged = <String, String>{...YoutubeHttpClient.defaultHeaders};
+    final cookie = (cookieHeader ?? '').trim();
+    if (cookie.isNotEmpty) {
+      merged['cookie'] = cookie;
+    }
+    return merged;
+  }
+}
+
 class _DjTransitionPlan {
   final Duration preferredMixDuration;
   final Duration preferredTriggerLeadTime;
@@ -150,7 +166,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   AndroidLoudnessEnhancer? _androidAudioEnhancer;
   AndroidEqualizer? _androidAudioEqualizer;
   bool _audioEffectsConfigured = false;
-  YoutubeExplode _ytExplode = YoutubeExplode();
+  late YoutubeExplode _ytExplode;
   final LyricsService _lyricsService = LyricsService();
   VideoPlayerController? _hiddenVideoController;
 
@@ -295,24 +311,34 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _crossfadeDuration = Duration(seconds: 4);
   static const Duration _djMinMixDuration = Duration(seconds: 6);
   static const Duration _djMaxMixDuration = Duration(seconds: 12);
-  static const Duration _crossfadeTriggerLeadTime = Duration(seconds: 5);
+  static const Duration _crossfadeTriggerLeadTime = Duration(seconds: 7);
   static const Duration _crossfadePreloadLeadTime = Duration(seconds: 26);
+  static const Duration _crossfadeAudibleStartTimeout = Duration(
+    milliseconds: 1400,
+  );
+  static const Duration _crossfadeAudibleMinAdvance = Duration(
+    milliseconds: 100,
+  );
   static const String _youtubeiPlayerEndpoint =
       'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
   static const String _youtubeiMusicNextEndpoint =
       'https://music.youtube.com/youtubei/v1/next?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-  static const Map<String, String> _youtubeHeaders = {
+  static const Map<String, String> _youtubeBaseHeaders = {
     'User-Agent':
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
     'Accept': '*/*',
     'Origin': 'https://www.youtube.com',
     'Referer': 'https://www.youtube.com/',
   };
+  final String? _youtubeCookieHeader = _normalizeYoutubeCookie(
+    'SIDCC=AKEyXzVLOVY7QzgJ1MHgnhr3VE4VOC14spiVDL6YlgyHu2PMrmKN1ESpl4kPtMLSOkz8vxutsw; __Secure-1PSIDCC=AKEyXzVaf3-L2UfWESYnHWnB42cHusbCa2_5_MPZ28ELoZEdsAqoISaX0k-Tgi-WX-xBt6vrfQ; __Secure-3PSIDCC=AKEyXzUCJA-zjanFMW0DEdZfJ-b5auglPQ0CMko3TTFJbHTfuvcxyYAoEYVT1GKiBefyQ3OJf14; VISITOR_INFO1_LIVE=K9gqegkdBV0; VISITOR_PRIVACY_METADATA=CgJNWBIEGgAgIQ%3D%3D; PREF=f4=4010000&f6=40000000&tz=America.Mexico_City&f7=100&repeat=NONE; ST-1tk58rr=itct=CJUCENE5IhMIiqjp2sz9kwMVGnXCAR123wIZMgdiZl9uZXh0SIubw6em3Mjt5QGaAQUIERD4HcoBBJLI5Yc%3D&csn=O12rkX_62jWXNr0b&session_logininfo=AFmmF2swRgIhANQ02E54188kKG16WB62lOXcUmOiVyNq70bMQM0ypvPCAiEAxPZdXDMrrh-kfxUx1quNeaWKzoTkoPAGzeA3BPIeLwI%3AQUQ3MjNmeWVtbk83THFtTi1YRjFTMWxCXzI5cHBwQkJDSk85X0t2WER6NFN6MXRZV19YZVpwMlJxSWIxNUk3d2ZzZmFWeXlzT0hxZlpqNGUwZ2Q5VFY1TTBBa3VQOXhLRG1tYUN0eGV3dU80dVlNdzVESFd6WDFVakJIR3NpNGZJeG5ZQWFiUWF0WVVNSVhGTGp6amhJNTdiUm1pZXM3cm5n&endpoint=%7B%22clickTrackingParams%22%3A%22CJUCENE5IhMIiqjp2sz9kwMVGnXCAR123wIZMgdiZl9uZXh0SIubw6em3Mjt5QGaAQUIERD4HcoBBJLI5Yc%3D%22%2C%22commandMetadata%22%3A%7B%22webCommandMetadata%22%3A%7B%22url%22%3A%22%2Fwatch%3Fv%3DsI2TE_hYFYQ%26list%3DRD5dsi4mTwzYs%26index%3D2%26pp%3D0gcJCagCnhUGBSbi%22%2C%22webPageType%22%3A%22WEB_PAGE_TYPE_WATCH%22%2C%22rootVe%22%3A3832%7D%7D%2C%22watchEndpoint%22%3A%7B%22videoId%22%3A%22sI2TE_hYFYQ%22%2C%22playlistId%22%3A%22RD5dsi4mTwzYs%22%2C%22index%22%3A1%2C%22params%22%3A%22EAIYATgBYgs1ZHNpNG1Ud3pZc2gAuAUB%22%2C%22playerParams%22%3A%220gcJCagCnhUGBSbi%22%2C%22loggingContext%22%3A%7B%22vssLoggingContext%22%3A%7B%22serializedContextData%22%3A%22Gg1SRDVkc2k0bVR3ellz%22%7D%7D%2C%22watchEndpointSupportedOnesieConfig%22%3A%7B%22html5PlaybackOnesieConfig%22%3A%7B%22commonConfig%22%3A%7B%22url%22%3A%22https%3A%2F%2Frr1---sn-hxb5j5cax-8xgd.googlevideo.com%2Finitplayback%3Fsource%3Dyoutube%26oeis%3D1%26c%3DWEB%26oad%3D3200%26ovd%3D3200%26oaad%3D11000%26oavd%3D11000%26ocs%3D700%26oewis%3D1%26oputc%3D1%26ofpcc%3D1%26siu%3D1%26msp%3D1%26odepv%3D1%26id%3Db08d9313f8581584%26ip%3D2806%253A268%253A7403%253A88b6%253Aad62%253A1788%253A58bf%253A2e67%26initcwndbps%3D2396250%26mt%3D1776727743%26oweuc%3D%26pxtags%3DCg4KAnR4Egg1MTgyODk2MA%26rxtags%3DCg4KAnR4Egg1MTgyODk1OQ%252CCg4KAnR4Egg1MTgyODk2MA%252CCg4KAnR4Egg1MTgyODk2MQ%22%7D%7D%7D%7D%7D; APISID=0Ue7Wnl7JlbIKZD8/Akfw1aCmFcAwvCpMl; HSID=AYBu10DLSap_MUpIV; LOGIN_INFO=AFmmF2swRgIhANQ02E54188kKG16WB62lOXcUmOiVyNq70bMQM0ypvPCAiEAxPZdXDMrrh-kfxUx1quNeaWKzoTkoPAGzeA3BPIeLwI:QUQ3MjNmeWVtbk83THFtTi1YRjFTMWxCXzI5cHBwQkJDSk85X0t2WER6NFN6MXRZV19YZVpwMlJxSWIxNUk3d2ZzZmFWeXlzT0hxZlpqNGUwZ2Q5VFY1TTBBa3VQOXhLRG1tYUN0eGV3dU80dVlNdzVESFd6WDFVakJIR3NpNGZJeG5ZQWFiUWF0WVVNSVhGTGp6amhJNTdiUm1pZXM3cm5n; SAPISID=ro4mJ0xKO0Q-Be3Q/AGjxKEu1AKwNvt9U2; SID=g.a0009AiszrmMkxnOzGHN3-AgUVa8_rarWA45h6lZ1JT1PjYStBGDr5zbk4Uuud6emERx9ngw0QACgYKAc8SARESFQHGX2MieKs2Vc5yGpH4ZX6zwaDrWBoVAUF8yKpHw8Z2bkkYGODnKJ9NXqQa0076; SSID=AaGYi4Pdw-BOOpKid; __Secure-1PAPISID=ro4mJ0xKO0Q-Be3Q/AGjxKEu1AKwNvt9U2; __Secure-1PSID=g.a0009AiszrmMkxnOzGHN3-AgUVa8_rarWA45h6lZ1JT1PjYStBGDf6PPoxl1Z4e53YnveWis5wACgYKAe4SARESFQHGX2MiMI7PJaul7xu97XbXqZfzlBoVAUF8yKo4tovC-QEsjTGQuwbDHE8A0076; __Secure-1PSIDTS=sidts-CjQBWhotCaOc8R5ePw7_aWzyXzXNAOHZwcPfB5xJ9RVY4OkF398oagC6jC-_xQOCwHQoxi0GEAA; __Secure-3PAPISID=ro4mJ0xKO0Q-Be3Q/AGjxKEu1AKwNvt9U2; __Secure-3PSID=g.a0009AiszrmMkxnOzGHN3-AgUVa8_rarWA45h6lZ1JT1PjYStBGDqpkCVaMhmrHfg34U0kCHswACgYKAUESARESFQHGX2MiCyHbs2Ux0c8EKftbrnKfZBoVAUF8yKrvS-5h6NPSKHlavYLx8gaD0076; __Secure-3PSIDTS=sidts-CjQBWhotCaOc8R5ePw7_aWzyXzXNAOHZwcPfB5xJ9RVY4OkF398oagC6jC-_xQOCwHQoxi0GEAA; CONSISTENCY=AH5K9rbvTT14tkSZMxYroc2gdn2totWUwZ0DESrQIUNbkaSbV5fszt6HYlOW0wjJZLcKolOGzO-NfmwGzvElbKRJ2iF1hA-FEpaUzv9S7EAsKotgR6pcv37MXvp_dTz8gK9Fp7AAZ1uwodOx7i3isElSHPLheN9CsOMUwwujPcEAvTeQXYUQ3p6Nb4y2qHK3tg87LaqMkfyt_rQcD9hmKtHOTKI43KksJKnwQX5G9BQSREoF; __Secure-ROLLOUT_TOKEN=CJypuOvf9ryu1gEQg8uGxrf9kwMYieqXxrf9kwM%3D; __Secure-YNID=17.YT=tHe6BUg-662G2iWC-xaJhi5AZOd-oGTXVsO-7GlKDhx63eOmDSkt3bnM5ikPZbqAF7pTPbx_O0pEhQrcU2Lw-SaMD_iHQd_S91m3dqBiwkAfM54tTxzj1gJik4bO2HjWbcR_KECP0SnigaVeY0TVf7esclUcONa0uz4Xq6s7TpDsiIWQ8aOftixDmKd16r8GLjIf-fj0SsXPXm2apMhgLzrv8XSCIFPJ0-Xvbg3A9Er_yTkjoCsAFu89RrZdqNfJnsqxAgpuxvVRXAaeA0VSKfCnQv2vc5SVgZgKWktgjr-c3igMC6jgOXFCIZAR8__2NKM1oKDcIIwGNypoI46zQQ; __Secure-ROLLOUT_TOKEN=CJmCgoHO9PCRWhCy9t_L_fSTAxiT_PPBs_2TAw%3D%3D; YSC=yGNlBS3rfqY; _gcl_au=1.1.935007768.1776529815; __Secure-BUCKET=CPEB',
+  );
 
   VideoPlayerManager(this._audioHandler, this._settingsService)
     : _appAudioHandler = _audioHandler is MyAudioHandler
           ? _audioHandler
           : null {
+    _ytExplode = _createYoutubeClient();
     if (!kIsWeb && Platform.isAndroid) {
       _androidAudioEnhancer = AndroidLoudnessEnhancer();
       _androidAudioEqualizer = AndroidEqualizer();
@@ -339,6 +365,41 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _attachActivePlayerSubscriptions();
     unawaited(_refreshLowPowerModeStatus());
     unawaited(_initPlayerSessionPersistence());
+  }
+
+  static String? _normalizeYoutubeCookie(String? raw) {
+    final trimmed = (raw ?? '').trim();
+    if (trimmed.isEmpty) return null;
+    if (trimmed.toLowerCase().startsWith('cookie:')) {
+      final stripped = trimmed.substring('cookie:'.length).trim();
+      return stripped.isEmpty ? null : stripped;
+    }
+    return trimmed;
+  }
+
+  YoutubeExplode _createYoutubeClient() {
+    return YoutubeExplode(
+      httpClient: _CookieAwareYoutubeHttpClient(
+        cookieHeader: _youtubeCookieHeader,
+      ),
+    );
+  }
+
+  Map<String, String> get _youtubeHeaders {
+    final cookie = _youtubeCookieHeader;
+    if (cookie == null || cookie.isEmpty) {
+      return _youtubeBaseHeaders;
+    }
+    return <String, String>{
+      ..._youtubeBaseHeaders,
+      HttpHeaders.cookieHeader: cookie,
+    };
+  }
+
+  void _applyYoutubeCookieToRequest(HttpHeaders headers) {
+    final cookie = _youtubeCookieHeader;
+    if (cookie == null || cookie.isEmpty) return;
+    headers.set(HttpHeaders.cookieHeader, cookie);
   }
 
   Duration get _playbackUiNotifyMinInterval => _isLowPowerModeEnabled
@@ -1561,6 +1622,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
       if (!isLocalVideo &&
           (e is RequestLimitExceededException ||
+              e is VideoUnavailableException ||
               e is HandshakeException ||
               e is SocketException ||
               e is HttpException)) {
@@ -1756,6 +1818,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
         req.headers.set(HttpHeaders.acceptHeader, 'application/json');
         req.headers.set(HttpHeaders.userAgentHeader, clientDef['ua'] as String);
+        _applyYoutubeCookieToRequest(req.headers);
 
         final payload = <String, Object>{
           'videoId': videoId,
@@ -2427,6 +2490,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
       req.headers.set(HttpHeaders.acceptHeader, 'application/json');
       req.headers.set(HttpHeaders.userAgentHeader, userAgent);
+      _applyYoutubeCookieToRequest(req.headers);
       req.headers.set('Origin', 'https://music.youtube.com');
       req.headers.set('Referer', referer);
       req.headers.set('X-Youtube-Client-Name', headerClientName);
@@ -4039,7 +4103,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     try {
       _ytExplode.close();
     } catch (_) {}
-    _ytExplode = YoutubeExplode();
+    _ytExplode = _createYoutubeClient();
   }
 
   Future<List<Video>> _safeSearchVideos(
@@ -4511,6 +4575,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       try {
         await _waitForYoutubeRequestSlot();
         return await action();
+      } on VideoUnavailableException catch (e) {
+        lastError = e;
+        // Algunas respuestas "unavailable" son transitorias por cambios de cliente/firma.
+        if (attempt < maxAttempts) {
+          await _resetYoutubeClientForRecovery();
+        }
       } on RequestLimitExceededException catch (e) {
         lastError = e;
         _activateYoutubeSlowMode(Duration(seconds: 35 + (attempt * 18)));
@@ -4530,6 +4600,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (attempt < maxAttempts) {
         final waitSeconds = (lastError is RequestLimitExceededException)
             ? (4 + (attempt * 4))
+            : (lastError is VideoUnavailableException)
+            ? 1
             : (attempt * 3);
         final jitterMs = 120 + math.Random().nextInt(380);
         await Future<void>.delayed(
@@ -6532,9 +6604,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final lyricDrivenTrigger = _shouldTriggerDjFromLastLyric();
     if (!lyricDrivenTrigger && remaining > triggerLeadTime) return;
     if (!_crossfadePreparedPrimed) {
-      // Intento final de prebuffer antes de disparar el crossfade.
-      unawaited(_maybePreloadUpcomingQueueTrack());
-      if (remaining > const Duration(seconds: 2)) return;
+      // Intento síncrono final para evitar huecos al llegar al final.
+      await _maybePreloadUpcomingQueueTrack();
+      if (!_crossfadePreparedPrimed) {
+        final next = _peekNextQueueItem();
+        if (next != null) {
+          final currentId = _currentVideoId;
+          if (currentId != null) {
+            await _prepareCrossfadePlayerForQueueItem(
+              next,
+              currentVideoId: currentId,
+            );
+          }
+        }
+      }
+      if (!_crossfadePreparedPrimed &&
+          remaining > const Duration(milliseconds: 900)) {
+        return;
+      }
     }
 
     _crossfadeTriggeredForCurrent = true;
@@ -6704,6 +6791,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(nextPlayer.play());
       final ready = await _waitForPlayerReady(nextPlayer);
       if (!ready) return false;
+      await _waitForPlayerAudibleStart(
+        nextPlayer,
+        expectedStart: incomingStartOffset,
+      );
 
       // Refrescamos info visual al track entrante durante la mezcla,
       // pero sin cambiar todavía el id actual hasta completar el swap.
@@ -6855,6 +6946,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
         await Future<void>.delayed(stepDelay);
       }
+      await nextPlayer.setVolume(targetVolume);
 
       if (!outgoingStoppedEarly) {
         await currentPlayer.stop();
@@ -7171,6 +7263,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return true;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<void> _waitForPlayerAudibleStart(
+    AudioPlayer player, {
+    Duration expectedStart = Duration.zero,
+  }) async {
+    final startedAt = DateTime.now();
+    final baseline = expectedStart > Duration.zero ? expectedStart : Duration.zero;
+    while (DateTime.now().difference(startedAt) < _crossfadeAudibleStartTimeout) {
+      final state = player.playerState;
+      if (!state.playing) break;
+      final advanced = player.position - baseline;
+      if (advanced >= _crossfadeAudibleMinAdvance) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 45));
     }
   }
 

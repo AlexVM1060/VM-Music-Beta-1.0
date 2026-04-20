@@ -1,7 +1,7 @@
 name: myapp
 description: "A Music project."
 publish_to: 'none'
-version: 0.2.8+1
+version: 0.2.9+1
 
 environment:
   sdk: ^3.9.0
@@ -14,6 +14,7 @@ dependencies:
 
   cupertino_icons: ^1.0.8
   youtube_explode_dart: ^3.0.5 # Usamos la original
+  youtube_explode_dart_plus: ^1.0.3
   path_provider: ^2.1.5
   just_audio:
     path: third_party/just_audio_patched

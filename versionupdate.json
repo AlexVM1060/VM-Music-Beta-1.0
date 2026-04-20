@@ -1,9 +1,9 @@
 {
-  "latestVersion": "0.2.9",
-  "minimumSupportedVersion": "0.2.9",
+  "latestVersion": "0.3.0",
+  "minimumSupportedVersion": "0.3.0",
   "force": false,
   "title": "Nueva versión disponible",
-  "message": "Mejoras de rendimiento\nCorrección del minireproductor demasiado transparente\n\nSolucion de errores en el Lyrics\n\nAhora puedes maximizar la cancion estando en el lyrics dando clic en la caratula de la canción\n\nCorrección de errores menores",
+  "message": "Limite de youtube solucionado\n\nAutomix Mejorado",
   "actions": [
     {
       "label": "Actualizar - National Oilwell",
