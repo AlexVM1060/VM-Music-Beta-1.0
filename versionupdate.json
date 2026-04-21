@@ -1,26 +1,18 @@
 {
-<<<<<<< HEAD
   "latestVersion": "0.3.0",
   "minimumSupportedVersion": "0.3.0",
   "force": false,
   "title": "Nueva versión disponible",
   "message": "Limite de youtube solucionado\n\nAutomix Mejorado",
-=======
-  "latestVersion": "0.2.9",
-  "minimumSupportedVersion": "0.2.7",
-  "force": false,
-  "title": "Nueva versión disponible",
-  "message": "20/04/26 6:02a.m\nMejoras de rendimiento\nCorrección del minireproductor demasiado transparente\n\nSolucion de errores en el Lyrics\n\nAhora puedes maximizar la cancion estando en el lyrics dando clic en la caratula de la canción\n\nCorrección de errores menores",
->>>>>>> 093ab6af6d2333dd11a847c4f92938abe8e193cf
   "actions": [
     {
       "label": "Actualizar - National Oilwell",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/b456addc2282.plist",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist",
       "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/77215c12607c.plist"
     },
     {
       "label": "Actualizar - XL AXIATA",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/4d9f8f29d273.plist",
+      "urlIos": "https://google.com.mx",
       "urlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete.2"
     }
   ]
