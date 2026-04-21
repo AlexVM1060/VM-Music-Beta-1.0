@@ -194,6 +194,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _isPlaying = false;
   bool _isBuffering = false;
   bool _usingHiddenVideo = false;
+  bool _preferForegroundVideoPlayback = false;
   bool _autoplayEnabled = true;
   bool _karaokeModeEnabled = false;
   bool _isAiStemsLoading = false;
@@ -420,8 +421,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             ? _playbackOpsTickIntervalLowPower
             : _playbackOpsTickIntervalNormal);
 
-  Duration _maxDuration(Duration a, Duration b) =>
-      a >= b ? a : b;
+  Duration _maxDuration(Duration a, Duration b) => a >= b ? a : b;
 
   Duration get _effectivePlaybackUiNotifyMinInterval {
     var value = _playbackUiNotifyMinInterval;
@@ -576,6 +576,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool get isLoading => _isLoading && !_isCrossfadeTransitioning;
   bool get isLocal => _isLocal;
   bool get isUsingVideoFallback => _usingHiddenVideo;
+  bool get preferForegroundVideoPlayback => _preferForegroundVideoPlayback;
+  VideoPlayerController? get foregroundVideoController =>
+      _preferForegroundVideoPlayback && _usingHiddenVideo
+      ? _hiddenVideoController
+      : null;
   bool get autoplayEnabled => _autoplayEnabled;
   bool get karaokeModeEnabled => _karaokeModeEnabled && isKaraokeSupported;
   bool get isAiStemsLoading => isKaraokeSupported ? _isAiStemsLoading : false;
@@ -841,6 +846,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String? preferredTitle,
     String? preferredArtist,
     Duration? preferredDuration,
+    bool preferVideoPlayback = false,
   }) async {
     final preserveQueue = _shouldPreserveQueueForTarget(
       targetVideoId: videoId,
@@ -859,6 +865,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       preferredArtist: preferredArtist,
       preferredDuration: preferredDuration,
       preserveExistingQueue: preserveQueue,
+      preferVideoPlayback: preferVideoPlayback,
     );
   }
 
@@ -1306,6 +1313,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _resumeSharedSongTimer = Timer(const Duration(milliseconds: 380), () {
         unawaited(_consumePendingSharedSongRequest());
       });
+      if (_preferForegroundVideoPlayback &&
+          !_isLocal &&
+          !_usingHiddenVideo &&
+          (_currentVideoId?.trim().isNotEmpty ?? false)) {
+        _backgroundEngineSwitchTimer = Timer(
+          const Duration(milliseconds: 240),
+          () => unawaited(switchToForegroundVideo()),
+        );
+      }
     }
     if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.inactive) &&
@@ -1345,6 +1361,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String? preloadedStreamUrl,
     bool isRecoveryAttempt = false,
     bool preserveExistingQueue = false,
+    bool preferVideoPlayback = false,
   }) async {
     _sessionRestoreEpoch++;
     _rememberCurrentForHistory();
@@ -1357,6 +1374,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _errorMessage = null;
     _currentVideoId = videoId;
     _isLocal = isLocalVideo;
+    _preferForegroundVideoPlayback = preferVideoPlayback && !isLocalVideo;
     _isMinimized = false;
     _isFullScreen = false;
     _position = Duration.zero;
@@ -1437,7 +1455,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
-      if (!started) {
+      if (!started && !_preferForegroundVideoPlayback) {
         manifestFuture ??= _getManifestWithRetry(videoId);
         final manifest = await manifestFuture;
         final audioStreams = manifest.audioOnly.toList();
@@ -1483,7 +1501,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             _trackDuration = controller.value.duration;
             controller.addListener(_syncFromHiddenVideo);
             started = true;
-            unawaited(_switchHiddenVideoToAudioEngine());
+            if (!_preferForegroundVideoPlayback) {
+              unawaited(_switchHiddenVideoToAudioEngine());
+            }
             break;
           } catch (e) {
             lastMuxedError = e;
@@ -1610,6 +1630,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             preloadedStreamUrl: preloadedStreamUrl,
             isRecoveryAttempt: true,
             preserveExistingQueue: preserveExistingQueue,
+            preferVideoPlayback: preferVideoPlayback,
           );
           return;
         } catch (recoveryError, recoveryStack) {
@@ -1628,7 +1649,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
               e is HttpException)) {
         final altSource = await _resolveDownloadSourceViaYoutubei(videoId);
         if (altSource != null) {
-          final played = await _attemptPlaybackFromDownloadSource(altSource);
+          final played = await _attemptPlaybackFromDownloadSource(
+            altSource,
+            keepVideoEngine: _preferForegroundVideoPlayback,
+          );
           if (played) {
             _errorMessage = null;
             _syncSystemNowPlaying();
@@ -1960,8 +1984,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<bool> _attemptPlaybackFromDownloadSource(
-    DownloadSourceInfo source,
-  ) async {
+    DownloadSourceInfo source, {
+    bool keepVideoEngine = false,
+  }) async {
     final uri = Uri.parse(source.sourceUrl);
     final headers = _headersForStreamUri(uri) ?? const <String, String>{};
 
@@ -1972,6 +1997,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         await _player.play();
         unawaited(_applyTrackStartFadeInIfEnabled());
         _usingHiddenVideo = false;
+        _preferForegroundVideoPlayback = false;
         _currentStreamUrl = source.sourceUrl;
         _isPlaying = true;
         _isBuffering = false;
@@ -1995,7 +2021,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _isBuffering = false;
       _trackDuration = controller.value.duration;
       controller.addListener(_syncFromHiddenVideo);
-      unawaited(_switchHiddenVideoToAudioEngine());
+      if (!keepVideoEngine) {
+        unawaited(_switchHiddenVideoToAudioEngine());
+      }
       _syncSystemPlaybackState(force: true);
       notifyListeners();
       return true;
@@ -4635,6 +4663,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _errorMessage = null;
     _currentVideoId = id;
     _isLocal = true;
+    _preferForegroundVideoPlayback = false;
     _isMinimized = false;
     _isFullScreen = false;
     _trackTitle = title;
@@ -4771,6 +4800,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       preferredArtist: item.artist,
       preloadedStreamUrl: preloadedStreamUrl,
       preserveExistingQueue: true,
+      preferVideoPlayback: _preferForegroundVideoPlayback,
     );
   }
 
@@ -5613,6 +5643,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _isBuffering = false;
     _isLoading = false;
     _usingHiddenVideo = false;
+    _preferForegroundVideoPlayback = false;
     _isLocal = false;
     _isLyricsLayout = false;
     _resetLyricsState();
@@ -5641,9 +5672,50 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> switchToBackgroundAudio() async {}
+  Future<void> switchToBackgroundAudio() async {
+    _preferForegroundVideoPlayback = false;
+    await _switchHiddenVideoToAudioEngine();
+    notifyListeners();
+  }
 
-  Future<void> switchToForegroundVideo() async {}
+  Future<void> switchToForegroundVideo() async {
+    final id = _currentVideoId?.trim() ?? '';
+    if (id.isEmpty || _isLocal) return;
+    final positionSnapshot = _maxDuration(_position, _player.position);
+    final wasPlaying = _isPlaying;
+    _preferForegroundVideoPlayback = true;
+    if (_usingHiddenVideo && _hiddenVideoController != null) {
+      notifyListeners();
+      return;
+    }
+    await play(
+      id,
+      isLocalVideo: false,
+      preferredThumbnailUrl: _trackThumbnailUrl,
+      preferredTitle: _trackTitle,
+      preferredArtist: _trackArtist,
+      preferredDuration: _trackDuration,
+      preserveExistingQueue: true,
+      preferVideoPlayback: true,
+    );
+    await seekTo(positionSnapshot);
+    if (!wasPlaying) {
+      final hidden = _hiddenVideoController;
+      if (hidden != null) {
+        try {
+          await hidden.pause();
+        } catch (_) {}
+      } else {
+        try {
+          await _player.pause();
+        } catch (_) {}
+      }
+      _isPlaying = false;
+      _isBuffering = false;
+      _syncSystemPlaybackState(force: true);
+      notifyListeners();
+    }
+  }
 
   @override
   void dispose() {
@@ -7271,8 +7343,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     Duration expectedStart = Duration.zero,
   }) async {
     final startedAt = DateTime.now();
-    final baseline = expectedStart > Duration.zero ? expectedStart : Duration.zero;
-    while (DateTime.now().difference(startedAt) < _crossfadeAudibleStartTimeout) {
+    final baseline = expectedStart > Duration.zero
+        ? expectedStart
+        : Duration.zero;
+    while (DateTime.now().difference(startedAt) <
+        _crossfadeAudibleStartTimeout) {
       final state = player.playerState;
       if (!state.playing) break;
       final advanced = player.position - baseline;

@@ -46,61 +46,62 @@ class _AccountPageState extends State<AccountPage> {
         bottom: false,
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Mi Cuenta',
-                      style: Theme.of(context).textTheme.headlineMedium
-                          ?.copyWith(
-                            fontFamily: '.SF Pro Display',
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -0.2,
-                          ),
+            if (!hasPlaylistOpen) ...[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Mi Cuenta',
+                        style: Theme.of(context).textTheme.headlineMedium
+                            ?.copyWith(
+                              fontFamily: '.SF Pro Display',
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -0.2,
+                            ),
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    tooltip: 'Configuración',
-                    icon: const Icon(CupertinoIcons.settings),
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (_) => const AccountSettingsPage(),
-                        ),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-              child: CupertinoSlidingSegmentedControl<int>(
-                groupValue: _tab,
-                children: const {
-                  0: Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8),
-                    child: Text('Historial'),
-                  ),
-                  1: Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 8),
-                    child: Text('Playlists'),
-                  ),
-                },
-                onValueChanged: (value) {
-                  if (value == null) return;
-                  setState(() => _tab = value);
-                },
-                thumbColor: CupertinoColors.systemBackground.resolveFrom(
-                  context,
-                ),
-                backgroundColor: CupertinoColors.tertiarySystemFill.resolveFrom(
-                  context,
+                    IconButton(
+                      tooltip: 'Configuración',
+                      icon: const Icon(CupertinoIcons.settings),
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const AccountSettingsPage(),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ),
-            ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                child: CupertinoSlidingSegmentedControl<int>(
+                  groupValue: _tab,
+                  children: const {
+                    0: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 8),
+                      child: Text('Historial'),
+                    ),
+                    1: Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 8),
+                      child: Text('Playlists'),
+                    ),
+                  },
+                  onValueChanged: (value) {
+                    if (value == null) return;
+                    setState(() => _tab = value);
+                  },
+                  thumbColor: CupertinoColors.systemBackground.resolveFrom(
+                    context,
+                  ),
+                  backgroundColor:
+                      CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                ),
+              ),
+            ],
             Expanded(
               child: DecoratedBox(
                 decoration: BoxDecoration(

@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' show ImageFilter;
+import 'dart:math' as math;
+import 'dart:ui' show ImageFilter, Rect;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:hive/hive.dart';
@@ -17,6 +17,7 @@ import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/search_page.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
@@ -24,6 +25,7 @@ import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 class HomePage extends StatefulWidget {
@@ -36,11 +38,14 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   static const String _homeCacheBoxName = 'home_cache';
   static const String _trendingCacheKey = 'mx_trending_topic_v2';
+  static const String _curatedShelvesCacheKey = 'curated_music_shelves_v3';
   static const Duration _trendingCacheTtl = Duration(hours: 6);
+  static const Duration _curatedShelvesCacheTtl = Duration(hours: 4);
   final YoutubeExplode _yt = YoutubeExplode();
   late Future<_HomeContent> _contentFuture;
   late Future<List<_HomeTrack>> _trendingFuture;
-  bool _relistenListIsDragging = false;
+  final Map<String, _HomeResolvedAlbumRef> _albumRefByVideoIdCache = {};
+  final Map<String, Future<_HomeResolvedAlbumRef?>> _albumRefByVideoIdInFlight = {};
 
   @override
   void initState() {
@@ -66,6 +71,7 @@ class _HomePageState extends State<HomePage> {
     };
     final trendingSeed = await _readTrendingCache();
     final searchSeed = await _loadSearchStyleRecommendationSeed(history);
+    final curatedShelves = await _loadCuratedShelves(history);
 
     final suggestions = _buildSuggestions(
       history: history,
@@ -87,7 +93,218 @@ class _HomePageState extends State<HomePage> {
       suggestions: suggestions,
       relisten: relisten,
       mixes: mixes,
+      curatedShelves: curatedShelves,
     );
+  }
+
+  Future<List<_HomeShelf>> _loadCuratedShelves(List<VideoHistory> history) async {
+    final cached = await _readCuratedShelvesCache();
+    if (cached.isNotEmpty) return cached;
+
+    final shelves = <_HomeShelf>[];
+    final quickPicks = await _buildQuickPicksShelf(history);
+    if (quickPicks.tracks.isNotEmpty) shelves.add(quickPicks);
+
+    final fetched = await Future.wait([
+      _buildShelfFromSeed(
+        const _ShelfSeed(
+          id: 'trending_community',
+          title: 'Trending community playlists',
+          subtitle: 'Playlists y mixes que están subiendo',
+          query: 'youtube music community playlist trending mix',
+        ),
+      ),
+      _buildShelfFromSeed(
+        const _ShelfSeed(
+          id: 'throwback_jams',
+          title: 'Throwback jams',
+          subtitle: 'Clásicos para volver a poner en repeat',
+          query: 'throwback jams 2000s 2010s topic',
+        ),
+      ),
+      _buildShelfFromSeed(
+        const _ShelfSeed(
+          id: 'top_mexico',
+          title: 'Top México',
+          subtitle: 'Canciones destacadas de México ahora',
+          query: 'top mexico songs youtube music topic',
+        ),
+      ),
+      _buildShelfFromSeed(
+        const _ShelfSeed(
+          id: 'top_global',
+          title: 'Top Global',
+          subtitle: 'Lo más escuchado alrededor del mundo',
+          query: 'top global songs youtube music topic',
+        ),
+      ),
+    ]);
+    for (final shelf in fetched) {
+      if (shelf.tracks.isNotEmpty) {
+        shelves.add(shelf);
+      }
+    }
+    if (shelves.isNotEmpty) {
+      await _writeCuratedShelvesCache(shelves);
+    }
+    return shelves;
+  }
+
+  Future<_HomeShelf> _buildQuickPicksShelf(List<VideoHistory> history) async {
+    final manager = context.read<VideoPlayerManager>();
+    var queueItems = await manager.fetchQueueStyleRecommendations(limit: 26);
+    if (queueItems.isEmpty && history.isNotEmpty) {
+      final seed = history
+          .map((item) => item.videoId.trim())
+          .firstWhere((id) => id.isNotEmpty, orElse: () => '');
+      if (seed.isNotEmpty) {
+        queueItems = await manager.fetchQueueStyleRecommendations(
+          limit: 26,
+          seedVideoId: seed,
+        );
+      }
+    }
+
+    final tracks = <_HomeTrack>[];
+    final seen = <String>{};
+    for (final item in queueItems) {
+      final id = item.videoId.trim();
+      if (id.isEmpty || !seen.add(id)) continue;
+      tracks.add(_HomeTrack.fromQueueItem(item));
+      if (tracks.length >= 16) break;
+    }
+
+    return _HomeShelf(
+      id: 'quick_picks',
+      title: 'Quick picks',
+      subtitle: 'Basado en lo que escuchas en YouTube Music',
+      tracks: tracks,
+    );
+  }
+
+  Future<_HomeShelf> _buildShelfFromSeed(_ShelfSeed seed) async {
+    final tracks = <_HomeTrack>[];
+    final seen = <String>{};
+    try {
+      final results = await _yt.search.search(seed.query);
+      for (final video in results.take(44)) {
+        if (!_isValidShelfTrack(video)) continue;
+        final id = video.id.value.trim();
+        if (id.isEmpty || !seen.add(id)) continue;
+        tracks.add(_HomeTrack.fromVideo(video));
+        if (tracks.length >= 14) break;
+      }
+    } catch (_) {
+      // Best effort.
+    }
+    return _HomeShelf(
+      id: seed.id,
+      title: seed.title,
+      subtitle: seed.subtitle,
+      tracks: tracks,
+    );
+  }
+
+  bool _isValidShelfTrack(Video video) {
+    final title = video.title.toLowerCase();
+    final author = video.author.toLowerCase();
+    final description = video.description.toLowerCase();
+    final blob = '$title $author $description';
+    if (_shelfBlockedKeywords.any(blob.contains)) return false;
+    if (_isPureYoutubeMusicAutoGenerated(video)) return true;
+    if (_isBlockedSearchAuthor(video.author.toLowerCase())) return false;
+    final text = '$title $description';
+    final isVideoLike = _searchVideoLikeKeywords.any(text.contains);
+    final isTopicAuthor = author.endsWith('- topic') || author.endsWith('topic');
+    return !isVideoLike && isTopicAuthor;
+  }
+
+  static const List<String> _shelfBlockedKeywords = [
+    'spotify',
+    'deezer',
+    'apple music',
+    'amazon music',
+    'tidal',
+  ];
+
+  Future<List<_HomeShelf>> _readCuratedShelvesCache() async {
+    try {
+      final box = await Hive.openBox<String>(_homeCacheBoxName);
+      final raw = box.get(_curatedShelvesCacheKey);
+      if (raw == null || raw.isEmpty) return const [];
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final updatedAtMs = (map['updatedAtMs'] as num?)?.toInt() ?? 0;
+      if (updatedAtMs <= 0) return const [];
+      final updatedAt = DateTime.fromMillisecondsSinceEpoch(updatedAtMs);
+      if (DateTime.now().difference(updatedAt) > _curatedShelvesCacheTtl) {
+        return const [];
+      }
+
+      final decodedShelves = (map['shelves'] as List<dynamic>? ?? const [])
+          .whereType<Map>()
+          .map((rawShelf) {
+            final shelfMap = Map<String, dynamic>.from(
+              rawShelf.cast<dynamic, dynamic>(),
+            );
+            final tracks = (shelfMap['tracks'] as List<dynamic>? ?? const [])
+                .whereType<Map>()
+                .map(
+                  (trackRaw) => _HomeTrack(
+                    videoId: (trackRaw['videoId'] ?? '').toString(),
+                    title: (trackRaw['title'] ?? '').toString(),
+                    artist: cleanArtistName((trackRaw['artist'] ?? '').toString()),
+                    thumbnailUrl: (trackRaw['thumbnailUrl'] ?? '').toString(),
+                    isLocal: false,
+                  ),
+                )
+                .where((track) => track.videoId.isNotEmpty && track.title.isNotEmpty)
+                .toList(growable: false);
+            if (tracks.isEmpty) return null;
+            return _HomeShelf(
+              id: (shelfMap['id'] ?? '').toString(),
+              title: (shelfMap['title'] ?? '').toString(),
+              subtitle: (shelfMap['subtitle'] ?? '').toString(),
+              tracks: tracks,
+            );
+          })
+          .whereType<_HomeShelf>()
+          .toList(growable: false);
+      return decodedShelves;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> _writeCuratedShelvesCache(List<_HomeShelf> shelves) async {
+    try {
+      final box = await Hive.openBox<String>(_homeCacheBoxName);
+      final payload = jsonEncode({
+        'updatedAtMs': DateTime.now().millisecondsSinceEpoch,
+        'shelves': shelves
+            .map(
+              (shelf) => {
+                'id': shelf.id,
+                'title': shelf.title,
+                'subtitle': shelf.subtitle,
+                'tracks': shelf.tracks
+                    .take(18)
+                    .map(
+                      (track) => {
+                        'videoId': track.videoId,
+                        'title': track.title,
+                        'artist': track.artist,
+                        'thumbnailUrl': track.thumbnailUrl,
+                      },
+                    )
+                    .toList(growable: false),
+              },
+            )
+            .toList(growable: false),
+      });
+      await box.put(_curatedShelvesCacheKey, payload);
+    } catch (_) {
+      // Best effort.
+    }
   }
 
   _HomeTrack _homeTrackFromHistory(
@@ -606,7 +823,10 @@ class _HomePageState extends State<HomePage> {
       subtitle: track.title,
     );
     if (!mounted || selectedName == null || selectedName.isEmpty) return;
+    await _saveTrackToPlaylist(track, selectedName);
+  }
 
+  Future<void> _saveTrackToPlaylist(_HomeTrack track, String playlistName) async {
     final downloadService = context.read<DownloadService>();
     final videoManager = context.read<VideoPlayerManager>();
     final entry = VideoHistory(
@@ -617,25 +837,354 @@ class _HomePageState extends State<HomePage> {
       watchedAt: DateTime.now(),
     );
 
-    await playlistService.addVideoToPlaylist(selectedName, entry);
+    final playlistService = context.read<PlaylistService>();
+    await playlistService.addVideoToPlaylist(playlistName, entry);
     await downloadService.autoDownloadIfEnabledUsingClone(
-      selectedName,
+      playlistName,
       entry,
       videoManager: videoManager,
     );
     if (!mounted) return;
     await HapticFeedback.lightImpact();
     if (!mounted) return;
-    final label = PlaylistService.isFavoritesPlaylistName(selectedName)
+    final label = PlaylistService.isFavoritesPlaylistName(playlistName)
         ? 'Añadida a Favoritos'
-        : 'Añadida a $selectedName';
+        : 'Añadida a $playlistName';
     _showQueueIosToast(
       context,
       message: label,
-      icon: PlaylistService.isFavoritesPlaylistName(selectedName)
+      icon: PlaylistService.isFavoritesPlaylistName(playlistName)
           ? CupertinoIcons.star_fill
           : CupertinoIcons.check_mark_circled_solid,
     );
+  }
+
+  Future<void> _showTrackOptionsMenu(_HomeTrack track) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(26),
+              child: _AdaptiveBackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.systemGrey6
+                        .resolveFrom(sheetContext)
+                        .withValues(alpha: 0.82),
+                    borderRadius: BorderRadius.circular(26),
+                    border: Border.all(
+                      color: CupertinoColors.white.withValues(alpha: 0.24),
+                      width: 0.7,
+                    ),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 8),
+                      Container(
+                        width: 42,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey3
+                              .resolveFrom(sheetContext)
+                              .withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                track.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: CupertinoTheme.of(sheetContext)
+                                    .textTheme
+                                    .navTitleTextStyle
+                                    .copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              minimumSize: const Size(34, 34),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                              child: Icon(
+                                CupertinoIcons.xmark_circle_fill,
+                                size: 24,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(sheetContext),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
+                        child: Column(
+                          children: [
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.text_insert,
+                              label: 'Añadir como siguiente',
+                              onTap: () => Navigator.of(sheetContext).pop('next'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.text_append,
+                              label: 'Añadir al final',
+                              onTap: () => Navigator.of(sheetContext).pop('end'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.star_fill,
+                              label: 'Añadir a Favoritos',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('favorites'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.music_note_list,
+                              label: 'Añadir a playlist',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('playlist'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.square_arrow_up,
+                              label: 'Compartir',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('share'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.person_crop_circle,
+                              label: 'Ir al artista',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('artist'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.rectangle_stack_fill,
+                              label: 'Ir al álbum',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('album'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (!mounted || action == null) return;
+    if (action == 'next') {
+      await _addTrackToQueue(track, insertMode: ManualQueueInsertMode.next);
+      return;
+    }
+    if (action == 'end') {
+      await _addTrackToQueue(track, insertMode: ManualQueueInsertMode.end);
+      return;
+    }
+    if (action == 'favorites') {
+      await _saveTrackToPlaylist(track, PlaylistService.favoritesPlaylistName);
+      return;
+    }
+    if (action == 'playlist') {
+      await _addTrackToPlaylist(track);
+      return;
+    }
+    if (action == 'share') {
+      await _shareTrackDeepLink(track);
+      return;
+    }
+    if (action == 'artist') {
+      await _openArtistFromTrack(track);
+      return;
+    }
+    if (action == 'album') {
+      await _openAlbumFromTrack(track);
+    }
+  }
+
+  Future<void> _shareTrackDeepLink(_HomeTrack track) async {
+    final videoId = track.videoId.trim();
+    if (videoId.isEmpty) return;
+    final title = track.title.trim();
+    final artist = cleanArtistName(track.artist).trim();
+    final thumbnailUrl = track.thumbnailUrl.trim();
+    final deepLink = Uri(
+      scheme: 'vmmusic',
+      host: 'song',
+      queryParameters: <String, String>{
+        'videoId': videoId,
+        if (title.isNotEmpty) 'title': title,
+        if (artist.isNotEmpty) 'artist': artist,
+        if (thumbnailUrl.isNotEmpty) 'thumbnailUrl': thumbnailUrl,
+      },
+    ).toString();
+    final label = artist.isEmpty ? title : '$title · $artist';
+    await SharePlus.instance.share(
+      ShareParams(
+        subject: 'VM Music',
+        text: '$label\n$deepLink',
+        sharePositionOrigin: _shareOriginFromContext(context),
+      ),
+    );
+  }
+
+  Future<void> _openArtistFromTrack(_HomeTrack track) async {
+    final videoId = track.videoId.trim();
+    if (videoId.isEmpty) return;
+    try {
+      final details = await _yt.channels.getByVideo(videoId);
+      if (!mounted) return;
+      final channelId = details.id.value.trim();
+      if (channelId.isEmpty) return;
+      await Navigator.of(context).push(
+        CupertinoPageRoute<void>(
+          builder: (_) => ChannelVideosPage(
+            channelId: channelId,
+            channelName: details.title,
+            channelThumbnailUrl: details.logoUrl,
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No se pudo abrir el perfil del artista.'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _openAlbumFromTrack(_HomeTrack track) async {
+    try {
+      final resolved = await _resolveAlbumFromSearchFallback(track);
+      if (!mounted) return;
+      if (resolved == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No se pudo identificar el álbum de esta canción.'),
+          ),
+        );
+        return;
+      }
+      await Navigator.of(context).push(
+        CupertinoPageRoute<void>(
+          builder: (_) => AlbumTracksPage(
+            playlistId: resolved.playlistId,
+            albumTitle: resolved.title,
+            artistName: resolved.artist,
+            seedThumbnailUrl: resolved.thumbnailUrl.isNotEmpty
+                ? resolved.thumbnailUrl
+                : track.thumbnailUrl,
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo abrir el álbum.')),
+      );
+    }
+  }
+
+  Future<_HomeResolvedAlbumRef?> _resolveAlbumFromSearchFallback(
+    _HomeTrack track,
+  ) async {
+    final videoId = track.videoId.trim();
+    if (videoId.isNotEmpty) {
+      final cached = _albumRefByVideoIdCache[videoId];
+      if (cached != null) return cached;
+      final inFlight = _albumRefByVideoIdInFlight[videoId];
+      if (inFlight != null) return inFlight;
+    }
+
+    final future = _resolveAlbumRefFast(track);
+    if (videoId.isNotEmpty) {
+      _albumRefByVideoIdInFlight[videoId] = future;
+    }
+    try {
+      final resolved = await future;
+      if (videoId.isNotEmpty) {
+        if (resolved != null) {
+          _albumRefByVideoIdCache[videoId] = resolved;
+        }
+      }
+      return resolved;
+    } finally {
+      if (videoId.isNotEmpty) {
+        _albumRefByVideoIdInFlight.remove(videoId);
+      }
+    }
+  }
+
+  Future<_HomeResolvedAlbumRef?> _resolveAlbumRefFast(_HomeTrack track) async {
+    // Camino rápido: usar datos locales de la card.
+    final localResolved = await resolveAlbumFromSongAndArtistLikeSearch(
+      songTitle: track.title,
+      artistName: track.artist,
+    );
+    if (localResolved != null) {
+      return _HomeResolvedAlbumRef(
+        playlistId: localResolved.playlistId,
+        title: localResolved.title,
+        artist: localResolved.artist,
+        thumbnailUrl: localResolved.thumbnailUrl,
+      );
+    }
+
+    // Fallback: si el camino rápido no encontró álbum, refinamos con metadata real del video.
+    final videoId = track.videoId.trim();
+    if (videoId.isEmpty) return null;
+    String songTitle = track.title;
+    String artistName = track.artist;
+    try {
+      final video = await _yt.videos.get(videoId);
+      final fetchedTitle = video.title.trim();
+      final fetchedArtist = video.author.trim();
+      if (fetchedTitle.isNotEmpty) songTitle = fetchedTitle;
+      if (fetchedArtist.isNotEmpty) artistName = fetchedArtist;
+    } catch (_) {
+      return null;
+    }
+
+    final refinedResolved = await resolveAlbumFromSongAndArtistLikeSearch(
+      songTitle: songTitle,
+      artistName: artistName,
+    );
+    if (refinedResolved == null) return null;
+    return _HomeResolvedAlbumRef(
+      playlistId: refinedResolved.playlistId,
+      title: refinedResolved.title,
+      artist: refinedResolved.artist,
+      thumbnailUrl: refinedResolved.thumbnailUrl,
+    );
+  }
+
+  Rect _shareOriginFromContext(BuildContext context) {
+    final renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox != null && renderBox.hasSize) {
+      return renderBox.localToGlobal(Offset.zero) & renderBox.size;
+    }
+    return const Rect.fromLTWH(1, 1, 1, 1);
   }
 
   Future<List<PlaybackQueueItem>> _buildQueueItemsFromTracks(
@@ -747,17 +1296,34 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  List<List<_HomeTrack>> _buildRelistenColumns(List<_HomeTrack> source) {
+  List<List<_HomeTrack>> _buildTrackColumns(
+    List<_HomeTrack> source, {
+    int itemsPerColumn = 2,
+  }) {
     if (source.isEmpty) return const [];
+    final normalizedItemsPerColumn = itemsPerColumn <= 0 ? 1 : itemsPerColumn;
     final columns = <List<_HomeTrack>>[];
-    for (var index = 0; index < source.length; index += 2) {
-      final pair = <_HomeTrack>[source[index]];
-      if (index + 1 < source.length) {
-        pair.add(source[index + 1]);
-      }
-      columns.add(pair);
+    for (
+      var index = 0;
+      index < source.length;
+      index += normalizedItemsPerColumn
+    ) {
+      final end = math.min(index + normalizedItemsPerColumn, source.length);
+      columns.add(source.sublist(index, end));
     }
     return columns;
+  }
+
+  bool _shouldRenderAsTopSongsStack(_HomeShelf shelf) {
+    return shelf.id == 'quick_picks' ||
+        shelf.id == 'top_mexico' ||
+        shelf.id == 'top_global';
+  }
+
+  bool _isThinStackShelf(_HomeShelf shelf) {
+    return shelf.id == 'quick_picks' ||
+        shelf.id == 'top_mexico' ||
+        shelf.id == 'top_global';
   }
 
   @override
@@ -801,7 +1367,10 @@ class _HomePageState extends State<HomePage> {
                 ),
               );
             }
-            final relistenColumns = _buildRelistenColumns(content.relisten);
+            final relistenColumns = _buildTrackColumns(
+              content.relisten,
+              itemsPerColumn: 4,
+            );
 
             return RefreshIndicator(
               onRefresh: _refresh,
@@ -831,7 +1400,7 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   ),
-                  if (content.mixes.isNotEmpty) ...[
+                if (content.mixes.isNotEmpty) ...[
                     const SliverToBoxAdapter(child: SizedBox(height: 6)),
                     _SectionHeaderSliver(
                       title: 'Mixes para ti',
@@ -854,8 +1423,76 @@ class _HomePageState extends State<HomePage> {
                             );
                           },
                         ),
-                      ),
                     ),
+                  ),
+                ],
+                  if (content.curatedShelves.isNotEmpty) ...[
+                    const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                    _SectionHeaderSliver(
+                      title: 'Explorar en YouTube Music',
+                      subtitle: 'Quick picks, throwbacks y playlists en tendencia',
+                    ),
+                    for (final shelf in content.curatedShelves) ...[
+                      _SectionHeaderSliver(
+                        title: shelf.title,
+                        subtitle: shelf.subtitle,
+                      ),
+                      if (_shouldRenderAsTopSongsStack(shelf))
+                        SliverToBoxAdapter(
+                          child: SizedBox(
+                            height: _isThinStackShelf(shelf) ? 320 : 352,
+                            child: ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                              scrollDirection: Axis.horizontal,
+                              itemCount: _buildTrackColumns(
+                                shelf.tracks,
+                                itemsPerColumn: 4,
+                              ).length,
+                              separatorBuilder: (_, _) => const SizedBox(width: 12),
+                              itemBuilder: (context, index) {
+                                final columnItems = _buildTrackColumns(
+                                  shelf.tracks,
+                                  itemsPerColumn: 4,
+                                )[index];
+                                return _StackedTrackColumn(
+                                  items: columnItems,
+                                  onTap: _playTrack,
+                                  onSwipeToQueueNext: (item) => _addTrackToQueue(
+                                    item,
+                                    insertMode: ManualQueueInsertMode.next,
+                                  ),
+                                  onSwipeToQueueEnd: (item) => _addTrackToQueue(
+                                    item,
+                                    insertMode: ManualQueueInsertMode.end,
+                                  ),
+                                  onShowTrackMenu: _showTrackOptionsMenu,
+                                  allowSwipeToQueue: false,
+                                  thinCards: _isThinStackShelf(shelf),
+                                );
+                              },
+                            ),
+                          ),
+                        )
+                      else
+                        SliverToBoxAdapter(
+                          child: SizedBox(
+                            height: 222,
+                            child: ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                              scrollDirection: Axis.horizontal,
+                              itemCount: shelf.tracks.length,
+                              separatorBuilder: (_, _) => const SizedBox(width: 12),
+                              itemBuilder: (context, index) {
+                                final item = shelf.tracks[index];
+                                return _HomeFeatureCard(
+                                  item: item,
+                                  onTap: () => _playTrack(item),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                    ],
                   ],
                   const SliverToBoxAdapter(child: SizedBox(height: 6)),
                   _SectionHeaderSliver(
@@ -864,54 +1501,30 @@ class _HomePageState extends State<HomePage> {
                   ),
                   SliverToBoxAdapter(
                     child: SizedBox(
-                      height: 232,
-                      child: NotificationListener<ScrollNotification>(
-                        onNotification: (notification) {
-                          final nextIsDragging =
-                              notification is ScrollStartNotification ||
-                              (notification is UserScrollNotification &&
-                                  notification.direction !=
-                                      ScrollDirection.idle) ||
-                              notification is ScrollUpdateNotification;
-                          final nextIsIdle =
-                              notification is ScrollEndNotification ||
-                              (notification is UserScrollNotification &&
-                                  notification.direction ==
-                                      ScrollDirection.idle);
-                          if (nextIsDragging && !_relistenListIsDragging) {
-                            setState(() {
-                              _relistenListIsDragging = true;
-                            });
-                          } else if (nextIsIdle && _relistenListIsDragging) {
-                            setState(() {
-                              _relistenListIsDragging = false;
-                            });
-                          }
-                          return false;
+                      height: 320,
+                      child: ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                        scrollDirection: Axis.horizontal,
+                        itemCount: relistenColumns.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 12),
+                        itemBuilder: (context, index) {
+                          final columnItems = relistenColumns[index];
+                          return _StackedTrackColumn(
+                            items: columnItems,
+                            onTap: _playTrack,
+                            onSwipeToQueueNext: (item) => _addTrackToQueue(
+                              item,
+                              insertMode: ManualQueueInsertMode.next,
+                            ),
+                            onSwipeToQueueEnd: (item) => _addTrackToQueue(
+                              item,
+                              insertMode: ManualQueueInsertMode.end,
+                            ),
+                            onShowTrackMenu: _showTrackOptionsMenu,
+                            allowSwipeToQueue: false,
+                            thinCards: true,
+                          );
                         },
-                        child: ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                          scrollDirection: Axis.horizontal,
-                          itemCount: relistenColumns.length,
-                          separatorBuilder: (_, _) => const SizedBox(width: 12),
-                          itemBuilder: (context, index) {
-                            final columnItems = relistenColumns[index];
-                            return _RelistenStackedColumn(
-                              items: columnItems,
-                              onTap: _playTrack,
-                              onSwipeToQueueNext: (item) => _addTrackToQueue(
-                                item,
-                                insertMode: ManualQueueInsertMode.next,
-                              ),
-                              onSwipeToQueueEnd: (item) => _addTrackToQueue(
-                                item,
-                                insertMode: ManualQueueInsertMode.end,
-                              ),
-                              onAddToPlaylist: _addTrackToPlaylist,
-                              allowSwipeToQueue: !_relistenListIsDragging,
-                            );
-                          },
-                        ),
                       ),
                     ),
                   ),
@@ -966,7 +1579,7 @@ class _HomePageState extends State<HomePage> {
                                 item,
                                 insertMode: ManualQueueInsertMode.end,
                               ),
-                              onAddToPlaylist: () => _addTrackToPlaylist(item),
+                              onShowTrackMenu: () => _showTrackOptionsMenu(item),
                             );
                           },
                         ),
@@ -988,11 +1601,27 @@ class _HomeContent {
   final List<_HomeTrack> suggestions;
   final List<_HomeTrack> relisten;
   final List<_HomeMix> mixes;
+  final List<_HomeShelf> curatedShelves;
 
   const _HomeContent({
     required this.suggestions,
     required this.relisten,
     required this.mixes,
+    required this.curatedShelves,
+  });
+}
+
+class _ShelfSeed {
+  final String id;
+  final String title;
+  final String subtitle;
+  final String query;
+
+  const _ShelfSeed({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.query,
   });
 }
 
@@ -1002,6 +1631,20 @@ class _HomeMix {
   final List<_HomeTrack> tracks;
 
   const _HomeMix({
+    required this.title,
+    required this.subtitle,
+    required this.tracks,
+  });
+}
+
+class _HomeShelf {
+  final String id;
+  final String title;
+  final String subtitle;
+  final List<_HomeTrack> tracks;
+
+  const _HomeShelf({
+    required this.id,
     required this.title,
     required this.subtitle,
     required this.tracks,
@@ -1078,6 +1721,20 @@ class _HomeTrack {
       localSyncedLyrics: item.localSyncedLyrics,
     );
   }
+}
+
+class _HomeResolvedAlbumRef {
+  final String playlistId;
+  final String title;
+  final String artist;
+  final String thumbnailUrl;
+
+  const _HomeResolvedAlbumRef({
+    required this.playlistId,
+    required this.title,
+    required this.artist,
+    required this.thumbnailUrl,
+  });
 }
 
 class _SectionHeaderSliver extends StatelessWidget {
@@ -1327,51 +1984,62 @@ class _HomeMixCard extends StatelessWidget {
   }
 }
 
-class _RelistenStackedColumn extends StatelessWidget {
+class _StackedTrackColumn extends StatelessWidget {
   final List<_HomeTrack> items;
   final Future<void> Function(_HomeTrack item) onTap;
   final Future<void> Function(_HomeTrack item) onSwipeToQueueNext;
   final Future<void> Function(_HomeTrack item) onSwipeToQueueEnd;
-  final Future<void> Function(_HomeTrack item) onAddToPlaylist;
+  final Future<void> Function(_HomeTrack item) onShowTrackMenu;
   final bool allowSwipeToQueue;
+  final bool thinCards;
 
-  const _RelistenStackedColumn({
+  const _StackedTrackColumn({
     required this.items,
     required this.onTap,
     required this.onSwipeToQueueNext,
     required this.onSwipeToQueueEnd,
-    required this.onAddToPlaylist,
+    required this.onShowTrackMenu,
     required this.allowSwipeToQueue,
+    this.thinCards = false,
   });
 
   @override
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
+    final clampedItems = items.take(4).toList(growable: false);
     return SizedBox(
       width: 286,
-      child: Column(
-        children: [
-          _CompactReplayCard(
-            item: items.first,
-            onTap: () => onTap(items.first),
-            onSwipeToQueueNext: () => onSwipeToQueueNext(items.first),
-            onSwipeToQueueEnd: () => onSwipeToQueueEnd(items.first),
-            onAddToPlaylist: () => onAddToPlaylist(items.first),
-            allowSwipeToQueue: allowSwipeToQueue,
-          ),
-          const SizedBox(height: 10),
-          if (items.length > 1)
-            _CompactReplayCard(
-              item: items[1],
-              onTap: () => onTap(items[1]),
-              onSwipeToQueueNext: () => onSwipeToQueueNext(items[1]),
-              onSwipeToQueueEnd: () => onSwipeToQueueEnd(items[1]),
-              onAddToPlaylist: () => onAddToPlaylist(items[1]),
-              allowSwipeToQueue: allowSwipeToQueue,
-            )
-          else
-            const Spacer(),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          const spacing = 8.0;
+          const slotsPerColumn = 4;
+          final hasBoundedHeight = constraints.maxHeight.isFinite;
+          final rowHeight = hasBoundedHeight
+              ? (constraints.maxHeight - (slotsPerColumn - 1) * spacing) /
+                    slotsPerColumn
+              : 82.0;
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: List.generate(clampedItems.length * 2 - 1, (index) {
+              if (index.isOdd) return const SizedBox(height: spacing);
+              final itemIndex = index ~/ 2;
+              final item = clampedItems[itemIndex];
+              return SizedBox(
+                height: rowHeight,
+                child: _CompactReplayCard(
+                  item: item,
+                  onTap: () => onTap(item),
+                  onSwipeToQueueNext: () => onSwipeToQueueNext(item),
+                  onSwipeToQueueEnd: () => onSwipeToQueueEnd(item),
+                  onShowTrackMenu: () => onShowTrackMenu(item),
+                  allowSwipeToQueue: allowSwipeToQueue,
+                  thin: thinCards,
+                ),
+              );
+            }),
+          );
+        },
       ),
     );
   }
@@ -1382,16 +2050,18 @@ class _CompactReplayCard extends StatelessWidget {
   final VoidCallback onTap;
   final Future<void> Function() onSwipeToQueueNext;
   final Future<void> Function() onSwipeToQueueEnd;
-  final VoidCallback onAddToPlaylist;
+  final VoidCallback onShowTrackMenu;
   final bool allowSwipeToQueue;
+  final bool thin;
 
   const _CompactReplayCard({
     required this.item,
     required this.onTap,
     required this.onSwipeToQueueNext,
     required this.onSwipeToQueueEnd,
-    required this.onAddToPlaylist,
+    required this.onShowTrackMenu,
     required this.allowSwipeToQueue,
+    this.thin = false,
   });
 
   @override
@@ -1405,9 +2075,18 @@ class _CompactReplayCard extends StatelessWidget {
         : CupertinoColors.separator
               .resolveFrom(context)
               .withValues(alpha: 0.12);
+    final thumbSize = thin ? 56.0 : 64.0;
+    final cardRadius = thin ? 12.0 : 14.0;
+    final horizontalPadding = thin ? 8.0 : 8.0;
+    final verticalPadding = thin ? 4.0 : 7.0;
+    final titleFontSize = thin ? 13.0 : 14.0;
+    final artistFontSize = thin ? 11.0 : 12.0;
+    final titleArtistGap = thin ? 2.0 : 4.0;
+    final thumbTextGap = thin ? 8.0 : 10.0;
+    final trailingGap = thin ? 6.0 : 8.0;
 
     final card = ClipRRect(
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(cardRadius),
       child: Material(
         color: cardColor,
         surfaceTintColor: Colors.transparent,
@@ -1415,14 +2094,17 @@ class _CompactReplayCard extends StatelessWidget {
           onTap: onTap,
           child: Container(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(cardRadius),
               border: Border.all(color: cardBorder, width: 0.6),
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+            padding: EdgeInsets.symmetric(
+              horizontal: horizontalPadding,
+              vertical: verticalPadding,
+            ),
             child: Row(
               children: [
-                _AdaptiveThumb(item: item, size: 64),
-                const SizedBox(width: 10),
+                _AdaptiveThumb(item: item, size: thumbSize),
+                SizedBox(width: thumbTextGap),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1432,20 +2114,20 @@ class _CompactReplayCard extends StatelessWidget {
                         item.title,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontFamily: '.SF Pro Text',
-                          fontSize: 14,
+                          fontSize: titleFontSize,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      SizedBox(height: titleArtistGap),
                       Text(
                         item.artist,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontFamily: '.SF Pro Text',
-                          fontSize: 12,
+                          fontSize: artistFontSize,
                           color: CupertinoColors.secondaryLabel.resolveFrom(
                             context,
                           ),
@@ -1454,8 +2136,8 @@ class _CompactReplayCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                const SizedBox(width: 8),
-                _QueueAddButton(onPressed: onAddToPlaylist),
+                SizedBox(width: trailingGap),
+                _QueueAddButton(onPressed: onShowTrackMenu),
               ],
             ),
           ),
@@ -1463,19 +2145,17 @@ class _CompactReplayCard extends StatelessWidget {
       ),
     );
 
-    return Expanded(
-      child: allowSwipeToQueue
-          ? Slidable(
-              key: ObjectKey(item),
-              startActionPane: _queueActionPane(
-                context,
-                onNext: onSwipeToQueueNext,
-                onEnd: onSwipeToQueueEnd,
-              ),
-              child: card,
-            )
-          : card,
-    );
+    return allowSwipeToQueue
+        ? Slidable(
+            key: ObjectKey(item),
+            startActionPane: _queueActionPane(
+              context,
+              onNext: onSwipeToQueueNext,
+              onEnd: onSwipeToQueueEnd,
+            ),
+            child: card,
+          )
+        : card;
   }
 }
 
@@ -1484,14 +2164,14 @@ class _TrendingRowCard extends StatelessWidget {
   final VoidCallback onTap;
   final Future<void> Function() onSwipeToQueueNext;
   final Future<void> Function() onSwipeToQueueEnd;
-  final VoidCallback onAddToPlaylist;
+  final VoidCallback onShowTrackMenu;
 
   const _TrendingRowCard({
     required this.item,
     required this.onTap,
     required this.onSwipeToQueueNext,
     required this.onSwipeToQueueEnd,
-    required this.onAddToPlaylist,
+    required this.onShowTrackMenu,
   });
 
   @override
@@ -1566,7 +2246,7 @@ class _TrendingRowCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    _QueueAddButton(onPressed: onAddToPlaylist),
+                    _QueueAddButton(onPressed: onShowTrackMenu),
                   ],
                 ),
               ),
@@ -1622,17 +2302,105 @@ class _QueueAddButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg = CupertinoColors.tertiarySystemFill.resolveFrom(context);
     return CupertinoButton(
-      padding: const EdgeInsets.all(6),
-      minimumSize: const Size(32, 32),
+      padding: EdgeInsets.zero,
+      minimumSize: const Size(30, 30),
       borderRadius: BorderRadius.circular(11),
-      color: bg,
       onPressed: onPressed,
       child: Icon(
-        CupertinoIcons.add,
-        size: 16,
-        color: CupertinoColors.systemPink.resolveFrom(context),
+        CupertinoIcons.ellipsis_circle,
+        size: 22,
+        color: CupertinoColors.secondaryLabel.resolveFrom(context),
+      ),
+    );
+  }
+}
+
+class _AdaptiveBackdropFilter extends StatelessWidget {
+  final ImageFilter filter;
+  final Widget child;
+
+  const _AdaptiveBackdropFilter({required this.filter, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final appInForeground =
+        context.select<AppLifecycleService?, bool>((s) => s?.isForeground ?? true);
+    final dataSaverMode =
+        context.select<AppSettingsService?, bool>((s) => s?.dataSaverMode ?? false);
+    final disableBackdrop =
+        dataSaverMode ||
+        !appInForeground ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    if (disableBackdrop) return child;
+    return BackdropFilter(filter: filter, child: child);
+  }
+}
+
+class _GlassSheetActionRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _GlassSheetActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: _AdaptiveBackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.05),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: onTap,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: CupertinoColors.white.withValues(alpha: 0.18),
+                  width: 0.6,
+                ),
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Colors.white.withValues(alpha: 0.08),
+                    Colors.white.withValues(alpha: 0.02),
+                  ],
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: const TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    CupertinoIcons.chevron_right,
+                    size: 17,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

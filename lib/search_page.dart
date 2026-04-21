@@ -30,21 +30,22 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 enum SearchState { initial, loading, success, error, noResults }
 
+enum _SearchFilterMode { music, podcast, videos }
+
 class _AdaptiveBackdropFilter extends StatelessWidget {
   final ImageFilter filter;
   final Widget child;
 
-  const _AdaptiveBackdropFilter({
-    required this.filter,
-    required this.child,
-  });
+  const _AdaptiveBackdropFilter({required this.filter, required this.child});
 
   @override
   Widget build(BuildContext context) {
-    final appInForeground =
-        context.select<AppLifecycleService?, bool>((s) => s?.isForeground ?? true);
-    final dataSaverMode =
-        context.select<AppSettingsService?, bool>((s) => s?.dataSaverMode ?? false);
+    final appInForeground = context.select<AppLifecycleService?, bool>(
+      (s) => s?.isForeground ?? true,
+    );
+    final dataSaverMode = context.select<AppSettingsService?, bool>(
+      (s) => s?.dataSaverMode ?? false,
+    );
     final disableBackdrop =
         dataSaverMode ||
         !appInForeground ||
@@ -1137,6 +1138,39 @@ Future<_ResolvedAlbumRef?> _resolveAlbumFromAppSearchEngine(Video video) async {
   );
 }
 
+Future<({String playlistId, String title, String artist, String thumbnailUrl})?>
+resolveAlbumFromSongAndArtistLikeSearch({
+  required String songTitle,
+  required String artistName,
+}) async {
+  final compactTitle = songTitle.replaceAll(RegExp(r'\s+'), ' ').trim();
+  final compactArtist = cleanArtistName(
+    artistName,
+  ).replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (compactTitle.isEmpty && compactArtist.isEmpty) return null;
+
+  final query = '$compactTitle $compactArtist'
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (query.isEmpty) return null;
+
+  final results = await _searchAlbumsFromAppEngine(query);
+  if (results.isEmpty) return null;
+  final best = results.first;
+  final title = best.title.trim();
+  final artist = best.artist.trim();
+  return (
+    playlistId: best.playlistId,
+    title: title.isNotEmpty ? title : 'Álbum',
+    artist: artist.isNotEmpty
+        ? artist
+        : (compactArtist.isNotEmpty
+              ? compactArtist
+              : cleanArtistName(artistName)),
+    thumbnailUrl: best.thumbnailUrl.trim(),
+  );
+}
+
 String _extractYouTubeText(dynamic node) {
   if (node == null) return '';
   if (node is String) return node.trim();
@@ -1251,6 +1285,7 @@ class _SearchPageState extends State<SearchPage>
   final FocusNode _searchFocusNode = FocusNode();
   int _searchEpoch = 0;
   int _autocompleteEpoch = 0;
+  _SearchFilterMode _filterMode = _SearchFilterMode.music;
   bool _showArtists = true;
   bool _showAlbums = true;
   _SelectedArtistView? _selectedArtistView;
@@ -1325,6 +1360,54 @@ class _SearchPageState extends State<SearchPage>
     _searchViewState?.setArtistFullscreen(isFullscreenContentVisible);
   }
 
+  bool get _isMusicFilterMode => _filterMode == _SearchFilterMode.music;
+  bool get _isPodcastFilterMode => _filterMode == _SearchFilterMode.podcast;
+  bool get _isVideosFilterMode => _filterMode == _SearchFilterMode.videos;
+
+  void _refreshSearchForCurrentQueryIfNeeded() {
+    if (_textController.text.trim().isEmpty) return;
+    unawaited(_searchVideos());
+  }
+
+  void _activateMusicFilters() {
+    setState(() {
+      _filterMode = _SearchFilterMode.music;
+      _showArtists = true;
+      _showAlbums = true;
+    });
+    _refreshSearchForCurrentQueryIfNeeded();
+  }
+
+  void _togglePodcastFilter() {
+    setState(() {
+      if (_isPodcastFilterMode) {
+        _filterMode = _SearchFilterMode.music;
+        _showArtists = true;
+        _showAlbums = true;
+      } else {
+        _filterMode = _SearchFilterMode.podcast;
+        _showArtists = false;
+        _showAlbums = false;
+      }
+    });
+    _refreshSearchForCurrentQueryIfNeeded();
+  }
+
+  void _toggleVideosFilter() {
+    setState(() {
+      if (_isVideosFilterMode) {
+        _filterMode = _SearchFilterMode.music;
+        _showArtists = true;
+        _showAlbums = true;
+      } else {
+        _filterMode = _SearchFilterMode.videos;
+        _showArtists = false;
+        _showAlbums = false;
+      }
+    });
+    _refreshSearchForCurrentQueryIfNeeded();
+  }
+
   @override
   void reassemble() {
     super.reassemble();
@@ -1345,24 +1428,49 @@ class _SearchPageState extends State<SearchPage>
     FocusScope.of(context).unfocus();
     _clearAutocompleteSuggestions();
     final epoch = ++_searchEpoch;
-    final cached = _searchCache[query];
-    final cachedChannels = await _getCachedChannels(query);
-    final cachedPrimaryArtist = cached != null && cached.isNotEmpty
-        ? cleanArtistName(cached.first.author).trim()
-        : '';
-    final cachedAlbums = cachedPrimaryArtist.isNotEmpty
-        ? _albumSearchCache[cachedPrimaryArtist]
-        : _albumSearchCache[query];
-    if (cached != null && cachedChannels != null && cachedAlbums != null) {
-      setState(() {
-        _videos = cached;
-        _channels = cachedChannels;
-        _albums = cachedAlbums;
-        _searchState =
-            cached.isEmpty && cachedChannels.isEmpty && cachedAlbums.isEmpty
-            ? SearchState.noResults
-            : SearchState.success;
-      });
+    final searchCacheKey = '${_filterMode.name}|$query';
+    final cached = _searchCache[searchCacheKey];
+    if (_isMusicFilterMode) {
+      final cachedChannels = await _getCachedChannels(query);
+      final cachedPrimaryArtist = cached != null && cached.isNotEmpty
+          ? cleanArtistName(cached.first.author).trim()
+          : '';
+      final cachedAlbums = cachedPrimaryArtist.isNotEmpty
+          ? _albumSearchCache[cachedPrimaryArtist]
+          : _albumSearchCache[query];
+      if (cached != null && cachedChannels != null && cachedAlbums != null) {
+        setState(() {
+          _videos = cached;
+          _channels = cachedChannels;
+          _albums = cachedAlbums;
+          _searchState =
+              cached.isEmpty && cachedChannels.isEmpty && cachedAlbums.isEmpty
+              ? SearchState.noResults
+              : SearchState.success;
+        });
+        return;
+      }
+    } else if (cached != null) {
+      if (_isVideosFilterMode || _isPodcastFilterMode) {
+        final cachedChannels = await _getCachedChannels(query);
+        setState(() {
+          _videos = cached;
+          _channels = cachedChannels ?? const <SearchChannelWithSubscribers>[];
+          _albums = const <_SearchAlbumResult>[];
+          _searchState = _videos.isEmpty && _channels.isEmpty
+              ? SearchState.noResults
+              : SearchState.success;
+        });
+      } else {
+        setState(() {
+          _videos = cached;
+          _channels = const <SearchChannelWithSubscribers>[];
+          _albums = const <_SearchAlbumResult>[];
+          _searchState = cached.isEmpty
+              ? SearchState.noResults
+              : SearchState.success;
+        });
+      }
       return;
     }
 
@@ -1374,7 +1482,56 @@ class _SearchPageState extends State<SearchPage>
     });
 
     try {
-      final videosFuture = _searchWithCache(query);
+      final videosFuture = _searchWithCache(query, mode: _filterMode);
+
+      if (_isPodcastFilterMode) {
+        final channelsFuture = _searchChannelsWithCache(query);
+        final searchResult = await videosFuture;
+        if (!mounted || epoch != _searchEpoch) return;
+        setState(() {
+          _videos = searchResult.toList(growable: false);
+          _channels = const <SearchChannelWithSubscribers>[];
+          _albums = const <_SearchAlbumResult>[];
+          _searchState = _videos.isEmpty
+              ? SearchState.noResults
+              : SearchState.success;
+        });
+
+        final channelResult = await channelsFuture;
+        if (!mounted || epoch != _searchEpoch) return;
+        setState(() {
+          _channels = channelResult.take(2).toList(growable: false);
+          _searchState = _videos.isEmpty && _channels.isEmpty
+              ? SearchState.noResults
+              : SearchState.success;
+        });
+        return;
+      }
+
+      if (_isVideosFilterMode) {
+        final channelsFuture = _searchChannelsWithCache(query);
+        final searchResult = await videosFuture;
+        if (!mounted || epoch != _searchEpoch) return;
+        setState(() {
+          _videos = searchResult.toList(growable: false);
+          _channels = const <SearchChannelWithSubscribers>[];
+          _albums = const <_SearchAlbumResult>[];
+          _searchState = _videos.isEmpty
+              ? SearchState.noResults
+              : SearchState.success;
+        });
+
+        final channelResult = await channelsFuture;
+        if (!mounted || epoch != _searchEpoch) return;
+        setState(() {
+          _channels = channelResult.take(2).toList(growable: false);
+          _searchState = _videos.isEmpty && _channels.isEmpty
+              ? SearchState.noResults
+              : SearchState.success;
+        });
+        return;
+      }
+
       final channelsFuture = _searchChannelsWithCache(query);
 
       // Mostramos el canal del artista tan pronto como esté listo.
@@ -1398,9 +1555,7 @@ class _SearchPageState extends State<SearchPage>
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _videos = searchResult.toList();
-        _channels = _channels.isNotEmpty
-            ? _channels
-            : (cachedChannels ?? const []);
+        _channels = _channels.isNotEmpty ? _channels : const [];
         _searchState = _videos.isEmpty && _channels.isEmpty && _albums.isEmpty
             ? SearchState.noResults
             : SearchState.success;
@@ -1464,7 +1619,10 @@ class _SearchPageState extends State<SearchPage>
       ];
       final query =
           fallbackQueries[math.Random().nextInt(fallbackQueries.length)];
-      final videos = await _searchWithCache(query);
+      final videos = await _searchWithCache(
+        query,
+        mode: _SearchFilterMode.music,
+      );
       if (!mounted) return;
       setState(() {
         _initialRecommendationQuery = query;
@@ -1739,6 +1897,7 @@ class _SearchPageState extends State<SearchPage>
         preferredThumbnailUrl: thumbnailUrl,
         preferredTitle: title,
         preferredArtist: artist,
+        preferVideoPlayback: _isVideosFilterMode || _isPodcastFilterMode,
       );
     } catch (e, s) {
       developer.log('Error al abrir reproductor', error: e, stackTrace: s);
@@ -2017,6 +2176,20 @@ class _SearchPageState extends State<SearchPage>
                             ),
                             const SizedBox(height: 8),
                             _GlassSheetActionRow(
+                              icon: CupertinoIcons.text_insert,
+                              label: 'Añadir como siguiente',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('queue_next'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.text_append,
+                              label: 'Añadir al final',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('queue_end'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
                               icon: CupertinoIcons.square_arrow_up,
                               label: 'Compartir',
                               onTap: () =>
@@ -2056,6 +2229,14 @@ class _SearchPageState extends State<SearchPage>
     }
     if (action == 'playlist') {
       await _showPlaylistPicker(video);
+      return;
+    }
+    if (action == 'queue_next') {
+      _queueVideo(video, insertMode: ManualQueueInsertMode.next);
+      return;
+    }
+    if (action == 'queue_end') {
+      _queueVideo(video, insertMode: ManualQueueInsertMode.end);
       return;
     }
     if (action == 'share') {
@@ -2118,23 +2299,58 @@ class _SearchPageState extends State<SearchPage>
     );
   }
 
-  Future<List<Video>> _searchWithCache(String query) async {
-    final cached = _searchCache[query];
+  Future<List<Video>> _searchWithCache(
+    String query, {
+    required _SearchFilterMode mode,
+  }) async {
+    final cacheKey = '${mode.name}|$query';
+    final cached = _searchCache[cacheKey];
     if (cached != null) return cached;
-    final inFlight = _searchInFlight[query];
+    final inFlight = _searchInFlight[cacheKey];
     if (inFlight != null) return inFlight;
 
-    final future = _runYoutubeWithRetry(
-      () => _searchAutoGeneratedTopicVideos(query),
-    );
-    _searchInFlight[query] = future;
+    late final Future<List<Video>> future;
+    switch (mode) {
+      case _SearchFilterMode.music:
+        future = _runYoutubeWithRetry(
+          () => _searchAutoGeneratedTopicVideos(query),
+        );
+      case _SearchFilterMode.podcast:
+        future = _runYoutubeWithRetry(
+          () => _searchPodcastMarkedVideos(query),
+          maxAttempts: 1,
+        );
+      case _SearchFilterMode.videos:
+        future = _runYoutubeWithRetry(
+          () => _searchUnfilteredVideos(query),
+          maxAttempts: 1,
+        );
+    }
+    _searchInFlight[cacheKey] = future;
     try {
       final result = await future;
-      _searchCache[query] = result;
+      _searchCache[cacheKey] = result;
       return result;
     } finally {
-      _searchInFlight.remove(query);
+      _searchInFlight.remove(cacheKey);
     }
+  }
+
+  Future<List<Video>> _searchUnfilteredVideos(String query) async {
+    final raw = await _youtubeExplode.search.search(query);
+    final seenIds = <String>{};
+    final videos = <Video>[];
+    for (final video in raw.take(80)) {
+      final id = video.id.value.trim();
+      if (id.isEmpty || !seenIds.add(id)) continue;
+      videos.add(video);
+    }
+    return videos;
+  }
+
+  Future<List<Video>> _searchPodcastMarkedVideos(String query) async {
+    final rawVideos = await _searchUnfilteredVideos(query);
+    return rawVideos.where(_isPodcastMarkedVideo).toList(growable: false);
   }
 
   Future<List<_SearchAlbumResult>> _searchAlbumsWithCache(String query) async {
@@ -2359,7 +2575,10 @@ class _SearchPageState extends State<SearchPage>
       }
 
       // Fallback solo si no hubo suficientes candidatos por canal.
-      final videos = await _searchWithCache(query);
+      final videos = await _searchWithCache(
+        query,
+        mode: _SearchFilterMode.music,
+      );
       final resolvedByVideoSearch = await _resolveChannelsFromTopVideos(
         videos.take(2).toList(),
       );
@@ -2797,47 +3016,68 @@ class _SearchPageState extends State<SearchPage>
   }
 
   Widget _buildSearchFilters() {
-    return Row(
-      children: [
-        SearchModeButton(
-          label: 'Canciones',
-          icon: CupertinoIcons.music_note_2,
-          isActive: true,
-          onPressed: () {},
-        ),
-        const SizedBox(width: 10),
-        SearchModeButton(
-          label: 'Artistas',
-          icon: CupertinoIcons.person_2,
-          isActive: _showArtists,
-          onPressed: () {
-            setState(() {
-              _showArtists = !_showArtists;
-            });
-          },
-        ),
-        const SizedBox(width: 10),
-        SearchModeButton(
-          label: 'Álbumes',
-          icon: CupertinoIcons.music_albums,
-          isActive: _showAlbums,
-          onPressed: () {
-            setState(() {
-              _showAlbums = !_showAlbums;
-            });
-          },
-        ),
-      ],
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          SearchModeButton(
+            label: 'Canciones',
+            icon: CupertinoIcons.music_note_2,
+            isActive: _isMusicFilterMode,
+            onPressed: _activateMusicFilters,
+          ),
+          const SizedBox(width: 10),
+          SearchModeButton(
+            label: 'Artistas',
+            icon: CupertinoIcons.person_2,
+            isActive: _isMusicFilterMode && _showArtists,
+            onPressed: () {
+              if (!_isMusicFilterMode) return;
+              setState(() {
+                _showArtists = !_showArtists;
+              });
+            },
+          ),
+          const SizedBox(width: 10),
+          SearchModeButton(
+            label: 'Álbumes',
+            icon: CupertinoIcons.music_albums,
+            isActive: _isMusicFilterMode && _showAlbums,
+            onPressed: () {
+              if (!_isMusicFilterMode) return;
+              setState(() {
+                _showAlbums = !_showAlbums;
+              });
+            },
+          ),
+          const SizedBox(width: 10),
+          SearchModeButton(
+            label: 'Podcast',
+            icon: CupertinoIcons.mic_fill,
+            isActive: _isPodcastFilterMode,
+            onPressed: _togglePodcastFilter,
+          ),
+          const SizedBox(width: 10),
+          SearchModeButton(
+            label: 'Videos',
+            icon: CupertinoIcons.play_rectangle_fill,
+            isActive: _isVideosFilterMode,
+            onPressed: _toggleVideosFilter,
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildSearchBar() {
     final borderRadius = BorderRadius.circular(18);
     final focused = _searchFocusNode.hasFocus;
-    final appInForeground =
-        context.select<AppLifecycleService?, bool>((s) => s?.isForeground ?? true);
-    final dataSaverMode =
-        context.select<AppSettingsService?, bool>((s) => s?.dataSaverMode ?? false);
+    final appInForeground = context.select<AppLifecycleService?, bool>(
+      (s) => s?.isForeground ?? true,
+    );
+    final dataSaverMode = context.select<AppSettingsService?, bool>(
+      (s) => s?.dataSaverMode ?? false,
+    );
     final shouldUseLightweightUi =
         dataSaverMode ||
         !appInForeground ||
@@ -3046,7 +3286,9 @@ class _SearchPageState extends State<SearchPage>
           ],
         );
       case SearchState.success:
-        final prioritizedVideos = _prioritizedVideos(_videos);
+        final prioritizedVideos = _isMusicFilterMode
+            ? _prioritizedVideos(_videos)
+            : List<Video>.from(_videos);
         final albumResults = _albums;
         final displayChannels = _orderedChannelsForDisplay(
           channels: _channels,
@@ -3063,7 +3305,32 @@ class _SearchPageState extends State<SearchPage>
               );
         return ListView(
           children: [
-            if (_showArtists &&
+            if ((_isVideosFilterMode || _isPodcastFilterMode) &&
+                displayChannels.isNotEmpty) ...[
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'Canales principales',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              ...displayChannels
+                  .take(2)
+                  .map(
+                    (channel) => ChannelCard(
+                      channel: channel,
+                      subscriberLabel: _formatSubscribers(
+                        channel.subscribersCount,
+                      ),
+                      onTap: () => _openChannel(channel),
+                    ),
+                  ),
+              const SizedBox(height: 14),
+            ],
+            if (_isMusicFilterMode &&
+                _showArtists &&
                 (primaryVideo != null || displayChannels.isNotEmpty)) ...[
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
@@ -3114,7 +3381,9 @@ class _SearchPageState extends State<SearchPage>
               ],
               const SizedBox(height: 14),
             ],
-            if (_showAlbums && albumResults.isNotEmpty) ...[
+            if (_isMusicFilterMode &&
+                _showAlbums &&
+                albumResults.isNotEmpty) ...[
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Text(
@@ -3138,7 +3407,9 @@ class _SearchPageState extends State<SearchPage>
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Text(
-                  'Canciones',
+                  _isPodcastFilterMode
+                      ? 'Podcast'
+                      : (_isVideosFilterMode ? 'Videos' : 'Canciones'),
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -3148,19 +3419,33 @@ class _SearchPageState extends State<SearchPage>
             ...prioritizedVideos
                 .take(20)
                 .map(
-                  (video) => VideoCard(
-                    video: video,
-                    onPlay: () => _playVideoPreferLocal(video),
-                    onQueueNext: () => _queueVideo(
-                      video,
-                      insertMode: ManualQueueInsertMode.next,
-                    ),
-                    onQueueEnd: () => _queueVideo(
-                      video,
-                      insertMode: ManualQueueInsertMode.end,
-                    ),
-                    onMenuTap: () => _showVideoOptionsMenu(video),
-                  ),
+                  (video) => (_isVideosFilterMode || _isPodcastFilterMode)
+                      ? _YouTubeStyleVideoCard(
+                          video: video,
+                          onPlay: () => _playVideoPreferLocal(video),
+                          onQueueNext: () => _queueVideo(
+                            video,
+                            insertMode: ManualQueueInsertMode.next,
+                          ),
+                          onQueueEnd: () => _queueVideo(
+                            video,
+                            insertMode: ManualQueueInsertMode.end,
+                          ),
+                          onMenuTap: () => _showVideoOptionsMenu(video),
+                        )
+                      : VideoCard(
+                          video: video,
+                          onPlay: () => _playVideoPreferLocal(video),
+                          onQueueNext: () => _queueVideo(
+                            video,
+                            insertMode: ManualQueueInsertMode.next,
+                          ),
+                          onQueueEnd: () => _queueVideo(
+                            video,
+                            insertMode: ManualQueueInsertMode.end,
+                          ),
+                          onMenuTap: () => _showVideoOptionsMenu(video),
+                        ),
                 ),
             SizedBox(height: bottomReserve),
           ],
@@ -3336,6 +3621,13 @@ class _SearchPageState extends State<SearchPage>
     final autoGenerated = _isAutoGeneratedVideo(video);
     final hasVideoLikeSignal = _searchVideoLikeKeywords.any(text.contains);
     return (topic || autoGenerated) && !hasVideoLikeSignal;
+  }
+
+  bool _isPodcastMarkedVideo(Video video) {
+    final text = '${video.title} ${video.author} ${video.description}'
+        .toLowerCase();
+    return RegExp(r'(^|[^a-z])podcast(s)?([^a-z]|$)').hasMatch(text) ||
+        text.contains('#podcast');
   }
 
   bool _isAutoGeneratedVideo(Video video) {
@@ -4175,11 +4467,13 @@ class VideoCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final effectiveIsDownloaded = isDownloaded ?? (() {
-      final downloadService = context.watch<DownloadService>();
-      return downloadService.getDownloadStatus(video.id.value) ==
-          DownloadStatus.downloaded;
-    })();
+    final effectiveIsDownloaded =
+        isDownloaded ??
+        (() {
+          final downloadService = context.watch<DownloadService>();
+          return downloadService.getDownloadStatus(video.id.value) ==
+              DownloadStatus.downloaded;
+        })();
     final borderRadius = BorderRadius.circular(14);
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final cardColor = isDark
@@ -4361,6 +4655,173 @@ class VideoCard extends StatelessWidget {
               child: swipeCard,
             )
           : swipeCard,
+    );
+  }
+}
+
+class _YouTubeStyleVideoCard extends StatelessWidget {
+  final Video video;
+  final VoidCallback onPlay;
+  final VoidCallback? onQueueNext;
+  final VoidCallback? onQueueEnd;
+  final VoidCallback onMenuTap;
+
+  const _YouTubeStyleVideoCard({
+    required this.video,
+    required this.onPlay,
+    this.onQueueNext,
+    this.onQueueEnd,
+    required this.onMenuTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark
+        ? Colors.black
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final borderColor = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.14);
+    final card = ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: Material(
+        color: cardColor,
+        child: InkWell(
+          onTap: onPlay,
+          child: Container(
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: borderColor, width: 0.6),
+            ),
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 168,
+                    height: 94.5,
+                    child: Image.network(
+                      _bestQualityThumbnail(video),
+                      fit: BoxFit.cover,
+                      filterQuality: FilterQuality.low,
+                      errorBuilder: (context, error, stackTrace) => Container(
+                        color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                          context,
+                        ),
+                        alignment: Alignment.center,
+                        child: Icon(
+                          Icons.videocam_off_outlined,
+                          size: 28,
+                          color: CupertinoColors.secondaryLabel.resolveFrom(
+                            context,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: SizedBox(
+                    height: 94.5,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          video.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: CupertinoColors.label.resolveFrom(
+                                  context,
+                                ),
+                                letterSpacing: -0.1,
+                              ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          cleanArtistName(video.author),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
+                                fontSize: 12.5,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
+                              ),
+                        ),
+                        const Spacer(),
+                        Align(
+                          alignment: Alignment.bottomRight,
+                          child: CupertinoButton(
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(30, 30),
+                            onPressed: onMenuTap,
+                            child: Icon(
+                              CupertinoIcons.ellipsis_circle,
+                              size: 22,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(
+                                context,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final swipeCard = (onQueueNext == null || onQueueEnd == null)
+        ? card
+        : Slidable(
+            key: ObjectKey(video),
+            startActionPane: ActionPane(
+              motion: const StretchMotion(),
+              extentRatio: 0.46,
+              dismissible: DismissiblePane(
+                onDismissed: () {},
+                closeOnCancel: true,
+                confirmDismiss: () async {
+                  onQueueNext?.call();
+                  return false;
+                },
+              ),
+              children: [
+                QueueSwipeActionButton(
+                  onTap: () => onQueueNext?.call(),
+                  baseColor: CupertinoColors.systemPink.resolveFrom(context),
+                  icon: CupertinoIcons.text_insert,
+                  label: 'Siguiente',
+                ),
+                QueueSwipeActionButton(
+                  onTap: () => onQueueEnd?.call(),
+                  baseColor: CupertinoColors.systemBlue.resolveFrom(context),
+                  icon: CupertinoIcons.text_append,
+                  label: 'Al final',
+                ),
+              ],
+            ),
+            child: card,
+          );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: swipeCard,
     );
   }
 }
@@ -5561,9 +6022,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     return columns;
   }
 
-  Widget _buildTopSongsSection(
-    BuildContext context,
-  ) {
+  Widget _buildTopSongsSection(BuildContext context) {
     final columns = _buildTopSongColumns(_videos);
     if (columns.isEmpty) return const SizedBox.shrink();
     return Padding(
@@ -5601,16 +6060,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                   width: 286,
                   child: Column(
                     children: [
-                      _buildTopSongCompactCard(
-                        context,
-                        pair.first,
-                      ),
+                      _buildTopSongCompactCard(context, pair.first),
                       const SizedBox(height: 6),
                       if (pair.length > 1)
-                        _buildTopSongCompactCard(
-                          context,
-                          pair[1],
-                        )
+                        _buildTopSongCompactCard(context, pair[1])
                       else
                         const Spacer(),
                     ],
@@ -5624,10 +6077,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     );
   }
 
-  Widget _buildTopSongCompactCard(
-    BuildContext context,
-    Video video,
-  ) {
+  Widget _buildTopSongCompactCard(BuildContext context, Video video) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final cardColor = isDark
         ? Colors.black
@@ -5637,8 +6087,6 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
         : CupertinoColors.separator
               .resolveFrom(context)
               .withValues(alpha: 0.12);
-    final actionBg = CupertinoColors.tertiarySystemFill.resolveFrom(context);
-    final actionAccent = CupertinoColors.systemPink.resolveFrom(context);
     final downloadService = context.watch<DownloadService>();
     final isDownloaded =
         downloadService.getDownloadStatus(video.id.value) ==
@@ -5721,15 +6169,13 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                   const SizedBox(width: 8),
                 ],
                 CupertinoButton(
-                  padding: const EdgeInsets.all(4),
-                  minimumSize: const Size(28, 28),
-                  borderRadius: BorderRadius.circular(9),
-                  color: actionBg,
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(30, 30),
                   onPressed: () => _showVideoOptionsMenu(video),
                   child: Icon(
-                    CupertinoIcons.add,
-                    size: 14,
-                    color: actionAccent,
+                    CupertinoIcons.ellipsis_circle,
+                    size: 22,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
                   ),
                 ),
               ],
@@ -5821,6 +6267,32 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       thumbnailUrl: _bestQualityThumbnail(video),
       title: video.title,
       artist: cleanArtistName(video.author),
+    );
+  }
+
+  void _queueVideo(
+    Video video, {
+    ManualQueueInsertMode insertMode = ManualQueueInsertMode.end,
+  }) {
+    final manager = context.read<VideoPlayerManager>();
+    final added = manager.addOnlineTrackToPlaybackQueue(
+      videoId: video.id.value,
+      title: video.title,
+      thumbnailUrl: _bestQualityThumbnail(video),
+      artist: cleanArtistName(video.author),
+      insertMode: insertMode,
+    );
+    if (!mounted) return;
+    _showIosTopToast(
+      context,
+      message: added
+          ? (insertMode == ManualQueueInsertMode.next
+                ? 'Se añadió como siguiente'
+                : 'Se ha añadido a la cola')
+          : 'Esta canción ya está en cola',
+      icon: added
+          ? CupertinoIcons.check_mark_circled_solid
+          : CupertinoIcons.info_circle_fill,
     );
   }
 
@@ -5948,6 +6420,20 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                             ),
                             const SizedBox(height: 8),
                             _GlassSheetActionRow(
+                              icon: CupertinoIcons.text_insert,
+                              label: 'Añadir como siguiente',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('queue_next'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.text_append,
+                              label: 'Añadir al final',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('queue_end'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
                               icon: CupertinoIcons.square_arrow_up,
                               label: 'Compartir',
                               onTap: () =>
@@ -5980,6 +6466,14 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     }
     if (action == 'playlist') {
       await _showPlaylistPicker(video);
+      return;
+    }
+    if (action == 'queue_next') {
+      _queueVideo(video, insertMode: ManualQueueInsertMode.next);
+      return;
+    }
+    if (action == 'queue_end') {
+      _queueVideo(video, insertMode: ManualQueueInsertMode.end);
       return;
     }
     if (action == 'share') {
@@ -6832,6 +7326,20 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
                             ),
                             const SizedBox(height: 8),
                             _GlassSheetActionRow(
+                              icon: CupertinoIcons.text_insert,
+                              label: 'Añadir como siguiente',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('queue_next'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
+                              icon: CupertinoIcons.text_append,
+                              label: 'Añadir al final',
+                              onTap: () =>
+                                  Navigator.of(sheetContext).pop('queue_end'),
+                            ),
+                            const SizedBox(height: 8),
+                            _GlassSheetActionRow(
                               icon: CupertinoIcons.square_arrow_up,
                               label: 'Compartir',
                               onTap: () =>
@@ -6857,6 +7365,14 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
     }
     if (action == 'playlist') {
       await _showPlaylistPicker(video);
+      return;
+    }
+    if (action == 'queue_next') {
+      _queueAlbumTrack(video, insertMode: ManualQueueInsertMode.next);
+      return;
+    }
+    if (action == 'queue_end') {
+      _queueAlbumTrack(video, insertMode: ManualQueueInsertMode.end);
       return;
     }
     if (action == 'share') {
@@ -7209,10 +7725,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
     );
   }
 
-  Widget _buildPlaylistStyleAlbumTrackTile(
-    BuildContext context,
-    Video video,
-  ) {
+  Widget _buildPlaylistStyleAlbumTrackTile(BuildContext context, Video video) {
     final downloadService = context.watch<DownloadService>();
     final isDownloaded =
         downloadService.getDownloadStatus(video.id.value) ==
@@ -7401,10 +7914,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
               final video = _tracks[index - 1];
               return Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: _buildPlaylistStyleAlbumTrackTile(
-                  context,
-                  video,
-                ),
+                child: _buildPlaylistStyleAlbumTrackTile(context, video),
               );
             }, childCount: _tracks.length + 2),
           );
@@ -7414,9 +7924,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       child: Stack(
         children: [
           Positioned.fill(
-            child: IgnorePointer(
-              child: _buildAlbumBlurBackground(context),
-            ),
+            child: IgnorePointer(child: _buildAlbumBlurBackground(context)),
           ),
           ScrollConfiguration(
             behavior: const _NoGlowScrollBehavior(),
