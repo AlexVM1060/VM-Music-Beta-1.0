@@ -10,6 +10,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/services/youtube_request_guard.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:path_provider/path_provider.dart';
@@ -43,6 +44,7 @@ class DownloadService with ChangeNotifier {
   static const String _downloadsBoxName = 'downloads';
   static const String _autoDownloadBoxName = 'auto_download_playlists';
   final YoutubeExplode _yt = YoutubeExplode();
+  final YoutubeRequestGuard _youtubeGuard = YoutubeRequestGuard.shared;
   final Dio _dio = Dio();
   final LyricsService _lyricsService = LyricsService();
   final AppSettingsService _settingsService;
@@ -1009,21 +1011,32 @@ class DownloadService with ChangeNotifier {
     Object? lastError;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        await _youtubeGuard.waitForSlot();
         return await action();
       } on RequestLimitExceededException catch (e) {
         lastError = e;
+        _youtubeGuard.activateSlowMode(
+          Duration(seconds: 35 + (attempt * 18)),
+        );
       } on SocketException catch (e) {
         lastError = e;
       } on HttpException catch (e) {
         lastError = e;
       } catch (e) {
         lastError = e;
+        if (_youtubeGuard.isRateLimitError(e)) {
+          _youtubeGuard.activateSlowMode(
+            Duration(seconds: 35 + (attempt * 18)),
+          );
+        }
       }
 
       if (attempt < maxAttempts) {
-        // Backoff más agresivo para límites temporales de YouTube.
-        final waitSeconds = attempt * 4;
-        await Future<void>.delayed(Duration(seconds: waitSeconds));
+        final delay = _youtubeGuard.retryDelay(
+          attempt: attempt,
+          lastError: lastError,
+        );
+        await Future<void>.delayed(delay);
       }
     }
     throw lastError ?? Exception('Error desconocido al contactar YouTube');

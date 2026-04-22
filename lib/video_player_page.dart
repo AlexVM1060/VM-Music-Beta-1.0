@@ -9,9 +9,11 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/services/youtube_request_guard.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:omni_video_player/omni_video_player.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -29,10 +31,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   VideoPlayerController? _videoPlayerController;
   ChewieController? _chewieController;
   final _ytExplode = YoutubeExplode();
+  final YoutubeRequestGuard _youtubeGuard = YoutubeRequestGuard.shared;
   String _videoTitle = '';
   Video? _video;
   Offset _dragOffset = const Offset(200, 400);
   bool _isLoading = true;
+  bool _useOmniYoutubePlayer = false;
 
   late final VideoPlayerManager _manager;
 
@@ -44,7 +48,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     super.initState();
     _manager = Provider.of<VideoPlayerManager>(context, listen: false);
     _manager.init();
+    _preemptManagerPlaybackIfOmniEnabled();
     _initializePlayer();
+  }
+
+  void _preemptManagerPlaybackIfOmniEnabled() {
+    final settings = context.read<AppSettingsService?>();
+    final useOmniYoutubePlayer = settings?.useOmniYoutubePlayer ?? false;
+    if (!useOmniYoutubePlayer) return;
+    // Corta cuanto antes cualquier reproducción iniciada por el manager
+    // para evitar que suene youtube_explode antes de cargar Omni.
+    unawaited(_manager.close());
   }
 
   Future<void> _initializePlayer() async {
@@ -55,25 +69,55 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
     try {
       final settings = context.read<AppSettingsService?>();
+      _useOmniYoutubePlayer = settings?.useOmniYoutubePlayer ?? false;
       final dataSaverMode = settings?.dataSaverMode ?? false;
       final targetHeight = _targetVideoHeightForQuality(
         settings?.audioQuality,
         dataSaverMode: dataSaverMode,
       );
+
+      if (_useOmniYoutubePlayer) {
+        await _manager.close();
+        try {
+          final video = await _runYoutubeWithRetry(
+            () => _ytExplode.videos.get(VideoId(widget.videoId)),
+          );
+          _video = video;
+          _videoTitle = video.title;
+        } catch (_) {
+          _video = null;
+          _videoTitle = 'YouTube';
+        }
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+          });
+        }
+        log(
+          '[OMNI] VideoPlayerPage usando omni_video_player para ${widget.videoId}',
+          name: 'OMNI_PLAYER',
+        );
+        final video = _video;
+        if (video != null) {
+          _fetchRelatedVideos(video);
+        }
+        return;
+      }
+
       await _manager.playFromUserSelection(context, widget.videoId);
-      final manifestFuture = _runYoutubeWithRetry(
-        () => _ytExplode.videos.streamsClient.getManifest(widget.videoId),
-      );
       final videoFuture = _runYoutubeWithRetry(
         () => _ytExplode.videos.get(VideoId(widget.videoId)),
       );
+      final manifestFuture = _runYoutubeWithRetry(
+        () => _ytExplode.videos.streamsClient.getManifest(widget.videoId),
+      );
 
-      final manifest = await manifestFuture;
       _video = await videoFuture;
-
       if (mounted) {
         _videoTitle = _video!.title;
       }
+
+      final manifest = await manifestFuture;
 
       final allMuxedStreams = manifest.muxed.toList()
         ..sort((a, b) {
@@ -142,18 +186,31 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     Object? lastError;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
+        await _youtubeGuard.waitForSlot();
         return await action();
-      } on RequestLimitExceededException {
-        rethrow;
+      } on RequestLimitExceededException catch (e) {
+        lastError = e;
+        _youtubeGuard.activateSlowMode(
+          Duration(seconds: 35 + (attempt * 18)),
+        );
       } on SocketException catch (e) {
         lastError = e;
       } on HttpException catch (e) {
         lastError = e;
       } catch (e) {
         lastError = e;
+        if (_youtubeGuard.isRateLimitError(e)) {
+          _youtubeGuard.activateSlowMode(
+            Duration(seconds: 35 + (attempt * 18)),
+          );
+        }
       }
       if (attempt < maxAttempts) {
-        await Future<void>.delayed(Duration(seconds: attempt * 2));
+        final delay = _youtubeGuard.retryDelay(
+          attempt: attempt,
+          lastError: lastError,
+        );
+        await Future<void>.delayed(delay);
       }
     }
     throw lastError ?? Exception('Error de red al consultar YouTube');
@@ -313,6 +370,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.videoId != widget.videoId) {
       _disposeControllers();
+      _preemptManagerPlaybackIfOmniEnabled();
       _initializePlayer();
     }
   }
@@ -332,17 +390,20 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   @override
   Widget build(BuildContext context) {
     final isMinimized = _manager.isMinimized;
-    final dataSaverMode =
-        context.watch<AppSettingsService?>()?.dataSaverMode ?? false;
+    final settings = context.watch<AppSettingsService?>();
+    final dataSaverMode = settings?.dataSaverMode ?? false;
+    final useOmniYoutubePlayer =
+        settings?.useOmniYoutubePlayer ?? _useOmniYoutubePlayer;
 
     const double minimizedWidth = 250.0;
     const double minimizedHeight = 140.6;
 
-    final playerWidget =
-        _chewieController != null &&
-            _chewieController!.videoPlayerController.value.isInitialized
-        ? Chewie(controller: _chewieController!)
-        : const Center(child: CupertinoActivityIndicator());
+    final playerWidget = useOmniYoutubePlayer
+        ? _buildOmniYoutubePlayer()
+        : (_chewieController != null &&
+                  _chewieController!.videoPlayerController.value.isInitialized
+              ? Chewie(controller: _chewieController!)
+              : const Center(child: CupertinoActivityIndicator()));
 
     if (_isLoading && !isMinimized) {
       return Scaffold(body: Center(child: playerWidget));
@@ -389,6 +450,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           minimizedHeight,
           playerWidget,
           dataSaverMode,
+          useOmniYoutubePlayer,
         ),
       ),
     );
@@ -400,6 +462,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     double minHeight,
     Widget player,
     bool dataSaverMode,
+    bool useOmniYoutubePlayer,
   ) {
     final screenSize = MediaQuery.of(context).size;
 
@@ -417,6 +480,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
               : _buildMaximizedLayout(
                   player,
                   preferLowResolution: dataSaverMode,
+                  useOmniYoutubePlayer: useOmniYoutubePlayer,
                 ),
         ),
       ),
@@ -426,6 +490,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   Widget _buildMaximizedLayout(
     Widget player, {
     required bool preferLowResolution,
+    required bool useOmniYoutubePlayer,
   }) {
     final playlistService = Provider.of<PlaylistService>(
       context,
@@ -529,23 +594,24 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                         );
                       },
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.settings),
-                      tooltip: 'Cambiar Calidad',
-                      onPressed: () {
-                        if (_muxedStreamInfos.isNotEmpty) {
-                          _showQualityOptions(context);
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'No hay otras calidades disponibles.',
+                    if (!useOmniYoutubePlayer)
+                      IconButton(
+                        icon: const Icon(Icons.settings),
+                        tooltip: 'Cambiar Calidad',
+                        onPressed: () {
+                          if (_muxedStreamInfos.isNotEmpty) {
+                            _showQualityOptions(context);
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'No hay otras calidades disponibles.',
+                                ),
                               ),
-                            ),
-                          );
-                        }
-                      },
-                    ),
+                            );
+                          }
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -624,6 +690,33 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildOmniYoutubePlayer() {
+    final youtubeUrl = Uri.parse(
+      'https://www.youtube.com/watch?v=${widget.videoId}',
+    );
+    final source = VideoSourceConfiguration.youtube(
+      videoUrl: youtubeUrl,
+      enableYoutubeWebViewFallback: true,
+    ).copyWith(autoPlay: true, autoMuteOnStart: false, initialVolume: 1.0);
+    return AspectRatio(
+      aspectRatio: 16 / 9,
+      child: OmniVideoPlayer(
+        key: ValueKey<String>('omni_youtube_${widget.videoId}'),
+        options: VideoPlayerConfiguration(
+          videoSourceConfiguration: source,
+        ),
+        callbacks: VideoPlayerCallbacks(
+          onControllerCreated: (controller) {
+            log(
+              '[OMNI] Controller creado en VideoPlayerPage para ${widget.videoId}',
+              name: 'OMNI_PLAYER',
+            );
+          },
+        ),
       ),
     );
   }

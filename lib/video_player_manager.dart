@@ -21,6 +21,7 @@ import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/now_playing_artwork_service.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/services/youtube_request_guard.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -212,6 +213,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Completer<void>? _resetEnginesCompleter;
   bool _isSwitchingEngine = false;
   bool _isTogglingPlayPause = false;
+  bool _omniAudioBridgeEnabled = false;
   String? _currentStreamUrl;
   List<PlaybackQueueItem> _manualPlaybackQueue = const [];
   List<PlaybackQueueItem> _playbackQueue = const [];
@@ -265,8 +267,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _crossfadePreparedPrimed = false;
   String? _crossfadeFailedForCurrentVideoId;
   String? _crossfadeFailedQueueKey;
-  DateTime? _lastYoutubeRequestAt;
-  DateTime? _youtubeSlowModeUntil;
+  final YoutubeRequestGuard _youtubeGuard = YoutubeRequestGuard.shared;
   int _lyricsEpoch = 0;
   bool _iosLockScreenFavoriteBound = false;
   bool _songShareBound = false;
@@ -280,8 +281,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   int _sessionRestoreEpoch = 0;
   DateTime _lastSessionPersistAt = DateTime.fromMillisecondsSinceEpoch(0);
   int _lastSessionPersistedPositionMs = -1;
-  static const Duration _youtubeMinRequestGap = Duration(milliseconds: 450);
-  static const Duration _youtubeSlowRequestGap = Duration(milliseconds: 1650);
   static const Duration _youtubeRateLimitCooldown = Duration(seconds: 40);
   static const Duration _playbackUiNotifyMinIntervalNormal = Duration(
     milliseconds: 620,
@@ -1493,6 +1492,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             );
             await controller.initialize();
             await controller.play();
+            try {
+              await controller.setVolume(_targetPlaybackVolume());
+            } catch (_) {
+              // Best effort.
+            }
             _hiddenVideoController = controller;
             _usingHiddenVideo = true;
             _currentStreamUrl = stream.url.toString();
@@ -2014,6 +2018,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
       await controller.initialize();
       await controller.play();
+      try {
+        await controller.setVolume(_targetPlaybackVolume());
+      } catch (_) {
+        // Best effort.
+      }
       _hiddenVideoController = controller;
       _usingHiddenVideo = true;
       _currentStreamUrl = source.sourceUrl;
@@ -4089,42 +4098,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _waitForYoutubeRequestSlot() async {
-    final now = DateTime.now();
-    final slowModeActive =
-        _youtubeSlowModeUntil != null && now.isBefore(_youtubeSlowModeUntil!);
-    final effectiveGap = slowModeActive
-        ? _youtubeSlowRequestGap
-        : _youtubeMinRequestGap;
-    final last = _lastYoutubeRequestAt;
-    if (last == null) {
-      _lastYoutubeRequestAt = now;
-      return;
-    }
-    final elapsed = now.difference(last);
-    if (elapsed < effectiveGap) {
-      await Future<void>.delayed(effectiveGap - elapsed);
-    }
-    if (slowModeActive) {
-      final jitterMs = 120 + math.Random().nextInt(420);
-      await Future<void>.delayed(Duration(milliseconds: jitterMs));
-    }
-    _lastYoutubeRequestAt = DateTime.now();
+    await _youtubeGuard.waitForSlot();
   }
 
   bool get _isYoutubeSlowModeActive {
-    final until = _youtubeSlowModeUntil;
-    return until != null && DateTime.now().isBefore(until);
+    return _youtubeGuard.isSlowModeActive;
   }
 
   void _activateYoutubeSlowMode([
     Duration duration = _youtubeRateLimitCooldown,
   ]) {
-    final now = DateTime.now();
-    final until = now.add(duration);
-    if (_youtubeSlowModeUntil == null ||
-        until.isAfter(_youtubeSlowModeUntil!)) {
-      _youtubeSlowModeUntil = until;
-    }
+    _youtubeGuard.activateSlowMode(duration);
   }
 
   Future<void> _resetYoutubeClientForRecovery() async {
@@ -4623,18 +4607,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         lastError = e;
       } catch (e) {
         lastError = e;
+        if (_youtubeGuard.isRateLimitError(e)) {
+          _activateYoutubeSlowMode(Duration(seconds: 35 + (attempt * 18)));
+          if (attempt < maxAttempts) {
+            await _resetYoutubeClientForRecovery();
+          }
+        }
       }
 
       if (attempt < maxAttempts) {
-        final waitSeconds = (lastError is RequestLimitExceededException)
-            ? (4 + (attempt * 4))
-            : (lastError is VideoUnavailableException)
-            ? 1
-            : (attempt * 3);
-        final jitterMs = 120 + math.Random().nextInt(380);
-        await Future<void>.delayed(
-          Duration(seconds: waitSeconds, milliseconds: jitterMs),
+        if (lastError is VideoUnavailableException) {
+          await Future<void>.delayed(const Duration(milliseconds: 900));
+          continue;
+        }
+        final delay = _youtubeGuard.retryDelay(
+          attempt: attempt,
+          lastError: lastError,
         );
+        await Future<void>.delayed(delay);
       }
     }
     throw lastError ?? Exception('Error desconocido al contactar YouTube');
@@ -5229,6 +5219,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  Future<void> setOmniAudioBridgeEnabled(bool enabled) async {
+    if (_omniAudioBridgeEnabled == enabled) return;
+    _omniAudioBridgeEnabled = enabled;
+    _volumeFadeEpoch++;
+    await _applyPlaybackVolumeSetting();
+    final hidden = _hiddenVideoController;
+    if (hidden != null) {
+      try {
+        await hidden.setVolume(enabled ? 0.0 : _targetPlaybackVolume());
+      } catch (_) {
+        // Best effort para sincronizar volumen del fallback de video.
+      }
+    }
+  }
+
   Future<void> _applyPlaybackVolumeSetting() async {
     try {
       final targetVolume = _targetPlaybackVolume();
@@ -5479,6 +5484,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   double _targetPlaybackVolume() {
+    if (_omniAudioBridgeEnabled) return 0.0;
     final baseVolume = _settingsService.normalizeVolume
         ? 1.0
         : _defaultPlaybackVolume;
