@@ -8,11 +8,11 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
+import 'package:hive/hive.dart';
 import 'package:image/image.dart' as img;
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/download_service.dart';
-import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/app_lifecycle_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
@@ -262,6 +262,104 @@ class _SearchAlbumResult {
     required this.artist,
     required this.thumbnailUrl,
   });
+}
+
+class _CachedVideoSnapshot {
+  final String videoId;
+  final String title;
+  final String author;
+  final String channelId;
+  final String description;
+  final int? durationMs;
+  final int viewCount;
+  final int? uploadDateMs;
+  final int? publishDateMs;
+  final bool isLive;
+
+  const _CachedVideoSnapshot({
+    required this.videoId,
+    required this.title,
+    required this.author,
+    required this.channelId,
+    required this.description,
+    required this.durationMs,
+    required this.viewCount,
+    required this.uploadDateMs,
+    required this.publishDateMs,
+    required this.isLive,
+  });
+
+  factory _CachedVideoSnapshot.fromVideo(Video video) {
+    return _CachedVideoSnapshot(
+      videoId: video.id.value,
+      title: video.title,
+      author: video.author,
+      channelId: video.channelId.value,
+      description: video.description,
+      durationMs: video.duration?.inMilliseconds,
+      viewCount: video.engagement.viewCount,
+      uploadDateMs: video.uploadDate?.millisecondsSinceEpoch,
+      publishDateMs: video.publishDate?.millisecondsSinceEpoch,
+      isLive: video.isLive,
+    );
+  }
+
+  factory _CachedVideoSnapshot.fromMap(Map<String, dynamic> map) {
+    return _CachedVideoSnapshot(
+      videoId: (map['videoId'] ?? '').toString().trim(),
+      title: (map['title'] ?? '').toString().trim(),
+      author: (map['author'] ?? '').toString().trim(),
+      channelId: (map['channelId'] ?? '').toString().trim(),
+      description: (map['description'] ?? '').toString(),
+      durationMs: (map['durationMs'] as num?)?.toInt(),
+      viewCount: (map['viewCount'] as num?)?.toInt() ?? 0,
+      uploadDateMs: (map['uploadDateMs'] as num?)?.toInt(),
+      publishDateMs: (map['publishDateMs'] as num?)?.toInt(),
+      isLive: map['isLive'] == true,
+    );
+  }
+
+  Map<String, dynamic> toMap() => <String, dynamic>{
+    'videoId': videoId,
+    'title': title,
+    'author': author,
+    'channelId': channelId,
+    'description': description,
+    'durationMs': durationMs,
+    'viewCount': viewCount,
+    'uploadDateMs': uploadDateMs,
+    'publishDateMs': publishDateMs,
+    'isLive': isLive,
+  };
+
+  Video toVideo() {
+    final safeVideoId = VideoId.validateVideoId(videoId)
+        ? videoId
+        : 'dQw4w9WgXcQ';
+    final rawChannelId = channelId.trim();
+    final safeChannelId = ChannelId.validateChannelId(rawChannelId)
+        ? rawChannelId
+        : 'UC_x5XG1OV2P6uZZ5FSM9Ttw';
+    return Video(
+      VideoId(safeVideoId),
+      title.isEmpty ? 'Canción' : title,
+      author.isEmpty ? 'Artista' : author,
+      ChannelId(safeChannelId),
+      uploadDateMs != null
+          ? DateTime.fromMillisecondsSinceEpoch(uploadDateMs!)
+          : null,
+      null,
+      publishDateMs != null
+          ? DateTime.fromMillisecondsSinceEpoch(publishDateMs!)
+          : null,
+      description,
+      durationMs != null ? Duration(milliseconds: durationMs!) : null,
+      ThumbnailSet(safeVideoId),
+      const <String>[],
+      Engagement(viewCount, null, null),
+      isLive,
+    );
+  }
 }
 
 const String _youtubeiMusicSearchEndpointForAlbums =
@@ -1257,6 +1355,100 @@ class SearchChannelWithSubscribers {
   }
 }
 
+class _SearchTabTrackHistoryEntry {
+  final String videoId;
+  final String title;
+  final String artist;
+  final String thumbnailUrl;
+  final bool isLocal;
+  final String? localFilePath;
+
+  const _SearchTabTrackHistoryEntry({
+    required this.videoId,
+    required this.title,
+    required this.artist,
+    required this.thumbnailUrl,
+    required this.isLocal,
+    this.localFilePath,
+  });
+
+  factory _SearchTabTrackHistoryEntry.fromMap(Map<String, dynamic> map) {
+    return _SearchTabTrackHistoryEntry(
+      videoId: (map['videoId'] ?? '').toString().trim(),
+      title: (map['title'] ?? '').toString().trim(),
+      artist: cleanArtistName((map['artist'] ?? '').toString().trim()),
+      thumbnailUrl: (map['thumbnailUrl'] ?? '').toString().trim(),
+      isLocal: map['isLocal'] == true,
+      localFilePath: (map['localFilePath'] ?? '').toString().trim().isEmpty
+          ? null
+          : (map['localFilePath'] ?? '').toString().trim(),
+    );
+  }
+
+  Map<String, dynamic> toMap() => <String, dynamic>{
+    'videoId': videoId,
+    'title': title,
+    'artist': artist,
+    'thumbnailUrl': thumbnailUrl,
+    'isLocal': isLocal,
+    'localFilePath': localFilePath ?? '',
+  };
+}
+
+class _SearchTabArtistHistoryEntry {
+  final String channelId;
+  final String channelName;
+  final String channelThumbnailUrl;
+
+  const _SearchTabArtistHistoryEntry({
+    required this.channelId,
+    required this.channelName,
+    required this.channelThumbnailUrl,
+  });
+
+  factory _SearchTabArtistHistoryEntry.fromMap(Map<String, dynamic> map) {
+    return _SearchTabArtistHistoryEntry(
+      channelId: (map['channelId'] ?? '').toString().trim(),
+      channelName: (map['channelName'] ?? '').toString().trim(),
+      channelThumbnailUrl: (map['channelThumbnailUrl'] ?? '').toString().trim(),
+    );
+  }
+
+  Map<String, dynamic> toMap() => <String, dynamic>{
+    'channelId': channelId,
+    'channelName': channelName,
+    'channelThumbnailUrl': channelThumbnailUrl,
+  };
+}
+
+enum _SearchHistoryMixedItemType { artist, track }
+
+class _SearchHistoryMixedItem {
+  final _SearchHistoryMixedItemType type;
+  final _SearchTabArtistHistoryEntry? artist;
+  final _SearchTabTrackHistoryEntry? track;
+
+  const _SearchHistoryMixedItem._({
+    required this.type,
+    this.artist,
+    this.track,
+  });
+
+  factory _SearchHistoryMixedItem.artist(_SearchTabArtistHistoryEntry value) {
+    return _SearchHistoryMixedItem._(
+      type: _SearchHistoryMixedItemType.artist,
+      artist: value,
+    );
+  }
+
+  factory _SearchHistoryMixedItem.track(_SearchTabTrackHistoryEntry value) {
+    return _SearchHistoryMixedItem._(
+      type: _SearchHistoryMixedItemType.track,
+      track: value,
+    );
+  }
+}
+
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key});
 
@@ -1268,6 +1460,21 @@ class _SearchPageState extends State<SearchPage>
     with SingleTickerProviderStateMixin {
   static const int _minimumSubscribers = 100000;
   static const int _maxChannelsToShow = 2;
+  static const String _searchNetworkCacheBoxName = 'search_network_cache';
+  static const String _searchAutocompleteCacheKey = 'autocomplete_v1';
+  static const String _searchArtistByVideoCacheKey = 'artist_by_video_v1';
+  static const String _searchAlbumByVideoCacheKey = 'album_by_video_v1';
+  static const Duration _autocompletePersistentTtl = Duration(hours: 18);
+  static const Duration _artistByVideoPersistentTtl = Duration(days: 14);
+  static const Duration _albumByVideoPersistentTtl = Duration(days: 10);
+  static const int _autocompletePersistentMaxEntries = 180;
+  static const int _artistByVideoPersistentMaxEntries = 300;
+  static const int _albumByVideoPersistentMaxEntries = 300;
+  static const String _searchTabHistoryBoxName = 'search_tab_history';
+  static const String _searchTabTrackHistoryKey = 'tracks_v1';
+  static const String _searchTabArtistHistoryKey = 'artists_v1';
+  static const int _searchTabTrackHistoryMaxEntries = 24;
+  static const int _searchTabArtistHistoryMaxEntries = 16;
   final TextEditingController _textController = TextEditingController();
   final YoutubeExplode _youtubeExplode = YoutubeExplode();
   List<Video> _videos = [];
@@ -1291,10 +1498,9 @@ class _SearchPageState extends State<SearchPage>
   _SelectedArtistView? _selectedArtistView;
   _SelectedAlbumView? _selectedAlbumView;
   int _artistTransitionDirection = 1;
-  List<Video> _initialRecommendations = const [];
-  bool _initialRecommendationsLoading = false;
-  String? _initialRecommendationQuery;
-  bool _initialRecommendationsFromQueue = false;
+  bool _searchTabHistoryLoading = true;
+  List<_SearchTabTrackHistoryEntry> _searchTabTrackHistory = const [];
+  List<_SearchTabArtistHistoryEntry> _searchTabArtistHistory = const [];
   bool _autocompleteLoading = false;
   List<String> _autocompleteSuggestions = const [];
   final Map<String, List<String>> _autocompleteCache = {};
@@ -1315,9 +1521,8 @@ class _SearchPageState extends State<SearchPage>
     _searchFocusNode.addListener(() {
       if (mounted) setState(() {});
     });
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_loadInitialRecommendations());
-    });
+    unawaited(_loadSearchTabHistory());
+    unawaited(_loadSearchNetworkCaches());
   }
 
   AnimationController _ensureSearchBarGlowController() {
@@ -1593,97 +1798,337 @@ class _SearchPageState extends State<SearchPage>
     }
   }
 
-  Future<void> _loadInitialRecommendations() async {
-    if (!mounted) return;
-    setState(() {
-      _initialRecommendationsLoading = true;
-    });
-
+  Future<void> _loadSearchTabHistory() async {
     try {
-      final queueVideos = await _loadQueueStyleRecommendationVideos();
-      if (!mounted) return;
-      if (queueVideos.isNotEmpty) {
-        setState(() {
-          _initialRecommendationQuery = null;
-          _initialRecommendations = queueVideos.take(12).toList();
-          _initialRecommendationsFromQueue = true;
-          _initialRecommendationsLoading = false;
-        });
-        return;
+      final box = await Hive.openBox<String>(_searchTabHistoryBoxName);
+      final tracksRaw = box.get(_searchTabTrackHistoryKey);
+      final artistsRaw = box.get(_searchTabArtistHistoryKey);
+
+      List<_SearchTabTrackHistoryEntry> tracks = const [];
+      List<_SearchTabArtistHistoryEntry> artists = const [];
+
+      if (tracksRaw != null && tracksRaw.isNotEmpty) {
+        final decoded = jsonDecode(tracksRaw);
+        if (decoded is List) {
+          tracks = decoded
+              .whereType<Map>()
+              .map(
+                (item) => _SearchTabTrackHistoryEntry.fromMap(
+                  Map<String, dynamic>.from(item.cast<dynamic, dynamic>()),
+                ),
+              )
+              .where(
+                (item) =>
+                    item.videoId.isNotEmpty &&
+                    item.title.isNotEmpty,
+              )
+              .take(_searchTabTrackHistoryMaxEntries)
+              .toList(growable: false);
+        }
       }
 
-      const fallbackQueries = [
-        'Regional mexicano',
-        'musica en ingles',
-        'rels b',
-      ];
-      final query =
-          fallbackQueries[math.Random().nextInt(fallbackQueries.length)];
-      final videos = await _searchWithCache(
-        query,
-        mode: _SearchFilterMode.music,
-      );
+      if (artistsRaw != null && artistsRaw.isNotEmpty) {
+        final decoded = jsonDecode(artistsRaw);
+        if (decoded is List) {
+          artists = decoded
+              .whereType<Map>()
+              .map(
+                (item) => _SearchTabArtistHistoryEntry.fromMap(
+                  Map<String, dynamic>.from(item.cast<dynamic, dynamic>()),
+                ),
+              )
+              .where(
+                (item) =>
+                    item.channelId.isNotEmpty && item.channelName.isNotEmpty,
+              )
+              .take(_searchTabArtistHistoryMaxEntries)
+              .toList(growable: false);
+        }
+      }
+
       if (!mounted) return;
       setState(() {
-        _initialRecommendationQuery = query;
-        _initialRecommendations = _prioritizedVideos(videos).take(12).toList();
-        _initialRecommendationsFromQueue = false;
-        _initialRecommendationsLoading = false;
+        _searchTabTrackHistory = tracks;
+        _searchTabArtistHistory = artists;
+        _searchTabHistoryLoading = false;
       });
     } catch (_) {
       if (!mounted) return;
       setState(() {
-        _initialRecommendationQuery = null;
-        _initialRecommendations = const [];
-        _initialRecommendationsFromQueue = false;
-        _initialRecommendationsLoading = false;
+        _searchTabTrackHistory = const [];
+        _searchTabArtistHistory = const [];
+        _searchTabHistoryLoading = false;
       });
     }
   }
 
-  Future<List<Video>> _loadQueueStyleRecommendationVideos() async {
-    final manager = context.read<VideoPlayerManager>();
-    final historyService = context.read<HistoryService>();
-    var queueItems = await manager.fetchQueueStyleRecommendations(limit: 24);
-    if (queueItems.isEmpty) {
-      final history = await historyService.getHistory();
-      final seed = history
-          .map((item) => item.videoId.trim())
-          .firstWhere((id) => id.isNotEmpty, orElse: () => '');
-      if (seed.isNotEmpty) {
-        queueItems = await manager.fetchQueueStyleRecommendations(
-          limit: 24,
-          seedVideoId: seed,
+  bool _isWithinTtl(int savedAtMs, Duration ttl) {
+    if (savedAtMs <= 0) return false;
+    final savedAt = DateTime.fromMillisecondsSinceEpoch(savedAtMs);
+    if (savedAt.isAfter(DateTime.now())) return false;
+    return DateTime.now().difference(savedAt) <= ttl;
+  }
+
+  Future<void> _loadSearchNetworkCaches() async {
+    try {
+      final box = await Hive.openBox<String>(_searchNetworkCacheBoxName);
+      final autocompleteRaw = box.get(_searchAutocompleteCacheKey);
+      if (autocompleteRaw != null && autocompleteRaw.isNotEmpty) {
+        _hydrateAutocompletePersistentCache(autocompleteRaw);
+      }
+
+      final artistRaw = box.get(_searchArtistByVideoCacheKey);
+      if (artistRaw != null && artistRaw.isNotEmpty) {
+        _hydrateArtistByVideoPersistentCache(artistRaw);
+      }
+
+      final albumRaw = box.get(_searchAlbumByVideoCacheKey);
+      if (albumRaw != null && albumRaw.isNotEmpty) {
+        _hydrateAlbumByVideoPersistentCache(albumRaw);
+      }
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  void _hydrateAutocompletePersistentCache(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      final map = Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+      final items = map['items'];
+      if (items is! List) return;
+
+      for (final row in items.whereType<Map>()) {
+        final item = Map<String, dynamic>.from(row.cast<dynamic, dynamic>());
+        final query = (item['query'] ?? '').toString().trim();
+        final savedAtMs = (item['savedAtMs'] as num?)?.toInt() ?? 0;
+        if (query.isEmpty ||
+            !_isWithinTtl(savedAtMs, _autocompletePersistentTtl)) {
+          continue;
+        }
+        final suggestionsRaw = item['suggestions'];
+        if (suggestionsRaw is! List) continue;
+        final suggestions = suggestionsRaw
+            .map((e) => e.toString().trim())
+            .where((e) => e.isNotEmpty)
+            .take(10)
+            .toList(growable: false);
+        if (suggestions.isEmpty) continue;
+        _autocompleteCache[query] = suggestions;
+      }
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  void _hydrateArtistByVideoPersistentCache(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      final map = Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+      final items = map['items'];
+      if (items is! List) return;
+
+      for (final row in items.whereType<Map>()) {
+        final item = Map<String, dynamic>.from(row.cast<dynamic, dynamic>());
+        final videoId = (item['videoId'] ?? '').toString().trim();
+        final channelId = (item['channelId'] ?? '').toString().trim();
+        final channelName = (item['channelName'] ?? '').toString().trim();
+        final channelThumb = (item['channelThumbnailUrl'] ?? '')
+            .toString()
+            .trim();
+        final savedAtMs = (item['savedAtMs'] as num?)?.toInt() ?? 0;
+        if (videoId.isEmpty ||
+            channelId.isEmpty ||
+            channelName.isEmpty ||
+            !_isWithinTtl(savedAtMs, _artistByVideoPersistentTtl)) {
+          continue;
+        }
+        _artistProfileByVideoIdCache[videoId] = PendingArtistProfile(
+          channelId: channelId,
+          channelName: channelName,
+          channelThumbnailUrl: channelThumb,
         );
       }
+    } catch (_) {
+      // Best effort.
     }
-    if (queueItems.isEmpty) return const <Video>[];
-
-    final orderedIds = <String>[];
-    final seenIds = <String>{};
-    for (final item in queueItems) {
-      if (item.isLocal) continue;
-      final id = item.videoId.trim();
-      if (id.isEmpty) continue;
-      if (seenIds.add(id)) orderedIds.add(id);
-    }
-    if (orderedIds.isEmpty) return const <Video>[];
-
-    final resolved = await Future.wait(
-      orderedIds.take(16).map(_resolveVideoById),
-    );
-    return resolved.whereType<Video>().toList(growable: false);
   }
 
-  Future<Video?> _resolveVideoById(String videoId) async {
+  void _hydrateAlbumByVideoPersistentCache(String raw) {
     try {
-      return await _runYoutubeWithRetry(
-        () => _youtubeExplode.videos.get(videoId),
-        maxAttempts: 1,
-      );
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      final map = Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+      final items = map['items'];
+      if (items is! List) return;
+
+      for (final row in items.whereType<Map>()) {
+        final item = Map<String, dynamic>.from(row.cast<dynamic, dynamic>());
+        final videoId = (item['videoId'] ?? '').toString().trim();
+        final playlistId = (item['playlistId'] ?? '').toString().trim();
+        final title = (item['title'] ?? '').toString().trim();
+        final artist = (item['artist'] ?? '').toString().trim();
+        final thumbnailUrl = (item['thumbnailUrl'] ?? '').toString().trim();
+        final savedAtMs = (item['savedAtMs'] as num?)?.toInt() ?? 0;
+        if (videoId.isEmpty ||
+            playlistId.isEmpty ||
+            title.isEmpty ||
+            !_isWithinTtl(savedAtMs, _albumByVideoPersistentTtl)) {
+          continue;
+        }
+        _albumRefByVideoIdCache[videoId] = _ResolvedAlbumRef(
+          playlistId: playlistId,
+          title: title,
+          artist: artist.isEmpty ? 'Artista' : artist,
+          thumbnailUrl: thumbnailUrl,
+        );
+      }
     } catch (_) {
-      return null;
+      // Best effort.
     }
+  }
+
+  Future<void> _persistAutocompletePersistentCache() async {
+    try {
+      final box = await Hive.openBox<String>(_searchNetworkCacheBoxName);
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final payload = jsonEncode({
+        'savedAtMs': nowMs,
+        'items': _autocompleteCache.entries
+            .where((entry) => entry.key.trim().isNotEmpty)
+            .take(_autocompletePersistentMaxEntries)
+            .map(
+              (entry) => {
+                'query': entry.key,
+                'suggestions': entry.value.take(10).toList(growable: false),
+                'savedAtMs': nowMs,
+              },
+            )
+            .toList(growable: false),
+      });
+      await box.put(_searchAutocompleteCacheKey, payload);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  Future<void> _persistArtistByVideoPersistentCache() async {
+    try {
+      final box = await Hive.openBox<String>(_searchNetworkCacheBoxName);
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final payload = jsonEncode({
+        'savedAtMs': nowMs,
+        'items': _artistProfileByVideoIdCache.entries
+            .where((entry) => entry.key.trim().isNotEmpty)
+            .take(_artistByVideoPersistentMaxEntries)
+            .map(
+              (entry) => {
+                'videoId': entry.key,
+                'channelId': entry.value.channelId,
+                'channelName': entry.value.channelName,
+                'channelThumbnailUrl': entry.value.channelThumbnailUrl,
+                'savedAtMs': nowMs,
+              },
+            )
+            .toList(growable: false),
+      });
+      await box.put(_searchArtistByVideoCacheKey, payload);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  Future<void> _persistAlbumByVideoPersistentCache() async {
+    try {
+      final box = await Hive.openBox<String>(_searchNetworkCacheBoxName);
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final payload = jsonEncode({
+        'savedAtMs': nowMs,
+        'items': _albumRefByVideoIdCache.entries
+            .where((entry) => entry.key.trim().isNotEmpty)
+            .take(_albumByVideoPersistentMaxEntries)
+            .map(
+              (entry) => {
+                'videoId': entry.key,
+                'playlistId': entry.value.playlistId,
+                'title': entry.value.title,
+                'artist': entry.value.artist,
+                'thumbnailUrl': entry.value.thumbnailUrl,
+                'savedAtMs': nowMs,
+              },
+            )
+            .toList(growable: false),
+      });
+      await box.put(_searchAlbumByVideoCacheKey, payload);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  Future<void> _persistSearchTabHistory() async {
+    try {
+      final box = await Hive.openBox<String>(_searchTabHistoryBoxName);
+      final tracksPayload = jsonEncode(
+        _searchTabTrackHistory
+            .take(_searchTabTrackHistoryMaxEntries)
+            .map((item) => item.toMap())
+            .toList(growable: false),
+      );
+      final artistsPayload = jsonEncode(
+        _searchTabArtistHistory
+            .take(_searchTabArtistHistoryMaxEntries)
+            .map((item) => item.toMap())
+            .toList(growable: false),
+      );
+      await box.put(_searchTabTrackHistoryKey, tracksPayload);
+      await box.put(_searchTabArtistHistoryKey, artistsPayload);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  void _rememberSearchTrackHistory(_SearchTabTrackHistoryEntry entry) {
+    final normalized = _SearchTabTrackHistoryEntry(
+      videoId: entry.videoId.trim(),
+      title: entry.title.trim().isEmpty ? 'Canción' : entry.title.trim(),
+      artist: entry.artist.trim().isEmpty ? 'Artista' : entry.artist.trim(),
+      thumbnailUrl: entry.thumbnailUrl.trim(),
+      isLocal: entry.isLocal,
+      localFilePath: entry.localFilePath?.trim(),
+    );
+    final updated = <_SearchTabTrackHistoryEntry>[
+      normalized,
+      ..._searchTabTrackHistory.where(
+        (item) => item.videoId != normalized.videoId,
+      ),
+    ];
+    _searchTabTrackHistory = updated
+        .take(_searchTabTrackHistoryMaxEntries)
+        .toList(growable: false);
+    _searchTabHistoryLoading = false;
+    if (mounted && _searchState == SearchState.initial) {
+      setState(() {});
+    }
+    unawaited(_persistSearchTabHistory());
+  }
+
+  void _rememberSearchArtistHistory(_SearchTabArtistHistoryEntry entry) {
+    final updated = <_SearchTabArtistHistoryEntry>[
+      entry,
+      ..._searchTabArtistHistory.where(
+        (item) => item.channelId != entry.channelId,
+      ),
+    ];
+    _searchTabArtistHistory = updated
+        .take(_searchTabArtistHistoryMaxEntries)
+        .toList(growable: false);
+    _searchTabHistoryLoading = false;
+    if (mounted && _searchState == SearchState.initial) {
+      setState(() {});
+    }
+    unawaited(_persistSearchTabHistory());
   }
 
   void _onSearchTextChanged() {
@@ -1732,6 +2177,7 @@ class _SearchPageState extends State<SearchPage>
 
     final limited = suggestions.take(10).toList(growable: false);
     _autocompleteCache[normalized] = limited;
+    unawaited(_persistAutocompletePersistentCache());
     return limited;
   }
 
@@ -1812,9 +2258,6 @@ class _SearchPageState extends State<SearchPage>
       _albums = const [];
       _searchState = SearchState.initial;
     });
-    if (_initialRecommendations.isEmpty && !_initialRecommendationsLoading) {
-      unawaited(_loadInitialRecommendations());
-    }
   }
 
   Future<void> _applySuggestionAndSearch(String suggestion) async {
@@ -1823,6 +2266,13 @@ class _SearchPageState extends State<SearchPage>
 
   Future<void> _openChannel(SearchChannelWithSubscribers channelData) async {
     final channel = channelData.channel;
+    _rememberSearchArtistHistory(
+      _SearchTabArtistHistoryEntry(
+        channelId: channel.id.value,
+        channelName: channel.name,
+        channelThumbnailUrl: _thumbnailOf(channelData) ?? '',
+      ),
+    );
     await _openArtistEmbedded(
       channelId: channel.id.value,
       channelName: channel.name,
@@ -1899,6 +2349,15 @@ class _SearchPageState extends State<SearchPage>
         preferredArtist: artist,
         preferVideoPlayback: _isVideosFilterMode || _isPodcastFilterMode,
       );
+      _rememberSearchTrackHistory(
+        _SearchTabTrackHistoryEntry(
+          videoId: videoId.trim(),
+          title: (title ?? '').trim(),
+          artist: cleanArtistName(artist),
+          thumbnailUrl: (thumbnailUrl ?? '').trim(),
+          isLocal: false,
+        ),
+      );
     } catch (e, s) {
       developer.log('Error al abrir reproductor', error: e, stackTrace: s);
       if (!mounted) return;
@@ -1930,6 +2389,16 @@ class _SearchPageState extends State<SearchPage>
         localPlainLyrics: local.plainLyrics,
         localSyncedLyrics: local.syncedLyrics,
         queueStrategy: LocalPlaybackQueueStrategy.recommendations,
+      );
+      _rememberSearchTrackHistory(
+        _SearchTabTrackHistoryEntry(
+          videoId: local.videoId.trim(),
+          title: local.title.trim(),
+          artist: cleanArtistName(local.channelTitle),
+          thumbnailUrl: thumb.trim(),
+          isLocal: true,
+          localFilePath: local.filePath.trim(),
+        ),
       );
       return;
     }
@@ -1973,6 +2442,13 @@ class _SearchPageState extends State<SearchPage>
     if (videoId.isEmpty) return;
     final cached = _artistProfileByVideoIdCache[videoId];
     if (cached != null) {
+      _rememberSearchArtistHistory(
+        _SearchTabArtistHistoryEntry(
+          channelId: cached.channelId,
+          channelName: cached.channelName,
+          channelThumbnailUrl: cached.channelThumbnailUrl,
+        ),
+      );
       await _openArtistEmbedded(
         channelId: cached.channelId,
         channelName: cached.channelName,
@@ -1985,6 +2461,13 @@ class _SearchPageState extends State<SearchPage>
     if (inFlight != null) {
       final resolved = await inFlight;
       if (!mounted || resolved == null) return;
+      _rememberSearchArtistHistory(
+        _SearchTabArtistHistoryEntry(
+          channelId: resolved.channelId,
+          channelName: resolved.channelName,
+          channelThumbnailUrl: resolved.channelThumbnailUrl,
+        ),
+      );
       await _openArtistEmbedded(
         channelId: resolved.channelId,
         channelName: resolved.channelName,
@@ -2012,6 +2495,14 @@ class _SearchPageState extends State<SearchPage>
       _artistProfileByVideoIdInFlight.remove(videoId);
       if (!mounted || resolved == null) return;
       _artistProfileByVideoIdCache[videoId] = resolved;
+      unawaited(_persistArtistByVideoPersistentCache());
+      _rememberSearchArtistHistory(
+        _SearchTabArtistHistoryEntry(
+          channelId: resolved.channelId,
+          channelName: resolved.channelName,
+          channelThumbnailUrl: resolved.channelThumbnailUrl,
+        ),
+      );
       await _openArtistEmbedded(
         channelId: resolved.channelId,
         channelName: resolved.channelName,
@@ -2043,6 +2534,7 @@ class _SearchPageState extends State<SearchPage>
       final resolved = await future;
       if (resolved != null) {
         _albumRefByVideoIdCache[videoId] = resolved;
+        unawaited(_persistAlbumByVideoPersistentCache());
       }
       return resolved;
     } finally {
@@ -3245,46 +3737,7 @@ class _SearchPageState extends State<SearchPage>
       case SearchState.noResults:
         return const Center(child: Text('No se encontraron videos.'));
       case SearchState.initial:
-        if (_initialRecommendationsLoading && _initialRecommendations.isEmpty) {
-          return const Center(child: CupertinoActivityIndicator(radius: 14));
-        }
-        if (_initialRecommendations.isEmpty) {
-          return Center(
-            child: Text(
-              'Comienza haciendo',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-          );
-        }
-        return ListView(
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(
-                _initialRecommendationsFromQueue
-                    ? 'Recomendado para ti'
-                    : (_initialRecommendationQuery == null
-                          ? 'Recomendado para ti'
-                          : 'Recomendado para ti • $_initialRecommendationQuery'),
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-              ),
-            ),
-            ..._initialRecommendations.map(
-              (video) => VideoCard(
-                video: video,
-                onPlay: () => _playVideoPreferLocal(video),
-                onQueueNext: () =>
-                    _queueVideo(video, insertMode: ManualQueueInsertMode.next),
-                onQueueEnd: () =>
-                    _queueVideo(video, insertMode: ManualQueueInsertMode.end),
-                onMenuTap: () => _showVideoOptionsMenu(video),
-              ),
-            ),
-            SizedBox(height: bottomReserve),
-          ],
-        );
+        return _buildSearchTabHistoryBody(bottomReserve: bottomReserve);
       case SearchState.success:
         final prioritizedVideos = _isMusicFilterMode
             ? _prioritizedVideos(_videos)
@@ -3518,6 +3971,116 @@ class _SearchPageState extends State<SearchPage>
     );
   }
 
+  Widget _buildSearchTabHistoryBody({required double bottomReserve}) {
+    if (_searchTabHistoryLoading &&
+        _searchTabTrackHistory.isEmpty &&
+        _searchTabArtistHistory.isEmpty) {
+      return const Center(child: CupertinoActivityIndicator(radius: 14));
+    }
+
+    if (_searchTabTrackHistory.isEmpty && _searchTabArtistHistory.isEmpty) {
+      return Center(
+        child: Text(
+          'Tu actividad de Buscar aparecerá aquí.',
+          style: Theme.of(context).textTheme.titleMedium,
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
+
+    final mixedItems = _buildMixedSearchHistoryItems();
+
+    return ListView(
+      children: [
+        ...mixedItems.map((item) {
+          if (item.type == _SearchHistoryMixedItemType.artist) {
+            final artist = item.artist!;
+            return _SearchHistoryArtistCard(
+              entry: artist,
+              onTap: () => _openArtistFromSearchHistory(artist),
+            );
+          }
+          final track = item.track!;
+          return _SearchHistoryTrackCard(
+            entry: track,
+            onTap: () => _playFromSearchHistoryTrack(track),
+          );
+        }),
+        SizedBox(height: bottomReserve),
+      ],
+    );
+  }
+
+  List<_SearchHistoryMixedItem> _buildMixedSearchHistoryItems() {
+    if (_searchTabTrackHistory.isEmpty) {
+      return _searchTabArtistHistory
+          .map(_SearchHistoryMixedItem.artist)
+          .toList(growable: false);
+    }
+    if (_searchTabArtistHistory.isEmpty) {
+      return _searchTabTrackHistory
+          .map(_SearchHistoryMixedItem.track)
+          .toList(growable: false);
+    }
+
+    final out = <_SearchHistoryMixedItem>[];
+    final max = math.max(
+      _searchTabTrackHistory.length,
+      _searchTabArtistHistory.length,
+    );
+    for (var i = 0; i < max; i++) {
+      if (i < _searchTabArtistHistory.length) {
+        out.add(_SearchHistoryMixedItem.artist(_searchTabArtistHistory[i]));
+      }
+      if (i < _searchTabTrackHistory.length) {
+        out.add(_SearchHistoryMixedItem.track(_searchTabTrackHistory[i]));
+      }
+    }
+    return out;
+  }
+
+  Future<void> _openArtistFromSearchHistory(
+    _SearchTabArtistHistoryEntry entry,
+  ) async {
+    _rememberSearchArtistHistory(entry);
+    await _openArtistEmbedded(
+      channelId: entry.channelId,
+      channelName: entry.channelName,
+      channelThumbnailUrl: entry.channelThumbnailUrl,
+    );
+  }
+
+  Future<void> _playFromSearchHistoryTrack(
+    _SearchTabTrackHistoryEntry entry,
+  ) async {
+    final manager = context.read<VideoPlayerManager>();
+    if (entry.isLocal) {
+      final localPath = entry.localFilePath?.trim() ?? '';
+      if (localPath.isNotEmpty && await File(localPath).exists()) {
+        if (!mounted) return;
+        await manager.playLocalFileFromUserSelection(
+          context,
+          id: entry.videoId,
+          filePath: localPath,
+          title: entry.title,
+          thumbnailUrl: entry.thumbnailUrl,
+          artist: entry.artist,
+          queueStrategy: LocalPlaybackQueueStrategy.recommendations,
+        );
+        _rememberSearchTrackHistory(entry);
+        return;
+      }
+    }
+
+    if (!mounted) return;
+    await _openVideoPlayer(
+      entry.videoId,
+      thumbnailUrl: entry.thumbnailUrl,
+      title: entry.title,
+      artist: entry.artist,
+    );
+  }
+
   List<SearchChannelWithSubscribers> _orderedChannelsForDisplay({
     required List<SearchChannelWithSubscribers> channels,
     required List<Video> videos,
@@ -3688,6 +4251,172 @@ class _SelectedAlbumView {
     required this.artistName,
     required this.seedThumbnailUrl,
   });
+}
+
+class _SearchHistoryArtistCard extends StatelessWidget {
+  final _SearchTabArtistHistoryEntry entry;
+  final VoidCallback onTap;
+
+  const _SearchHistoryArtistCard({required this.entry, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final thumb = entry.channelThumbnailUrl.trim();
+    final avatarCachePx = (40 * MediaQuery.devicePixelRatioOf(context))
+        .round()
+        .clamp(72, 512)
+        .toInt();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 1),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.035),
+          child: InkWell(
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.14),
+                  width: 0.6,
+                ),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: CupertinoColors.systemGrey4.resolveFrom(
+                      context,
+                    ),
+                    foregroundImage: thumb.isNotEmpty
+                        ? ResizeImage(
+                            NetworkImage(thumb),
+                            width: avatarCachePx,
+                            height: avatarCachePx,
+                          )
+                        : null,
+                    child: thumb.isEmpty
+                        ? Icon(
+                            CupertinoIcons.person_fill,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                          )
+                        : null,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      entry.channelName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(fontSize: 14, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchHistoryTrackCard extends StatelessWidget {
+  final _SearchTabTrackHistoryEntry entry;
+  final VoidCallback onTap;
+
+  const _SearchHistoryTrackCard({required this.entry, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 1),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Material(
+          color: Colors.white.withValues(alpha: 0.035),
+          child: InkWell(
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.14),
+                  width: 0.6,
+                ),
+              ),
+              child: Row(
+                children: [
+                  entry.thumbnailUrl.startsWith('/')
+                      ? SquareThumbnail.file(
+                          filePath: entry.thumbnailUrl,
+                          size: 46,
+                          borderRadius: 10,
+                          fallback: _buildTrackFallback(context),
+                        )
+                      : SquareThumbnail.network(
+                          imageUrl: entry.thumbnailUrl,
+                          size: 46,
+                          borderRadius: 10,
+                          fallback: _buildTrackFallback(context),
+                        ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          entry.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          entry.artist,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: CupertinoTheme.of(context).textTheme.textStyle
+                              .copyWith(
+                                fontSize: 12,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
+                              ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTrackFallback(BuildContext context) {
+    return Container(
+      width: 46,
+      height: 46,
+      color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+      alignment: Alignment.center,
+      child: Icon(
+        CupertinoIcons.music_note_2,
+        color: CupertinoColors.secondaryLabel.resolveFrom(context),
+      ),
+    );
+  }
 }
 
 class ChannelCard extends StatelessWidget {
@@ -5060,6 +5789,9 @@ class _ArtistProfileCacheEntry {
 class _ChannelVideosPageState extends State<ChannelVideosPage> {
   static const int _artistSessionCacheSchemaVersion = 3;
   static final Map<String, _ArtistProfileCacheEntry> _artistSessionCache = {};
+  static const String _artistPersistentCacheBoxName = 'artist_page_cache';
+  static const Duration _artistPersistentCacheTtl = Duration(days: 5);
+  static const int _artistPersistentCacheMaxEntries = 120;
   final YoutubeExplode _yt = YoutubeExplode();
   final ScrollController _artistScrollController = ScrollController();
   static const Duration _channelFetchTimeout = Duration(seconds: 6);
@@ -5101,7 +5833,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       }
       return;
     }
-    _loadChannelVideos();
+    unawaited(_restoreArtistPersistentCacheOrLoad());
   }
 
   String get _artistCacheKey {
@@ -5112,13 +5844,186 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
 
   void _storeArtistCache({required bool albumsResolved}) {
     if (_videos.isEmpty) return;
-    _artistSessionCache[_artistCacheKey] = _ArtistProfileCacheEntry(
+    final entry = _ArtistProfileCacheEntry(
       schemaVersion: _artistSessionCacheSchemaVersion,
       videos: List<Video>.from(_videos),
       suggestedAlbum: _suggestedAlbum,
       artistAlbums: List<_SearchAlbumResult>.from(_artistAlbums),
       albumsResolved: albumsResolved,
     );
+    _artistSessionCache[_artistCacheKey] = entry;
+    unawaited(_writeArtistPersistentCache(entry));
+  }
+
+  Future<void> _restoreArtistPersistentCacheOrLoad() async {
+    final restored = await _readArtistPersistentCache();
+    if (restored != null && mounted) {
+      setState(() {
+        _videos = restored.videos;
+        _suggestedAlbum = restored.suggestedAlbum;
+        _artistAlbums = restored.artistAlbums;
+        _loading = false;
+        _error = false;
+        _suggestedAlbumLoading =
+            !restored.albumsResolved || restored.artistAlbums.isEmpty;
+      });
+      _storeArtistCache(albumsResolved: restored.albumsResolved);
+      if (!restored.albumsResolved) {
+        unawaited(_loadSuggestedAlbumForArtist());
+      }
+      return;
+    }
+    await _loadChannelVideos();
+  }
+
+  Future<_ArtistProfileCacheEntry?> _readArtistPersistentCache() async {
+    try {
+      final box = await Hive.openBox<String>(_artistPersistentCacheBoxName);
+      final raw = box.get(_artistCacheKey);
+      if (raw == null || raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final map = Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+      final savedAtMs = (map['savedAtMs'] as num?)?.toInt() ?? 0;
+      if (savedAtMs <= 0) return null;
+      final savedAt = DateTime.fromMillisecondsSinceEpoch(savedAtMs);
+      if (DateTime.now().difference(savedAt) > _artistPersistentCacheTtl) {
+        return null;
+      }
+
+      final videosRaw = map['videos'];
+      if (videosRaw is! List) return null;
+      final restoredVideos = <Video>[];
+      for (final item in videosRaw.whereType<Map>()) {
+        final snapshot = _CachedVideoSnapshot.fromMap(
+          Map<String, dynamic>.from(item.cast<dynamic, dynamic>()),
+        );
+        if (snapshot.videoId.isEmpty || snapshot.title.isEmpty) continue;
+        restoredVideos.add(snapshot.toVideo());
+      }
+      if (restoredVideos.isEmpty) return null;
+
+      _SearchAlbumResult? suggestedAlbum;
+      final suggestedRaw = map['suggestedAlbum'];
+      if (suggestedRaw is Map) {
+        final m = Map<String, dynamic>.from(suggestedRaw.cast<dynamic, dynamic>());
+        final playlistId = (m['playlistId'] ?? '').toString().trim();
+        final title = (m['title'] ?? '').toString().trim();
+        final artist = (m['artist'] ?? '').toString().trim();
+        final thumbnailUrl = (m['thumbnailUrl'] ?? '').toString().trim();
+        if (playlistId.isNotEmpty && title.isNotEmpty) {
+          suggestedAlbum = _SearchAlbumResult(
+            playlistId: playlistId,
+            title: title,
+            artist: artist.isEmpty ? 'Artista' : artist,
+            thumbnailUrl: thumbnailUrl,
+          );
+        }
+      }
+
+      final albums = <_SearchAlbumResult>[];
+      final albumsRaw = map['artistAlbums'];
+      if (albumsRaw is List) {
+        for (final rawAlbum in albumsRaw.whereType<Map>()) {
+          final m = Map<String, dynamic>.from(rawAlbum.cast<dynamic, dynamic>());
+          final playlistId = (m['playlistId'] ?? '').toString().trim();
+          final title = (m['title'] ?? '').toString().trim();
+          final artist = (m['artist'] ?? '').toString().trim();
+          final thumbnailUrl = (m['thumbnailUrl'] ?? '').toString().trim();
+          if (playlistId.isEmpty || title.isEmpty) continue;
+          albums.add(
+            _SearchAlbumResult(
+              playlistId: playlistId,
+              title: title,
+              artist: artist.isEmpty ? 'Artista' : artist,
+              thumbnailUrl: thumbnailUrl,
+            ),
+          );
+        }
+      }
+
+      return _ArtistProfileCacheEntry(
+        schemaVersion: _artistSessionCacheSchemaVersion,
+        videos: restoredVideos,
+        suggestedAlbum: suggestedAlbum,
+        artistAlbums: albums,
+        albumsResolved: map['albumsResolved'] == true,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeArtistPersistentCache(_ArtistProfileCacheEntry entry) async {
+    try {
+      final box = await Hive.openBox<String>(_artistPersistentCacheBoxName);
+      await _pruneArtistPersistentCache(box);
+      final payload = jsonEncode({
+        'savedAtMs': DateTime.now().millisecondsSinceEpoch,
+        'videos': entry.videos
+            .take(80)
+            .map((video) => _CachedVideoSnapshot.fromVideo(video).toMap())
+            .toList(growable: false),
+        'suggestedAlbum': entry.suggestedAlbum == null
+            ? null
+            : {
+                'playlistId': entry.suggestedAlbum!.playlistId,
+                'title': entry.suggestedAlbum!.title,
+                'artist': entry.suggestedAlbum!.artist,
+                'thumbnailUrl': entry.suggestedAlbum!.thumbnailUrl,
+              },
+        'artistAlbums': entry.artistAlbums
+            .take(20)
+            .map(
+              (album) => {
+                'playlistId': album.playlistId,
+                'title': album.title,
+                'artist': album.artist,
+                'thumbnailUrl': album.thumbnailUrl,
+              },
+            )
+            .toList(growable: false),
+        'albumsResolved': entry.albumsResolved,
+      });
+      await box.put(_artistCacheKey, payload);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  Future<void> _pruneArtistPersistentCache(Box<String> box) async {
+    try {
+      final entries = <({String key, int savedAtMs})>[];
+      for (final key in box.keys.cast<dynamic>()) {
+        final k = key.toString();
+        final raw = box.get(k);
+        if (raw == null || raw.isEmpty) continue;
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is! Map) continue;
+          final map = Map<String, dynamic>.from(
+            decoded.cast<dynamic, dynamic>(),
+          );
+          final savedAtMs = (map['savedAtMs'] as num?)?.toInt() ?? 0;
+          if (savedAtMs > 0) {
+            entries.add((key: k, savedAtMs: savedAtMs));
+          }
+        } catch (_) {}
+      }
+      entries.sort((a, b) => b.savedAtMs.compareTo(a.savedAtMs));
+      final now = DateTime.now();
+      for (final item in entries.skip(_artistPersistentCacheMaxEntries)) {
+        await box.delete(item.key);
+      }
+      for (final item in entries) {
+        final savedAt = DateTime.fromMillisecondsSinceEpoch(item.savedAtMs);
+        if (now.difference(savedAt) > _artistPersistentCacheTtl) {
+          await box.delete(item.key);
+        }
+      }
+    } catch (_) {
+      // Best effort.
+    }
   }
 
   Future<void> _loadChannelVideos() async {
@@ -6913,6 +7818,9 @@ class _AlbumPageCacheEntry {
 class _AlbumTracksPageState extends State<AlbumTracksPage>
     with SingleTickerProviderStateMixin {
   static final Map<String, _AlbumPageCacheEntry> _albumSessionCache = {};
+  static const String _albumPersistentCacheBoxName = 'album_page_cache';
+  static const Duration _albumPersistentCacheTtl = Duration(days: 7);
+  static const int _albumPersistentCacheMaxEntries = 160;
   final YoutubeExplode _yt = YoutubeExplode();
   late final AnimationController _openHeaderController;
   late final CurvedAnimation _openHeaderCurve;
@@ -6932,13 +7840,15 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
 
   void _storeAlbumSessionCache() {
     if (_loading || _error) return;
-    _albumSessionCache[_albumCacheKey] = _AlbumPageCacheEntry(
+    final entry = _AlbumPageCacheEntry(
       resolvedTitle: _resolvedTitle,
       resolvedArtist: _resolvedArtist,
       coverUrl: _coverUrl,
       tracks: List<Video>.from(_tracks),
       backgroundColor: _albumBackgroundColor,
     );
+    _albumSessionCache[_albumCacheKey] = entry;
+    unawaited(_writeAlbumPersistentCache(entry));
   }
 
   @override
@@ -6971,7 +7881,128 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       if (!mounted) return;
       unawaited(_updateAlbumBackgroundFromCover());
     });
-    unawaited(_loadAlbumTracks());
+    unawaited(_restoreAlbumPersistentCacheOrLoad());
+  }
+
+  Future<void> _restoreAlbumPersistentCacheOrLoad() async {
+    final cached = await _readAlbumPersistentCache();
+    if (cached != null && mounted) {
+      setState(() {
+        _resolvedTitle = cached.resolvedTitle;
+        _resolvedArtist = cached.resolvedArtist;
+        _coverUrl = cached.coverUrl;
+        _tracks = cached.tracks;
+        _albumBackgroundColor = cached.backgroundColor;
+        _loading = false;
+        _error = false;
+      });
+      _storeAlbumSessionCache();
+      return;
+    }
+    await _loadAlbumTracks();
+  }
+
+  Future<_AlbumPageCacheEntry?> _readAlbumPersistentCache() async {
+    try {
+      final box = await Hive.openBox<String>(_albumPersistentCacheBoxName);
+      final raw = box.get(_albumCacheKey);
+      if (raw == null || raw.isEmpty) return null;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return null;
+      final map = Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+      final savedAtMs = (map['savedAtMs'] as num?)?.toInt() ?? 0;
+      if (savedAtMs <= 0) return null;
+      final savedAt = DateTime.fromMillisecondsSinceEpoch(savedAtMs);
+      if (DateTime.now().difference(savedAt) > _albumPersistentCacheTtl) {
+        return null;
+      }
+
+      final tracksRaw = map['tracks'];
+      if (tracksRaw is! List) return null;
+      final tracks = <Video>[];
+      for (final item in tracksRaw.whereType<Map>()) {
+        final snapshot = _CachedVideoSnapshot.fromMap(
+          Map<String, dynamic>.from(item.cast<dynamic, dynamic>()),
+        );
+        if (snapshot.videoId.isEmpty || snapshot.title.isEmpty) continue;
+        tracks.add(snapshot.toVideo());
+      }
+      if (tracks.isEmpty) return null;
+
+      final resolvedTitle = (map['resolvedTitle'] ?? '').toString().trim();
+      final resolvedArtist = (map['resolvedArtist'] ?? '').toString().trim();
+      final coverUrl = (map['coverUrl'] ?? '').toString().trim();
+      final bgValue = (map['backgroundColorValue'] as num?)?.toInt();
+      final bgColor = bgValue != null
+          ? Color(bgValue)
+          : const Color(0xFF151821);
+
+      return _AlbumPageCacheEntry(
+        resolvedTitle: resolvedTitle,
+        resolvedArtist: resolvedArtist,
+        coverUrl: coverUrl,
+        tracks: tracks,
+        backgroundColor: bgColor,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeAlbumPersistentCache(_AlbumPageCacheEntry entry) async {
+    try {
+      final box = await Hive.openBox<String>(_albumPersistentCacheBoxName);
+      await _pruneAlbumPersistentCache(box);
+      final payload = jsonEncode({
+        'savedAtMs': DateTime.now().millisecondsSinceEpoch,
+        'resolvedTitle': entry.resolvedTitle,
+        'resolvedArtist': entry.resolvedArtist,
+        'coverUrl': entry.coverUrl,
+        'backgroundColorValue': entry.backgroundColor.toARGB32(),
+        'tracks': entry.tracks
+            .take(90)
+            .map((video) => _CachedVideoSnapshot.fromVideo(video).toMap())
+            .toList(growable: false),
+      });
+      await box.put(_albumCacheKey, payload);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  Future<void> _pruneAlbumPersistentCache(Box<String> box) async {
+    try {
+      final entries = <({String key, int savedAtMs})>[];
+      for (final key in box.keys.cast<dynamic>()) {
+        final k = key.toString();
+        final raw = box.get(k);
+        if (raw == null || raw.isEmpty) continue;
+        try {
+          final decoded = jsonDecode(raw);
+          if (decoded is! Map) continue;
+          final map = Map<String, dynamic>.from(
+            decoded.cast<dynamic, dynamic>(),
+          );
+          final savedAtMs = (map['savedAtMs'] as num?)?.toInt() ?? 0;
+          if (savedAtMs > 0) {
+            entries.add((key: k, savedAtMs: savedAtMs));
+          }
+        } catch (_) {}
+      }
+      entries.sort((a, b) => b.savedAtMs.compareTo(a.savedAtMs));
+      final now = DateTime.now();
+      for (final item in entries.skip(_albumPersistentCacheMaxEntries)) {
+        await box.delete(item.key);
+      }
+      for (final item in entries) {
+        final savedAt = DateTime.fromMillisecondsSinceEpoch(item.savedAtMs);
+        if (now.difference(savedAt) > _albumPersistentCacheTtl) {
+          await box.delete(item.key);
+        }
+      }
+    } catch (_) {
+      // Best effort.
+    }
   }
 
   @override

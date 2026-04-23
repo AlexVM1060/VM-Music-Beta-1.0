@@ -3,12 +3,68 @@ import UIKit
 import Vision
 import CoreImage
 import MediaPlayer
+import AppIntents
+
+private let siriPlayPendingKey = "com.vm.music.beta.pending_siri_play"
+
+private func enqueueSiriPlayRequest(query: String) {
+  let cleaned = query.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !cleaned.isEmpty else { return }
+  let payload: [String: Any] = [
+    "query": cleaned,
+    "timestampMs": Int(Date().timeIntervalSince1970 * 1000)
+  ]
+  UserDefaults.standard.set(payload, forKey: siriPlayPendingKey)
+}
+
+@available(iOS 16.0, *)
+struct PlaySongWithVMMusicIntent: AppIntent {
+  static var title: LocalizedStringResource = "Reproducir canción en VM Music"
+  static var description = IntentDescription(
+    "Busca la canción y reproduce la coincidencia más relevante en VM Music."
+  )
+  static var openAppWhenRun: Bool = true
+
+  @Parameter(title: "Canción")
+  var song: String
+
+  static var parameterSummary: some ParameterSummary {
+    Summary("Reproducir \(\.$song)")
+  }
+
+  func perform() async throws -> some IntentResult & ProvidesDialog {
+    let cleaned = song.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !cleaned.isEmpty else {
+      return .result(dialog: "Dime el nombre de la canción.")
+    }
+    enqueueSiriPlayRequest(query: cleaned)
+    return .result(dialog: "Reproduciendo \(cleaned) en VM Music.")
+  }
+}
+
+@available(iOS 16.0, *)
+struct VMMusicAppShortcuts: AppShortcutsProvider {
+  static var appShortcuts: [AppShortcut] {
+    AppShortcut(
+      intent: PlaySongWithVMMusicIntent(),
+      phrases: [
+        "Reproduce una canción en \(.applicationName)",
+        "Pon música en \(.applicationName)",
+        "Toca música en \(.applicationName)",
+        "Play music on \(.applicationName)"
+      ],
+      shortTitle: "Reproducir canción",
+      systemImageName: "music.note"
+    )
+  }
+}
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   private let artworkCutoutChannelName = "com.vm.music.beta/artwork_cutout"
   private let lockScreenFavoriteChannelName = "com.vm.music.beta/ios_lock_screen_favorite"
   private let songShareChannelName = "com.vm.music.beta/song_share"
+  private let siriControlChannelName = "com.vm.music.beta/siri"
   private let powerModeChannelName = "com.vm.music.beta/power_mode"
   private let appleMusicMigrationChannelName = "com.vm.music.beta/apple_music_migration"
   private let backgroundTaskChannelName = "com.vm.music.beta/background_task"
@@ -16,6 +72,7 @@ import MediaPlayer
   private let ciContext = CIContext(options: nil)
   private var lockScreenFavoriteChannel: FlutterMethodChannel?
   private var songShareChannel: FlutterMethodChannel?
+  private var siriControlChannel: FlutterMethodChannel?
   private var powerModeChannel: FlutterMethodChannel?
   private var activeBackgroundTasks: [String: UIBackgroundTaskIdentifier] = [:]
 
@@ -53,6 +110,17 @@ import MediaPlayer
       songShareChannel = channel
       channel.setMethodCallHandler { [weak self] call, result in
         self?.handleSongShare(call: call, result: result)
+      }
+    }
+
+    if let registrar = self.registrar(forPlugin: "SiriControlChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: siriControlChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      siriControlChannel = channel
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleSiriControl(call: call, result: result)
       }
     }
 
@@ -98,6 +166,9 @@ import MediaPlayer
     }
 
     GeneratedPluginRegistrant.register(with: self)
+    if #available(iOS 16.0, *) {
+      VMMusicAppShortcuts.updateAppShortcutParameters()
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -179,6 +250,17 @@ import MediaPlayer
       let defaults = UserDefaults.standard
       let payload = defaults.dictionary(forKey: sharedSongPendingKey)
       defaults.removeObject(forKey: sharedSongPendingKey)
+      result(payload)
+      return
+    }
+    result(FlutterMethodNotImplemented)
+  }
+
+  private func handleSiriControl(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    if call.method == "consumePendingSiriPlayRequest" {
+      let defaults = UserDefaults.standard
+      let payload = defaults.dictionary(forKey: siriPlayPendingKey)
+      defaults.removeObject(forKey: siriPlayPendingKey)
       result(payload)
       return
     }

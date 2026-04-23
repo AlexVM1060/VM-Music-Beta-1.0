@@ -109,15 +109,6 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     ),
                     const _SectionDivider(),
                     _SettingSwitchRow(
-                      title: 'Reproductor YouTube Omni',
-                      subtitle:
-                          'Usa omni_video_player para reproducir contenido de YouTube\nÚtil si youtube_explode se limita temporalmente',
-                      value: settings.useOmniYoutubePlayer,
-                      onChanged: (value) =>
-                          settings.setUseOmniYoutubePlayer(value),
-                    ),
-                    const _SectionDivider(),
-                    _SettingSwitchRow(
                       title: 'VM Music Sing',
                       subtitle:
                           'Activa modo karaoke con separación instrumental por IA\nSi está apagado, no se carga esa lógica para ahorrar recursos',

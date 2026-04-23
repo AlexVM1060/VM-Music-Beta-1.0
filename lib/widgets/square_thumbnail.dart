@@ -1,6 +1,8 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:myapp/services/thumbnail_cache_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:provider/provider.dart';
@@ -110,25 +112,48 @@ class _NetworkThumbnailWithFallbackState
       return widget.fallback;
     }
     final currentUrl = widget.urls[_index];
-    return Image.network(
-      currentUrl,
-      width: widget.size,
-      height: widget.size,
-      fit: BoxFit.cover,
-      alignment: Alignment.center,
-      filterQuality: widget.preferLowResolution
-          ? FilterQuality.low
-          : FilterQuality.medium,
-      errorBuilder: (context, error, stackTrace) {
-        if (_index < widget.urls.length - 1) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            setState(() {
-              _index += 1;
+    return StreamBuilder<FileResponse>(
+      stream: ThumbnailCacheService.streamFor(currentUrl),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          if (_index < widget.urls.length - 1) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              setState(() {
+                _index += 1;
+              });
             });
-          });
-          return const SizedBox.expand();
+            return const SizedBox.expand();
+          }
+          return widget.fallback;
         }
+
+        final response = snapshot.data;
+        if (response is FileInfo) {
+          return Image.file(
+            response.file,
+            width: widget.size,
+            height: widget.size,
+            fit: BoxFit.cover,
+            alignment: Alignment.center,
+            filterQuality: widget.preferLowResolution
+                ? FilterQuality.low
+                : FilterQuality.medium,
+            errorBuilder: (context, error, stackTrace) {
+              if (_index < widget.urls.length - 1) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (!mounted) return;
+                  setState(() {
+                    _index += 1;
+                  });
+                });
+                return const SizedBox.expand();
+              }
+              return widget.fallback;
+            },
+          );
+        }
+
         return widget.fallback;
       },
     );

@@ -17,6 +17,7 @@ import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/services/thumbnail_cache_service.dart';
 import 'package:myapp/search_page.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
@@ -52,12 +53,32 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     _contentFuture = _loadContent();
     _trendingFuture = _loadTrendingTracks();
+    unawaited(_warmHomeArtworkCache());
   }
 
   @override
   void dispose() {
     _yt.close();
     super.dispose();
+  }
+
+  Future<void> _warmHomeArtworkCache() async {
+    try {
+      final content = await _contentFuture;
+      final trending = await _trendingFuture;
+      final urls = <String>[
+        ...content.suggestions.map((item) => item.thumbnailUrl),
+        ...content.relisten.map((item) => item.thumbnailUrl),
+        ...content.mixes.expand((mix) => mix.tracks.map((item) => item.thumbnailUrl)),
+        ...content.curatedShelves.expand(
+          (shelf) => shelf.tracks.map((item) => item.thumbnailUrl),
+        ),
+        ...trending.map((item) => item.thumbnailUrl),
+      ];
+      await ThumbnailCacheService.prefetchUrls(urls, maxItems: 36);
+    } catch (_) {
+      // Best effort.
+    }
   }
 
   Future<_HomeContent> _loadContent() async {

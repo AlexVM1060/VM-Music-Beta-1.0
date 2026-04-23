@@ -17,7 +17,6 @@ class AppSettingsService extends ChangeNotifier {
   static const String _liveLyricsKey = 'live_lyrics';
   static const String _vmMusicSingEnabledKey = 'vm_music_sing_enabled';
   static const String _dataSaverModeKey = 'data_saver_mode';
-  static const String _useOmniYoutubePlayerKey = 'use_omni_youtube_player';
 
   late final Box _box;
   bool _initialized = false;
@@ -32,7 +31,6 @@ class AppSettingsService extends ChangeNotifier {
   bool _liveLyrics = true;
   bool _vmMusicSingEnabled = false;
   bool _dataSaverMode = false;
-  bool _useOmniYoutubePlayer = false;
 
   bool get initialized => _initialized;
   AudioQualityPreference get audioQuality => _audioQuality;
@@ -51,7 +49,6 @@ class AppSettingsService extends ChangeNotifier {
   bool get liveLyrics => _liveLyrics;
   bool get vmMusicSingEnabled => _vmMusicSingEnabled;
   bool get dataSaverMode => _dataSaverMode;
-  bool get useOmniYoutubePlayer => _useOmniYoutubePlayer;
 
   Future<void> init() async {
     if (_initialized) return;
@@ -80,8 +77,6 @@ class AppSettingsService extends ChangeNotifier {
     _vmMusicSingEnabled =
         _box.get(_vmMusicSingEnabledKey, defaultValue: false) == true;
     _dataSaverMode = _box.get(_dataSaverModeKey, defaultValue: false) == true;
-    _useOmniYoutubePlayer =
-        _box.get(_useOmniYoutubePlayerKey, defaultValue: false) == true;
     _initialized = true;
   }
 
@@ -177,13 +172,6 @@ class AppSettingsService extends ChangeNotifier {
     if (_dataSaverMode == value) return;
     _dataSaverMode = value;
     await _box.put(_dataSaverModeKey, value);
-    notifyListeners();
-  }
-
-  Future<void> setUseOmniYoutubePlayer(bool value) async {
-    if (_useOmniYoutubePlayer == value) return;
-    _useOmniYoutubePlayer = value;
-    await _box.put(_useOmniYoutubePlayerKey, value);
     notifyListeners();
   }
 }

@@ -77,6 +77,8 @@
 	</array>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Usamos tu biblioteca de Apple Music para importar tus playlists a VM Music.</string>
+	<key>NSSiriUsageDescription</key>
+	<string>Usamos Siri para que puedas pedir canciones por voz y reproducirlas en VM Music.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Usamos tu galería para elegir una portada personalizada para tus playlists.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

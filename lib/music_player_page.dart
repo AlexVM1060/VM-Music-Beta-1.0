@@ -25,7 +25,6 @@ import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
-import 'package:omni_video_player/omni_video_player.dart';
 import 'package:palette_generator/palette_generator.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -67,24 +66,56 @@ class _MusicPlayerPageState extends State<MusicPlayerPage> {
           return const SizedBox.shrink();
         }
 
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            Offstage(
-              offstage: !playerState.isMinimized,
-              child: _MiniPlayer(
-                key: const ValueKey('mini_player'),
-                manager: manager,
+        return AnimatedSwitcher(
+          duration: const Duration(milliseconds: 620),
+          reverseDuration: const Duration(milliseconds: 500),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          layoutBuilder: (currentChild, previousChildren) {
+            return Stack(
+              fit: StackFit.expand,
+              alignment: Alignment.bottomCenter,
+              children: [
+                ...previousChildren,
+                if (currentChild != null) currentChild,
+              ],
+            );
+          },
+          transitionBuilder: (child, animation) {
+            final isMini = child.key == const ValueKey('mini_player');
+            final curved = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+              reverseCurve: Curves.easeInCubic,
+            );
+            final fade = Tween<double>(begin: 0.0, end: 1.0).animate(curved);
+            final slide = Tween<Offset>(
+              begin: isMini ? const Offset(0, 0.22) : const Offset(0, 0.08),
+              end: Offset.zero,
+            ).animate(curved);
+            final scale = Tween<double>(
+              begin: isMini ? 0.965 : 0.99,
+              end: 1.0,
+            ).animate(curved);
+            return ClipRect(
+              child: FadeTransition(
+                opacity: fade,
+                child: SlideTransition(
+                  position: slide,
+                  child: ScaleTransition(scale: scale, child: child),
+                ),
               ),
-            ),
-            Offstage(
-              offstage: playerState.isMinimized,
-              child: _FullPlayer(
-                key: const ValueKey('full_player'),
-                manager: manager,
-              ),
-            ),
-          ],
+            );
+          },
+          child: playerState.isMinimized
+              ? _MiniPlayer(
+                  key: const ValueKey('mini_player'),
+                  manager: manager,
+                )
+              : _FullPlayer(
+                  key: const ValueKey('full_player'),
+                  manager: manager,
+                ),
         );
       },
     );
@@ -387,210 +418,11 @@ class _FullPlayerState extends State<_FullPlayer> {
   bool _wasLyricsLayout = false;
   Color _albumBackgroundTint = const Color(0xFF1A2030);
   String? _lastPaletteArtworkUrl;
-  String? _lastOmniLoggedKey;
-  OmniPlaybackController? _embeddedOmniController;
-  OmniPlaybackController? _fullscreenOmniController;
-  String? _embeddedOmniVideoId;
-  Duration _lastOmniSyncedPosition = Duration.zero;
-  Duration? _lastOmniObservedManagerPosition;
-  bool? _lastOmniSyncedPlaying;
-  String? _lastOmniSyncedVideoId;
-  bool _isSyncingOmniFromManager = false;
-  bool? _lastOmniAudioBridgeEnabled;
 
   VideoPlayerManager get manager => widget.manager;
 
-  static const PlayerUIVisibilityOptions _omniPassiveUiOptions =
-      PlayerUIVisibilityOptions(
-        showSeekBar: false,
-        showCurrentTime: false,
-        showDurationTime: false,
-        showRemainingTime: false,
-        showVideoBottomControlsBar: false,
-        showPlayPauseReplayButton: false,
-        showFullScreenButton: false,
-        showMuteUnMuteButton: false,
-        showSwitchVideoQuality: false,
-        showSwitchWhenOnlyAuto: false,
-        showPlaybackSpeedButton: false,
-        enableForwardGesture: false,
-        enableBackwardGesture: false,
-        enableExitFullscreenOnVerticalSwipe: false,
-        showErrorPlaceholder: false,
-        showOpenExternallyInErrorPlaceholder: false,
-        showRefreshButtonInErrorPlaceholder: false,
-      );
-
-  void _logOmniPlaybackUsage({
-    required String videoId,
-    required bool isFullscreen,
-  }) {
-    final mode = isFullscreen ? 'fullscreen' : 'embedded';
-    final key = '$videoId:$mode';
-    if (_lastOmniLoggedKey == key) return;
-    _lastOmniLoggedKey = key;
-    developer.log(
-      '[OMNI] MusicPlayerPage usando omni_video_player ($mode) para $videoId',
-      name: 'OMNI_PLAYER',
-    );
-  }
-
-  bool _shouldRenderOmniVideoHero() {
-    // Omni queda en modo audio-only: preservamos la UX visual clásica
-    // (carátula + animación + recorte) en el reproductor principal.
-    return false;
-  }
-
-  void _syncOmniAudioBridgeState(bool enabled) {
-    if (_lastOmniAudioBridgeEnabled == enabled) return;
-    _lastOmniAudioBridgeEnabled = enabled;
-    unawaited(manager.setOmniAudioBridgeEnabled(enabled));
-    if (!enabled) {
-      _lastOmniObservedManagerPosition = null;
-      unawaited(_pauseAllOmniControllers());
-    }
-  }
-
-  OmniPlaybackController? get _activeOmniController {
-    final currentId = manager.currentVideoId?.trim() ?? '';
-    if (currentId.isNotEmpty &&
-        _embeddedOmniVideoId == currentId &&
-        _embeddedOmniController != null) {
-      return _embeddedOmniController;
-    }
-    if (_fullscreenOmniController?.isFullScreen == true) {
-      return _fullscreenOmniController;
-    }
-    if (_embeddedOmniController?.isFullScreen == true) {
-      return _embeddedOmniController;
-    }
-    return _embeddedOmniController ?? _fullscreenOmniController;
-  }
-
-  Future<void> _pauseOmniController(OmniPlaybackController? controller) async {
-    if (controller == null) return;
-    try {
-      await controller.pause(useGlobalController: false);
-    } catch (_) {
-      // Best effort.
-    }
-  }
-
-  Future<void> _pauseAllOmniControllers() async {
-    await _pauseOmniController(_embeddedOmniController);
-    if (!identical(_fullscreenOmniController, _embeddedOmniController)) {
-      await _pauseOmniController(_fullscreenOmniController);
-    }
-  }
-
-  void _bindEmbeddedOmniControllerForVideo(
-    String videoId,
-    OmniPlaybackController controller,
-  ) {
-    final previous = _embeddedOmniController;
-    final previousVideoId = _embeddedOmniVideoId;
-    if (!identical(previous, controller) && previous != null) {
-      if (previousVideoId != videoId) {
-        unawaited(_pauseOmniController(previous));
-      }
-    }
-    _embeddedOmniController = controller;
-    _embeddedOmniVideoId = videoId;
-    _lastOmniObservedManagerPosition = null;
-    unawaited(_syncActiveOmniWithManager(forceSeek: true));
-  }
-
-  void _onManagerPlaybackChanged() {
-    unawaited(_syncActiveOmniWithManager());
-  }
-
-  Future<void> _openOmniFullscreen(String videoId) async {
-    final controller = _activeOmniController ?? _embeddedOmniController;
-    if (controller == null) return;
-    _fullscreenOmniController = controller;
-    _logOmniPlaybackUsage(videoId: videoId, isFullscreen: true);
-    try {
-      await controller.switchFullScreenMode(
-        context,
-        pageBuilder: (pageContext) {
-          return _OmniFullscreenPage(
-            controller: controller,
-          );
-        },
-      );
-    } catch (_) {
-      // Evita romper UX si fullscreen falla por estado transitorio.
-    } finally {
-      await _syncActiveOmniWithManager(forceSeek: true);
-    }
-  }
-
-  Future<void> _syncActiveOmniWithManager({bool forceSeek = false}) async {
-    if (_isSyncingOmniFromManager) return;
-    final controller = _activeOmniController;
-    if (controller == null) return;
-    final videoId = manager.currentVideoId?.trim() ?? '';
-    if (videoId.isEmpty || manager.isLocal) return;
-
-    _isSyncingOmniFromManager = true;
-    try {
-      if (!controller.isReady) return;
-
-      final targetPlaying = manager.isPlaying;
-      if (_lastOmniSyncedPlaying != targetPlaying ||
-          controller.isPlaying != targetPlaying) {
-        if (targetPlaying) {
-          await controller.play(useGlobalController: false);
-        } else {
-          await controller.pause(useGlobalController: false);
-        }
-        _lastOmniSyncedPlaying = targetPlaying;
-      }
-
-      if (!identical(_embeddedOmniController, controller)) {
-        await _pauseOmniController(_embeddedOmniController);
-      }
-      if (!identical(_fullscreenOmniController, controller)) {
-        await _pauseOmniController(_fullscreenOmniController);
-      }
-
-      final targetPosition = manager.position;
-      final previousObserved = _lastOmniObservedManagerPosition;
-      _lastOmniObservedManagerPosition = targetPosition;
-      final managerJump = previousObserved == null
-          ? Duration.zero
-          : (targetPosition - previousObserved).abs();
-      final detectedUserSeek = managerJump >= const Duration(seconds: 2);
-      final delta = (targetPosition - _lastOmniSyncedPosition).abs();
-      final shouldForceSeekForTrack = _lastOmniSyncedVideoId != videoId;
-      final shouldSeek =
-          forceSeek ||
-          shouldForceSeekForTrack ||
-          detectedUserSeek ||
-          (!targetPlaying && delta >= const Duration(milliseconds: 350));
-      if (shouldSeek && !controller.isSeeking) {
-        controller.seekTo(targetPosition);
-        _lastOmniSyncedPosition = targetPosition;
-        _lastOmniSyncedVideoId = videoId;
-      }
-    } catch (_) {
-      // Best effort para evitar romper reproducción principal.
-    } finally {
-      _isSyncingOmniFromManager = false;
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    manager.addListener(_onManagerPlaybackChanged);
-  }
-
   @override
   void dispose() {
-    unawaited(_pauseAllOmniControllers());
-    unawaited(manager.setOmniAudioBridgeEnabled(false));
-    manager.removeListener(_onManagerPlaybackChanged);
     _lyricsUiHideTimer?.cancel();
     _contentScrollController.dispose();
     super.dispose();
@@ -900,33 +732,13 @@ class _FullPlayerState extends State<_FullPlayer> {
       ),
       builder: (context, _, child) {
         final embeddedVideoController = manager.foregroundVideoController;
-        final settings = context.watch<AppSettingsService?>();
-        final useOmniYoutubePlayer = settings?.useOmniYoutubePlayer ?? false;
-        final currentVideoId = manager.currentVideoId?.trim() ?? '';
-        // En pantalla grande usamos el mismo engine que el mini reproductor
-        // para evitar recargas del bridge Omni y mantener audio estable.
-        final omniAudioOnlyMode =
-            useOmniYoutubePlayer &&
-            !manager.isLocal &&
-            currentVideoId.isNotEmpty;
-        final canShowOmniVideo =
-            omniAudioOnlyMode && _shouldRenderOmniVideoHero();
-        _syncOmniAudioBridgeState(omniAudioOnlyMode);
         final canShowEmbeddedVideo =
             manager.preferForegroundVideoPlayback &&
             embeddedVideoController != null &&
             embeddedVideoController.value.isInitialized;
-        final canRenderAnyVideo = canShowEmbeddedVideo;
-        final isVideoFullScreen = manager.isFullScreen && canRenderAnyVideo;
+        final isVideoFullScreen = manager.isFullScreen && canShowEmbeddedVideo;
 
-        if (omniAudioOnlyMode && manager.isFullScreen) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            manager.setFullScreen(false);
-          });
-        }
-
-        if (manager.isFullScreen && !canRenderAnyVideo) {
+        if (manager.isFullScreen && !canShowEmbeddedVideo) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             manager.setFullScreen(false);
@@ -939,13 +751,9 @@ class _FullPlayerState extends State<_FullPlayer> {
             onExitFullscreen: () => manager.setFullScreen(false),
           );
         }
-        if (canShowOmniVideo) {
-          _logOmniPlaybackUsage(
-            videoId: currentVideoId,
-            isFullscreen: false,
-          );
-        }
+
         final downloadService = context.watch<DownloadService>();
+        final settings = context.watch<AppSettingsService?>();
         final playlistService = context.read<PlaylistService>();
         final videoId = manager.currentVideoId;
         final canDownload = videoId != null && !manager.isLocal;
@@ -962,23 +770,12 @@ class _FullPlayerState extends State<_FullPlayer> {
         return SizedBox.expand(
           child: Material(
             color: Colors.transparent,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (omniAudioOnlyMode)
-                    _HiddenOmniAudioBridge(
-                      videoId: currentVideoId,
-                      uiOptions: _omniPassiveUiOptions,
-                      onControllerCreated: (controller) =>
-                          _bindEmbeddedOmniControllerForVideo(
-                            currentVideoId,
-                            controller,
-                          ),
-                      onFinished: () => unawaited(manager.playNextInQueue()),
-                    ),
-                  _buildAlbumBlurBackground(
-                    context,
-                    thermalSaver: thermalSaverMode,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                _buildAlbumBlurBackground(
+                  context,
+                  thermalSaver: thermalSaverMode,
                 ),
                 SafeArea(
                   child: Listener(
@@ -1165,56 +962,6 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                         thermalSaverMode,
                                                     onArtworkTap: manager
                                                         .toggleLyricsLayout,
-                                                    onArtistTap: () =>
-                                                        _openArtistProfile(
-                                                          context,
-                                                        ),
-                                                    canAddToPlaylist:
-                                                        canAddToPlaylist,
-                                                    onAddToPlaylist: () =>
-                                                        _showAddToPlaylistSheet(
-                                                          context: context,
-                                                          playlistService:
-                                                              playlistService,
-                                                          downloadService:
-                                                              downloadService,
-                                                          manager: manager,
-                                                        ),
-                                                    onAddToFavorites: () =>
-                                                        _addCurrentTrackToFavorites(
-                                                          context: context,
-                                                          playlistService:
-                                                              playlistService,
-                                                          downloadService:
-                                                              downloadService,
-                                                          manager: manager,
-                                                        ),
-                                                  )
-                                                : canShowOmniVideo
-                                                ? _EmbeddedOmniNowPlayingVideoHero(
-                                                    key: ValueKey(
-                                                      'embedded_omni_now_playing_video_hero_$currentVideoId',
-                                                    ),
-                                                    videoId: currentVideoId,
-                                                    manager: manager,
-                                                    uiOptions:
-                                                        _omniPassiveUiOptions,
-                                                    onControllerCreated:
-                                                        (controller) => _bindEmbeddedOmniControllerForVideo(
-                                                          currentVideoId,
-                                                          controller,
-                                                        ),
-                                                    onFinished: () =>
-                                                        unawaited(
-                                                          manager.playNextInQueue(),
-                                                        ),
-                                                    artworkSize:
-                                                        defaultArtworkSize,
-                                                    onToggleFullscreen: () => unawaited(
-                                                      _openOmniFullscreen(
-                                                        currentVideoId,
-                                                      ),
-                                                    ),
                                                     onArtistTap: () =>
                                                         _openArtistProfile(
                                                           context,
@@ -2203,196 +1950,6 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
   }
 }
 
-class _EmbeddedOmniNowPlayingVideoHero extends StatelessWidget {
-  final String videoId;
-  final VideoPlayerManager manager;
-  final PlayerUIVisibilityOptions uiOptions;
-  final ValueChanged<OmniPlaybackController> onControllerCreated;
-  final VoidCallback onFinished;
-  final double artworkSize;
-  final VoidCallback onToggleFullscreen;
-  final VoidCallback onArtistTap;
-  final bool canAddToPlaylist;
-  final VoidCallback onAddToPlaylist;
-  final VoidCallback onAddToFavorites;
-
-  const _EmbeddedOmniNowPlayingVideoHero({
-    super.key,
-    required this.videoId,
-    required this.manager,
-    required this.uiOptions,
-    required this.onControllerCreated,
-    required this.onFinished,
-    required this.artworkSize,
-    required this.onToggleFullscreen,
-    required this.onArtistTap,
-    required this.canAddToPlaylist,
-    required this.onAddToPlaylist,
-    required this.onAddToFavorites,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final youtubeUrl = Uri.parse('https://www.youtube.com/watch?v=$videoId');
-    final source = VideoSourceConfiguration.youtube(
-      videoUrl: youtubeUrl,
-      enableYoutubeWebViewFallback: true,
-    ).copyWith(
-      autoPlay: true,
-      autoMuteOnStart: true,
-      initialVolume: 0.0,
-      allowSeeking: false,
-    );
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Center(
-          child: SizedBox(
-            width: artworkSize,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: Stack(
-                alignment: Alignment.bottomRight,
-                children: [
-                  AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: OmniVideoPlayer(
-                      key: ValueKey<String>('music_embedded_omni_$videoId'),
-                      options: VideoPlayerConfiguration(
-                        videoSourceConfiguration: source,
-                        playerUIVisibilityOptions: uiOptions,
-                      ),
-                      callbacks: VideoPlayerCallbacks(
-                        onControllerCreated: (controller) {
-                          onControllerCreated(controller);
-                          developer.log(
-                            '[OMNI] Controller embebido en MusicPlayerPage para $videoId',
-                            name: 'OMNI_PLAYER',
-                          );
-                        },
-                        onFinished: onFinished,
-                      ),
-                    ),
-                  ),
-                  SafeArea(
-                    minimum: const EdgeInsets.all(8),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: CupertinoColors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: CupertinoButton(
-                        minimumSize: Size.zero,
-                        padding: const EdgeInsets.all(8),
-                        onPressed: onToggleFullscreen,
-                        child: const Icon(
-                          CupertinoIcons.fullscreen,
-                          size: 20,
-                          color: CupertinoColors.white,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 28),
-        SizedBox(
-          width: double.infinity,
-          child: _AutoScrollText(
-            text: manager.trackTitle ?? 'Cargando video...',
-            style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
-                .copyWith(fontSize: 34, fontWeight: FontWeight.w700),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: onArtistTap,
-                child: _AutoScrollText(
-                  text: manager.trackArtist ?? 'Artista desconocido',
-                  style: CupertinoTheme.of(context).textTheme.textStyle
-                      .copyWith(
-                        fontSize: 20,
-                        color: CupertinoColors.secondaryLabel.resolveFrom(
-                          context,
-                        ),
-                      ),
-                ),
-              ),
-            ),
-            if (canAddToPlaylist) ...[
-              const SizedBox(width: 8),
-              _InlineArtistActionButton(
-                icon: CupertinoIcons.add,
-                onPressed: onAddToPlaylist,
-              ),
-              const SizedBox(width: 6),
-              _InlineArtistActionButton(
-                icon: CupertinoIcons.star_fill,
-                onPressed: onAddToFavorites,
-              ),
-            ],
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _HiddenOmniAudioBridge extends StatelessWidget {
-  final String videoId;
-  final PlayerUIVisibilityOptions uiOptions;
-  final ValueChanged<OmniPlaybackController> onControllerCreated;
-  final VoidCallback onFinished;
-
-  const _HiddenOmniAudioBridge({
-    required this.videoId,
-    required this.uiOptions,
-    required this.onControllerCreated,
-    required this.onFinished,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final youtubeUrl = Uri.parse('https://www.youtube.com/watch?v=$videoId');
-    final source = VideoSourceConfiguration.youtube(
-      videoUrl: youtubeUrl,
-      enableYoutubeWebViewFallback: true,
-    ).copyWith(
-      autoPlay: true,
-      autoMuteOnStart: false,
-      initialVolume: 1.0,
-      allowSeeking: false,
-    );
-
-    return Offstage(
-      offstage: true,
-      child: SizedBox(
-        width: 1,
-        height: 1,
-        child: OmniVideoPlayer(
-          key: ValueKey<String>('music_hidden_omni_audio_$videoId'),
-          options: VideoPlayerConfiguration(
-            videoSourceConfiguration: source,
-            playerUIVisibilityOptions: uiOptions,
-          ),
-          callbacks: VideoPlayerCallbacks(
-            onControllerCreated: onControllerCreated,
-            onFinished: onFinished,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _FullscreenVideoStage extends StatelessWidget {
   final VideoPlayerController controller;
   final VoidCallback onExitFullscreen;
@@ -2447,71 +2004,6 @@ class _FullscreenVideoStage extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _OmniFullscreenPage extends StatelessWidget {
-  final OmniPlaybackController controller;
-
-  const _OmniFullscreenPage({
-    required this.controller,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        ColoredBox(
-          color: Colors.black,
-          child: Center(
-            child: AnimatedBuilder(
-              animation: Listenable.merge([
-                controller,
-                controller.sharedPlayerNotifier,
-              ]),
-              builder: (context, _) {
-                final player = controller.sharedPlayerNotifier.value;
-                final shouldRender = controller.isFullScreen;
-                return AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: shouldRender
-                      ? (player ?? const SizedBox.shrink())
-                      : const SizedBox.shrink(),
-                );
-              },
-            ),
-          ),
-        ),
-        SafeArea(
-          child: Align(
-            alignment: Alignment.topRight,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 8, right: 8),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: CupertinoColors.black.withValues(alpha: 0.55),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: CupertinoButton(
-                  minimumSize: Size.zero,
-                  padding: const EdgeInsets.all(10),
-                  onPressed: () => controller.switchFullScreenMode(
-                    context,
-                    pageBuilder: (_) => const SizedBox.shrink(),
-                  ),
-                  child: const Icon(
-                    CupertinoIcons.fullscreen_exit,
-                    color: CupertinoColors.white,
-                    size: 22,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
     );
   }
 }
