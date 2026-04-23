@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Myapp</string>
+	<string>VM Music</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
@@ -21,6 +21,20 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>VM Music</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(FLUTTER_BUILD_NAME)</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -32,55 +46,16 @@
 			</array>
 		</dict>
 	</array>
-	<key>CFBundleExecutable</key>
-	<string>$(EXECUTABLE_NAME)</string>
-	<key>CFBundleIdentifier</key>
-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-	<key>CFBundleInfoDictionaryVersion</key>
-	<string>6.0</string>
-	<key>CFBundleName</key>
-	<string>myapp</string>
-	<key>CFBundlePackageType</key>
-	<string>APPL</string>
-	<key>CFBundleShortVersionString</key>
-	<string>$(FLUTTER_BUILD_NAME)</string>
-	<key>CFBundleSignature</key>
-	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>UTExportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeIdentifier</key>
-			<string>com.vm.music.song</string>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.data</string>
-				<string>public.json</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>VM Music Song</string>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>vmsong</string>
-				</array>
-				<key>public.mime-type</key>
-				<array>
-					<string>application/vnd.vm.music.song</string>
-				</array>
-			</dict>
-		</dict>
-	</array>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Usamos tu biblioteca de Apple Music para importar tus playlists a VM Music.</string>
-	<key>NSSiriUsageDescription</key>
-	<string>Usamos Siri para que puedas pedir canciones por voz y reproducirlas en VM Music.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Usamos tu galería para elegir una portada personalizada para tus playlists.</string>
+	<key>NSSiriUsageDescription</key>
+	<string>Usamos Siri para que puedas pedir canciones por voz y reproducirlas en VM Music.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>
@@ -105,6 +80,31 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+				<string>public.json</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>VM Music Song</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.vm.music.song</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>vmsong</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/vnd.vm.music.song</string>
+				</array>
+			</dict>
+		</dict>
 	</array>
 </dict>
 </plist>

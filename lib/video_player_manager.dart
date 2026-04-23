@@ -1284,9 +1284,50 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _playFromSiriPayload(Map<String, dynamic> payload) async {
+    final song = (payload['song'] ?? '').toString().trim();
+    final artist = (payload['artist'] ?? '').toString().trim();
     final query = (payload['query'] ?? '').toString().trim();
+    if (song.isNotEmpty) {
+      await playBestMatchForVoiceRequest(
+        songTitle: song,
+        artistName: artist.isEmpty ? null : artist,
+        fallbackQuery: query.isEmpty ? null : query,
+      );
+      return;
+    }
     if (query.isEmpty) return;
     await playBestMatchForVoiceQuery(query);
+  }
+
+  Future<bool> playBestMatchForVoiceRequest({
+    required String songTitle,
+    String? artistName,
+    String? fallbackQuery,
+  }) async {
+    final song = _sanitizeSearchQuery(songTitle);
+    if (song.isEmpty) return false;
+    final artist = _sanitizeSearchQuery(artistName ?? '');
+    final query = artist.isEmpty ? song : '$song $artist';
+    try {
+      final results = await _safeSearchVideos(query, limit: 10);
+      if (results.isEmpty) return false;
+      final selected = _pickBestVoiceSearchResult(
+        query: song,
+        preferredArtist: artist.isEmpty ? null : artist,
+        results: results,
+      );
+      await play(
+        selected.id.value,
+        preferredTitle: selected.title,
+        preferredArtist: selected.author,
+        preferredDuration: selected.duration,
+      );
+      return true;
+    } catch (_) {
+      final fallback = _sanitizeSearchQuery(fallbackQuery ?? '');
+      if (fallback.isEmpty) return false;
+      return playBestMatchForVoiceQuery(fallback);
+    }
   }
 
   Future<bool> playBestMatchForVoiceQuery(String rawQuery) async {
@@ -1297,6 +1338,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (results.isEmpty) return false;
       final selected = _pickBestVoiceSearchResult(
         query: query,
+        preferredArtist: null,
         results: results,
       );
       await play(
@@ -1313,10 +1355,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   Video _pickBestVoiceSearchResult({
     required String query,
+    String? preferredArtist,
     required List<Video> results,
   }) {
     final normalizedQuery = _normalizeVoiceMatchText(query);
     final queryTokens = normalizedQuery
+        .split(' ')
+        .where((token) => token.trim().isNotEmpty)
+        .toList(growable: false);
+    final normalizedArtist = _normalizeVoiceMatchText(preferredArtist ?? '');
+    final artistTokens = normalizedArtist
         .split(' ')
         .where((token) => token.trim().isNotEmpty)
         .toList(growable: false);
@@ -1336,6 +1384,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
       if (titleNorm.contains(normalizedQuery)) {
         score += 22.0;
+      }
+      if (artistTokens.isNotEmpty) {
+        final matchedArtistTokens = artistTokens
+            .where((token) => authorNorm.contains(token))
+            .length;
+        score += (matchedArtistTokens / artistTokens.length) * 42.0;
+        if (authorNorm.contains(normalizedArtist)) {
+          score += 20.0;
+        }
       }
       if (_isPureYoutubeMusicAudio(video)) {
         score += 12.0;

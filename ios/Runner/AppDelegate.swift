@@ -3,18 +3,46 @@ import UIKit
 import Vision
 import CoreImage
 import MediaPlayer
+import Intents
 import AppIntents
 
 private let siriPlayPendingKey = "com.vm.music.beta.pending_siri_play"
 
-private func enqueueSiriPlayRequest(query: String) {
-  let cleaned = query.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard !cleaned.isEmpty else { return }
-  let payload: [String: Any] = [
-    "query": cleaned,
+private func enqueueSiriPlayRequest(song: String, artist: String?) {
+  let cleanedSong = song.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !cleanedSong.isEmpty else { return }
+  let cleanedArtist = (artist ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+  let query = cleanedArtist.isEmpty ? cleanedSong : "\(cleanedSong) \(cleanedArtist)"
+
+  var payload: [String: Any] = [
+    "song": cleanedSong,
+    "query": query,
     "timestampMs": Int(Date().timeIntervalSince1970 * 1000)
   ]
+  if !cleanedArtist.isEmpty {
+    payload["artist"] = cleanedArtist
+  }
   UserDefaults.standard.set(payload, forKey: siriPlayPendingKey)
+}
+
+private func parseSiriSongAndArtist(from query: String) -> (song: String, artist: String?) {
+  let cleaned = query.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !cleaned.isEmpty else { return ("", nil) }
+
+  let separators = [" de ", " by "]
+  for separator in separators {
+    if let range = cleaned.range(
+      of: separator,
+      options: [.caseInsensitive, .diacriticInsensitive]
+    ) {
+      let song = String(cleaned[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+      let artist = String(cleaned[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+      if !song.isEmpty && !artist.isEmpty {
+        return (song, artist)
+      }
+    }
+  }
+  return (cleaned, nil)
 }
 
 @available(iOS 16.0, *)
@@ -25,20 +53,23 @@ struct PlaySongWithVMMusicIntent: AppIntent {
   )
   static var openAppWhenRun: Bool = true
 
-  @Parameter(title: "Canción")
-  var song: String
+  @Parameter(title: "Canción o búsqueda")
+  var query: String
 
   static var parameterSummary: some ParameterSummary {
-    Summary("Reproducir \(\.$song)")
+    Summary("Reproducir \(\.$query)")
   }
 
   func perform() async throws -> some IntentResult & ProvidesDialog {
-    let cleaned = song.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !cleaned.isEmpty else {
+    let parsed = parseSiriSongAndArtist(from: query)
+    guard !parsed.song.isEmpty else {
       return .result(dialog: "Dime el nombre de la canción.")
     }
-    enqueueSiriPlayRequest(query: cleaned)
-    return .result(dialog: "Reproduciendo \(cleaned) en VM Music.")
+    enqueueSiriPlayRequest(song: parsed.song, artist: parsed.artist)
+    if let artist = parsed.artist, !artist.isEmpty {
+      return .result(dialog: "Reproduciendo \(parsed.song) de \(artist) en VM Music.")
+    }
+    return .result(dialog: "Reproduciendo \(parsed.song) en VM Music.")
   }
 }
 
@@ -50,7 +81,6 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
       phrases: [
         "Reproduce una canción en \(.applicationName)",
         "Pon música en \(.applicationName)",
-        "Toca música en \(.applicationName)",
         "Play music on \(.applicationName)"
       ],
       shortTitle: "Reproducir canción",
