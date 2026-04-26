@@ -14,6 +14,7 @@ const PORT = Number(process.env.PORT || 10000);
 const API_KEY = (process.env.RESOLVER_API_KEY || "").trim();
 const YTDLP_BINARY = (process.env.YTDLP_BINARY || "yt-dlp").trim();
 const YTDLP_TIMEOUT_MS = Number(process.env.YTDLP_TIMEOUT_MS || 20 * 1000);
+const YOUTUBE_COOKIE = (process.env.YOUTUBE_COOKIE || "").trim();
 const RESOLVE_CACHE_TTL_MS = Number(
   process.env.RESOLVE_CACHE_TTL_MS || 10 * 60 * 1000
 );
@@ -223,6 +224,9 @@ async function resolveWithYoutubei(videoId) {
       "x-youtube-client-name": client.xClientName,
       "x-youtube-client-version": client.xClientVersion,
     };
+    if (YOUTUBE_COOKIE) {
+      headers.cookie = YOUTUBE_COOKIE;
+    }
     const body = {
       videoId,
       contentCheckOk: true,
@@ -447,7 +451,10 @@ async function resolveVideo(videoId) {
   let info = null;
   let ytdlError = null;
   try {
-    info = await ytdl.getInfo(videoId);
+    const ytdlOptions = YOUTUBE_COOKIE
+      ? { requestOptions: { headers: { cookie: YOUTUBE_COOKIE } } }
+      : undefined;
+    info = await ytdl.getInfo(videoId, ytdlOptions);
   } catch (error) {
     ytdlError = String(error?.message || error);
   }

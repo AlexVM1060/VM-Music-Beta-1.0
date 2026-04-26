@@ -42,6 +42,7 @@ Copia `backend/.env.example` como referencia para configurar:
 - `CORS_ALLOW_ORIGINS`
 - `YTDLP_BINARY`
 - `YTDLP_TIMEOUT_MS`
+- `YOUTUBE_COOKIE` (opcional, recomendado si YouTube responde bot-check)
 - `RESOLVE_CACHE_TTL_MS`
 - `RESOLVE_BATCH_LIMIT`
 - `STEMS_ROOT`
