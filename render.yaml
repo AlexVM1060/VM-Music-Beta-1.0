@@ -11,9 +11,7 @@ services:
     autoDeployTrigger: commit
     envVars:
       - key: NODE_VERSION
-        value: 18
-      - key: PORT
-        value: 10000
+        value: 20
       - key: RESOLVE_CACHE_TTL_MS
         value: 600000
       - key: RESOLVE_BATCH_LIMIT
