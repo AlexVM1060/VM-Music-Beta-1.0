@@ -5,7 +5,7 @@ services:
     plan: free
     region: oregon
     rootDir: backend
-    buildCommand: npm install
+    buildCommand: mkdir -p .bin && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o .bin/yt-dlp && chmod +x .bin/yt-dlp && npm install
     startCommand: npm start
     healthCheckPath: /health
     autoDeployTrigger: commit
@@ -18,6 +18,8 @@ services:
         value: 20
       - key: YTDLP_TIMEOUT_MS
         value: 20000
+      - key: YTDLP_BINARY
+        value: .bin/yt-dlp
       - key: STEMS_TIMEOUT_MS
         value: 720000
       - key: COVER_ANIMATION_TIMEOUT_MS

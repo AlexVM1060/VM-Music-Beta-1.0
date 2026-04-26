@@ -15,6 +15,8 @@ const API_KEY = (process.env.RESOLVER_API_KEY || "").trim();
 const YTDLP_BINARY_ENV = (process.env.YTDLP_BINARY || "yt-dlp").trim();
 const YTDLP_TIMEOUT_MS = Number(process.env.YTDLP_TIMEOUT_MS || 20 * 1000);
 const YOUTUBE_COOKIE = (process.env.YOUTUBE_COOKIE || "").trim();
+const YOUTUBE_COOKIES_FILE = (process.env.YOUTUBE_COOKIES_FILE || "").trim();
+const YOUTUBE_COOKIES_B64 = (process.env.YOUTUBE_COOKIES_B64 || "").trim();
 const YTDLP_PROXY_URL = (process.env.YTDLP_PROXY_URL || "").trim();
 const YTDLP_PROXY_POOL = (process.env.YTDLP_PROXY_POOL || "")
   .split(",")
@@ -138,9 +140,69 @@ async function writeYtDlpCookiesFile() {
   return filePath;
 }
 
+async function writeYtDlpCookiesFileFromBase64() {
+  if (!YOUTUBE_COOKIES_B64) return null;
+  const fileName = `vmmusic-yt-browser-cookies-${process.pid}-${Date.now()}-${Math.random()
+    .toString(16)
+    .slice(2)}.txt`;
+  const filePath = path.join(os.tmpdir(), fileName);
+  const cleaned = YOUTUBE_COOKIES_B64.replace(/\s+/g, "");
+  const decoded = Buffer.from(cleaned, "base64").toString("utf8");
+  const firstLine = String(decoded.split(/\r?\n/, 1)[0] || "").trim();
+  const validHeader =
+    firstLine === "# Netscape HTTP Cookie File" ||
+    firstLine === "# HTTP Cookie File";
+  if (!validHeader) {
+    throw new Error(
+      `invalid_cookies_file_header: expected Netscape header, got="${firstLine}"`
+    );
+  }
+  await fsp.writeFile(filePath, decoded, "utf8");
+  return filePath;
+}
+
+async function resolveYtDlpCookiesSource() {
+  if (YOUTUBE_COOKIES_FILE) {
+    // eslint-disable-next-line no-console
+    console.info("[resolver] yt-dlp cookies source=file");
+    return { filePath: YOUTUBE_COOKIES_FILE, ephemeral: false, source: "file" };
+  }
+
+  if (YOUTUBE_COOKIES_B64) {
+    try {
+      const filePath = await writeYtDlpCookiesFileFromBase64();
+      if (filePath) {
+        // eslint-disable-next-line no-console
+        console.info("[resolver] yt-dlp cookies source=base64");
+        return { filePath, ephemeral: true, source: "base64" };
+      }
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[resolver] failed to decode YOUTUBE_COOKIES_B64: ${String(error?.message || error)}`
+      );
+    }
+  }
+
+  const headerFile = await writeYtDlpCookiesFile();
+  if (headerFile) {
+    // eslint-disable-next-line no-console
+    console.info("[resolver] yt-dlp cookies source=header");
+    return { filePath: headerFile, ephemeral: true, source: "header" };
+  }
+  // eslint-disable-next-line no-console
+  console.warn("[resolver] yt-dlp cookies source=none");
+  return null;
+}
+
 const YTDL_COOKIES = parseCookieHeader(YOUTUBE_COOKIE);
 const YTDL_AGENT = YTDL_COOKIES.length ? ytdl.createAgent(YTDL_COOKIES) : null;
-if (YOUTUBE_COOKIE && YTDL_COOKIES.length === 0) {
+if (
+  !YOUTUBE_COOKIES_FILE &&
+  !YOUTUBE_COOKIES_B64 &&
+  YOUTUBE_COOKIE &&
+  YTDL_COOKIES.length === 0
+) {
   // eslint-disable-next-line no-console
   console.warn(
     "[resolver] YOUTUBE_COOKIE is set but no valid cookie pairs were parsed. Expected format: name=value; name2=value2"
@@ -538,7 +600,8 @@ async function runYtDlpJson(videoId, profile = "default", proxyUrl = null) {
     args.unshift(proxyUrl);
     args.unshift("--proxy");
   }
-  const cookiesFile = await writeYtDlpCookiesFile();
+  const cookiesSource = await resolveYtDlpCookiesSource();
+  const cookiesFile = cookiesSource?.filePath || null;
   if (cookiesFile) {
     args.unshift(cookiesFile);
     args.unshift("--cookies");
@@ -553,7 +616,7 @@ async function runYtDlpJson(videoId, profile = "default", proxyUrl = null) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (cookiesFile) {
+      if (cookiesFile && cookiesSource?.ephemeral) {
         void fsp.unlink(cookiesFile).catch(() => {});
       }
       handler(value);

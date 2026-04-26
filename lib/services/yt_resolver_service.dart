@@ -29,6 +29,8 @@ class YtResolverService {
     'YT_RESOLVER_API_KEY',
     defaultValue: '',
   );
+  static const Duration _sendTimeout = Duration(seconds: 10);
+  static const Duration _receiveTimeout = Duration(seconds: 40);
 
   bool get isConfigured => _baseUrl.trim().isNotEmpty;
 
@@ -38,7 +40,9 @@ class YtResolverService {
     if (cleanVideoId.isEmpty) return null;
 
     final endpoint = '${_baseUrl.trim()}/resolve';
-    log('[yt-resolver-service] request videoId=$cleanVideoId endpoint=$endpoint');
+    log(
+      '[yt-resolver-service] request videoId=$cleanVideoId endpoint=$endpoint',
+    );
     final headers = <String, String>{};
     if (_apiKey.trim().isNotEmpty) {
       headers['x-api-key'] = _apiKey.trim();
@@ -50,8 +54,8 @@ class YtResolverService {
       options: Options(
         headers: headers,
         validateStatus: (_) => true,
-        sendTimeout: const Duration(seconds: 8),
-        receiveTimeout: const Duration(seconds: 12),
+        sendTimeout: _sendTimeout,
+        receiveTimeout: _receiveTimeout,
       ),
     );
     log(

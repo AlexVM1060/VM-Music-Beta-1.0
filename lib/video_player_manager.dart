@@ -1790,6 +1790,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           }
         }
         if (!started) {
+          final youtubeiFallback = await _resolveDownloadSourceViaYoutubei(
+            videoId,
+          );
+          if (youtubeiFallback != null) {
+            started = await _attemptPlaybackFromDownloadSource(
+              youtubeiFallback,
+              keepVideoEngine: _preferForegroundVideoPlayback,
+            );
+          }
+        }
+        if (!started) {
           throw Exception(
             'No se pudo iniciar audio ni fallback de video: audio=$lastAudioError muxed=$lastMuxedError',
           );
@@ -1927,9 +1938,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
               e is HandshakeException ||
               e is SocketException ||
               e is HttpException)) {
-        final backendAltSource = await _resolveDownloadSourceViaBackend(videoId);
+        final backendAltSource = await _resolveDownloadSourceViaBackend(
+          videoId,
+        );
         final altSource =
-            backendAltSource ?? await _resolveDownloadSourceViaYoutubei(videoId);
+            backendAltSource ??
+            await _resolveDownloadSourceViaYoutubei(videoId);
         if (altSource != null) {
           final altOrigin = identical(altSource, backendAltSource)
               ? 'backend'
@@ -2155,15 +2169,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return null;
       }
 
+      final preferVideo = _preferForegroundVideoPlayback;
       final audio = resolved.audioUrl?.trim() ?? '';
+      final muxed = resolved.muxedUrl?.trim() ?? '';
+      if (preferVideo && muxed.isNotEmpty) {
+        log(
+          '[backend-resolver] muxed source resolved (preferVideo=true) for videoId=$videoId url=${Uri.tryParse(muxed)?.host ?? muxed}',
+        );
+        return DownloadSourceInfo(sourceUrl: muxed, isVideoSource: true);
+      }
       if (audio.isNotEmpty) {
         log(
           '[backend-resolver] audio source resolved for videoId=$videoId url=${Uri.tryParse(audio)?.host ?? audio}',
         );
         return DownloadSourceInfo(sourceUrl: audio, isVideoSource: false);
       }
-
-      final muxed = resolved.muxedUrl?.trim() ?? '';
       if (muxed.isNotEmpty) {
         log(
           '[backend-resolver] muxed source resolved for videoId=$videoId url=${Uri.tryParse(muxed)?.host ?? muxed}',
@@ -2336,6 +2356,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         final hlsManifest = streamingData['hlsManifestUrl']?.toString();
+        final preferVideo = _preferForegroundVideoPlayback;
+        if (preferVideo &&
+            pickedMuxed != null &&
+            pickedMuxed.trim().isNotEmpty) {
+          return DownloadSourceInfo(
+            sourceUrl: pickedMuxed.trim(),
+            isVideoSource: true,
+          );
+        }
         if (pickedAudio != null && pickedAudio.trim().isNotEmpty) {
           return DownloadSourceInfo(
             sourceUrl: pickedAudio.trim(),
@@ -2423,7 +2452,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       log('[playback-source] success using video engine uriHost=${uri.host}');
       return true;
     } catch (e) {
-      log('[playback-source] video engine failed uriHost=${uri.host}', error: e);
+      log(
+        '[playback-source] video engine failed uriHost=${uri.host}',
+        error: e,
+      );
       return false;
     }
   }
@@ -6442,8 +6474,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             manifest = null;
           }
           if (isStale()) return;
-          final audioStreams =
-              manifest == null
+          final audioStreams = manifest == null
               ? const <AudioOnlyStreamInfo>[]
               : _prioritizeAudioStreams(manifest.audioOnly.toList());
           if (audioStreams.isNotEmpty) {
@@ -7592,7 +7623,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             outgoingCutEndMs - 300,
           );
         }
-
       }
       for (var step = 1; step <= steps; step++) {
         final ratio = step / steps;
@@ -7895,7 +7925,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
     if (candidateUris.isEmpty) {
-      final backendSource = await _resolveDownloadSourceViaBackend(next.videoId);
+      final backendSource = await _resolveDownloadSourceViaBackend(
+        next.videoId,
+      );
       if (backendSource != null) {
         final uri = Uri.tryParse(backendSource.sourceUrl);
         if (uri != null) {
@@ -8325,18 +8357,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           0.88,
           1.42,
         );
-    final outgoingDuckStartRatio = (0.36 -
-            (energyDelta > 0 ? (energyDelta * 0.11) : 0.0) -
-            (hasLyricAnchor ? 0.07 : 0.0))
-        .clamp(0.2, 0.5);
-    final outgoingDuckDepth = (0.5 +
-            (energyDelta > 0 ? (energyDelta * 0.2) : 0.0) +
-            (hasLyricAnchor ? 0.16 : 0.06))
-        .clamp(0.42, 0.82);
-    final outgoingDuckCurvePower = (1.18 +
-            (hasLyricAnchor ? 0.24 : 0.0) +
-            (energyDelta.abs() * 0.26))
-        .clamp(1.0, 1.9);
+    final outgoingDuckStartRatio =
+        (0.36 -
+                (energyDelta > 0 ? (energyDelta * 0.11) : 0.0) -
+                (hasLyricAnchor ? 0.07 : 0.0))
+            .clamp(0.2, 0.5);
+    final outgoingDuckDepth =
+        (0.5 +
+                (energyDelta > 0 ? (energyDelta * 0.2) : 0.0) +
+                (hasLyricAnchor ? 0.16 : 0.06))
+            .clamp(0.42, 0.82);
+    final outgoingDuckCurvePower =
+        (1.18 + (hasLyricAnchor ? 0.24 : 0.0) + (energyDelta.abs() * 0.26))
+            .clamp(1.0, 1.9);
 
     return _DjTransitionPlan(
       preferredMixDuration: mixDuration,

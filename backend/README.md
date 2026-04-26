@@ -47,6 +47,8 @@ Copia `backend/.env.example` como referencia para configurar:
 - `YTDLP_PROXY_POOL` (opcional, proxies separados por coma para rotación)
 - `YTDLP_MAX_ATTEMPTS` (máximo intentos por video combinando perfil+proxy)
 - `YOUTUBE_COOKIE` (opcional, recomendado si YouTube responde bot-check)
+- `YOUTUBE_COOKIES_FILE` (ruta a `cookies.txt` exportado del navegador en formato Netscape)
+- `YOUTUBE_COOKIES_B64` (contenido base64 de `cookies.txt`; útil para plataformas sin filesystem persistente)
 - `RESOLVE_CACHE_TTL_MS`
 - `RESOLVE_BATCH_LIMIT`
 - `STEMS_ROOT`
