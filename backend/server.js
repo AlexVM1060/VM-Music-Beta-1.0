@@ -15,6 +15,13 @@ const API_KEY = (process.env.RESOLVER_API_KEY || "").trim();
 const YTDLP_BINARY_ENV = (process.env.YTDLP_BINARY || "yt-dlp").trim();
 const YTDLP_TIMEOUT_MS = Number(process.env.YTDLP_TIMEOUT_MS || 20 * 1000);
 const YOUTUBE_COOKIE = (process.env.YOUTUBE_COOKIE || "").trim();
+const YTDLP_CLIENT_PROFILES = (
+  process.env.YTDLP_CLIENT_PROFILES ||
+  "default,android,web,tv_embedded,web_creator"
+)
+  .split(",")
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean);
 const RESOLVE_CACHE_TTL_MS = Number(
   process.env.RESOLVE_CACHE_TTL_MS || 10 * 60 * 1000
 );
@@ -452,7 +459,25 @@ async function resolveWithYoutubei(videoId) {
   };
 }
 
-async function runYtDlpJson(videoId) {
+function ytDlpExtractorArgsForProfile(profile) {
+  switch (profile) {
+    case "android":
+      return "youtube:player_client=android";
+    case "web":
+      return "youtube:player_client=web";
+    case "tv":
+    case "tv_embedded":
+      return "youtube:player_client=tv_embedded";
+    case "web_creator":
+      return "youtube:player_client=web_creator";
+    case "ios":
+      return "youtube:player_client=ios";
+    default:
+      return null;
+  }
+}
+
+async function runYtDlpJson(videoId, profile = "default") {
   const url = `https://www.youtube.com/watch?v=${videoId}`;
   const args = [
     "--ignore-config",
@@ -465,6 +490,11 @@ async function runYtDlpJson(videoId) {
     "US",
     url,
   ];
+  const extractorArgs = ytDlpExtractorArgsForProfile(profile);
+  if (extractorArgs) {
+    args.unshift(extractorArgs);
+    args.unshift("--extractor-args");
+  }
   const cookiesFile = await writeYtDlpCookiesFile();
   if (cookiesFile) {
     args.unshift(cookiesFile);
@@ -518,35 +548,54 @@ async function runYtDlpJson(videoId) {
 }
 
 async function resolveWithYtDlp(videoId) {
-  const info = await runYtDlpJson(videoId);
-  const formats = Array.isArray(info?.formats) ? info.formats : [];
-  const audio = pickYtDlpAudioFormat(formats);
-  const muxed = pickYtDlpMuxedFormat(formats);
-  if (!audio && !muxed) return null;
-  const source = audio || muxed;
-  return {
-    resolver: "yt-dlp",
-    videoId,
-    sourceUrl: source.url,
-    isVideoSource: source === muxed && source !== audio,
-    audio: audio
-      ? {
-          url: audio.url,
-          bitrate: Number(audio?.abr || 0) || null,
-          mimeType: audio?.ext ? `${audio.ext}` : null,
-        }
-      : null,
-    muxed: muxed
-      ? {
-          url: muxed.url,
-          bitrate: Number(muxed?.tbr || 0) || null,
-          qualityLabel: muxed?.format_note || muxed?.resolution || null,
-          mimeType: muxed?.ext ? `${muxed.ext}` : null,
-        }
-      : null,
-    title: info?.title || null,
-    author: info?.uploader || null,
-  };
+  const profiles = YTDLP_CLIENT_PROFILES.length
+    ? YTDLP_CLIENT_PROFILES
+    : ["default"];
+  const errors = [];
+  for (const profile of profiles) {
+    try {
+      const info = await runYtDlpJson(videoId, profile);
+      const formats = Array.isArray(info?.formats) ? info.formats : [];
+      const audio = pickYtDlpAudioFormat(formats);
+      const muxed = pickYtDlpMuxedFormat(formats);
+      if (!audio && !muxed) {
+        errors.push(`yt_dlp_no_formats_${profile}`);
+        continue;
+      }
+      const source = audio || muxed;
+      return {
+        resolver: `yt-dlp-${profile}`,
+        videoId,
+        sourceUrl: source.url,
+        isVideoSource: source === muxed && source !== audio,
+        audio: audio
+          ? {
+              url: audio.url,
+              bitrate: Number(audio?.abr || 0) || null,
+              mimeType: audio?.ext ? `${audio.ext}` : null,
+            }
+          : null,
+        muxed: muxed
+          ? {
+              url: muxed.url,
+              bitrate: Number(muxed?.tbr || 0) || null,
+              qualityLabel: muxed?.format_note || muxed?.resolution || null,
+              mimeType: muxed?.ext ? `${muxed.ext}` : null,
+            }
+          : null,
+        title: info?.title || null,
+        author: info?.uploader || null,
+      };
+    } catch (error) {
+      errors.push(`${profile}:${String(error?.message || error)}`);
+    }
+  }
+  if (errors.length) {
+    const err = new Error(errors.join(" | "));
+    err.code = "yt_dlp_profiles_exhausted";
+    throw err;
+  }
+  return null;
 }
 
 async function resolveVideo(videoId) {
