@@ -34,6 +34,8 @@ const COVER_ANIMATION_PROXY_KEY = (
 const COVER_ANIMATION_TIMEOUT_MS = Number(
   process.env.COVER_ANIMATION_TIMEOUT_MS || 90 * 1000
 );
+const YOUTUBEI_PLAYER_ENDPOINT =
+  "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 
 const startedAt = new Date();
 const resolveCache = new Map();
@@ -154,6 +156,190 @@ function parseVideoIds(input) {
   return Array.from(unique);
 }
 
+function pickYoutubeiAudioFormat(formats) {
+  const list = Array.isArray(formats) ? formats : [];
+  const audio = list.filter((f) => {
+    const mime = String(f?.mimeType || "").toLowerCase();
+    const url = String(f?.url || "").trim();
+    return url && mime.includes("audio/");
+  });
+  if (!audio.length) return null;
+  audio.sort((a, b) => Number(b?.bitrate || 0) - Number(a?.bitrate || 0));
+  return audio[0];
+}
+
+function pickYoutubeiMuxedFormat(formats) {
+  const list = Array.isArray(formats) ? formats : [];
+  const muxed = list.filter((f) => {
+    const mime = String(f?.mimeType || "").toLowerCase();
+    const url = String(f?.url || "").trim();
+    return url && mime.includes("video/");
+  });
+  if (!muxed.length) return null;
+  muxed.sort((a, b) => Number(b?.bitrate || 0) - Number(a?.bitrate || 0));
+  const mp4 = muxed.find((f) =>
+    String(f?.mimeType || "")
+      .toLowerCase()
+      .includes("mp4")
+  );
+  return mp4 || muxed[0];
+}
+
+async function resolveWithYoutubei(videoId) {
+  const clients = [
+    {
+      name: "WEB",
+      version: "2.20240224.11.00",
+      userAgent:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      xClientName: "1",
+      xClientVersion: "2.20240224.11.00",
+    },
+    {
+      name: "ANDROID",
+      version: "19.09.37",
+      userAgent: "com.google.android.youtube/19.09.37 (Linux; U; Android 14)",
+      xClientName: "3",
+      xClientVersion: "19.09.37",
+    },
+    {
+      name: "IOS",
+      version: "19.09.3",
+      userAgent:
+        "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_3 like Mac OS X;)",
+      xClientName: "5",
+      xClientVersion: "19.09.3",
+    },
+  ];
+
+  let lastReason = null;
+  for (const client of clients) {
+    const headers = {
+      "content-type": "application/json",
+      "user-agent": client.userAgent,
+      accept: "application/json",
+      origin: "https://www.youtube.com",
+      referer: `https://www.youtube.com/watch?v=${videoId}`,
+      "x-youtube-client-name": client.xClientName,
+      "x-youtube-client-version": client.xClientVersion,
+    };
+    const body = {
+      videoId,
+      contentCheckOk: true,
+      racyCheckOk: true,
+      context: {
+        client: {
+          clientName: client.name,
+          clientVersion: client.version,
+          hl: "en",
+          gl: "US",
+        },
+      },
+    };
+    const response = await fetch(YOUTUBEI_PLAYER_ENDPOINT, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      lastReason = `youtubei_status_${response.status}_${client.name}`;
+      continue;
+    }
+    const data = await response.json().catch(() => null);
+    if (!data || typeof data !== "object") {
+      lastReason = `youtubei_invalid_json_${client.name}`;
+      continue;
+    }
+
+    const playability = data?.playabilityStatus || {};
+    const status = String(playability?.status || "").trim();
+    const reason = String(playability?.reason || "").trim();
+    if (status && status !== "OK") {
+      lastReason = reason || `youtubei_playability_${status}_${client.name}`;
+      continue;
+    }
+
+    const streamingData = data?.streamingData || {};
+    const adaptiveFormats = Array.isArray(streamingData?.adaptiveFormats)
+      ? streamingData.adaptiveFormats
+      : [];
+    const formats = Array.isArray(streamingData?.formats)
+      ? streamingData.formats
+      : [];
+
+    const audio = pickYoutubeiAudioFormat(adaptiveFormats);
+    const muxed = pickYoutubeiMuxedFormat(formats);
+    const hlsManifestUrl = String(streamingData?.hlsManifestUrl || "").trim();
+    if (!audio && !muxed && !hlsManifestUrl) {
+      lastReason = `youtubei_no_formats_${client.name}`;
+      continue;
+    }
+
+    const details = data?.videoDetails || {};
+    if (audio) {
+      return {
+        resolver: `youtubei-${client.name.toLowerCase()}`,
+        videoId,
+        sourceUrl: String(audio.url || "").trim(),
+        isVideoSource: false,
+        audio: {
+          url: String(audio.url || "").trim(),
+          bitrate: Number(audio?.bitrate || 0) || null,
+          mimeType: String(audio?.mimeType || "").trim() || null,
+        },
+        muxed: muxed
+          ? {
+              url: String(muxed.url || "").trim(),
+              bitrate: Number(muxed?.bitrate || 0) || null,
+              qualityLabel: String(muxed?.qualityLabel || "").trim() || null,
+              mimeType: String(muxed?.mimeType || "").trim() || null,
+            }
+          : null,
+        title: String(details?.title || "").trim() || null,
+        author: String(details?.author || "").trim() || null,
+      };
+    }
+
+    if (muxed) {
+      return {
+        resolver: `youtubei-${client.name.toLowerCase()}`,
+        videoId,
+        sourceUrl: String(muxed.url || "").trim(),
+        isVideoSource: true,
+        audio: null,
+        muxed: {
+          url: String(muxed.url || "").trim(),
+          bitrate: Number(muxed?.bitrate || 0) || null,
+          qualityLabel: String(muxed?.qualityLabel || "").trim() || null,
+          mimeType: String(muxed?.mimeType || "").trim() || null,
+        },
+        title: String(details?.title || "").trim() || null,
+        author: String(details?.author || "").trim() || null,
+      };
+    }
+
+    if (hlsManifestUrl) {
+      return {
+        resolver: `youtubei-${client.name.toLowerCase()}`,
+        videoId,
+        sourceUrl: hlsManifestUrl,
+        isVideoSource: true,
+        audio: null,
+        muxed: {
+          url: hlsManifestUrl,
+          bitrate: null,
+          qualityLabel: "hls",
+          mimeType: "application/x-mpegURL",
+        },
+        title: String(details?.title || "").trim() || null,
+        author: String(details?.author || "").trim() || null,
+      };
+    }
+  }
+
+  return { error: lastReason || "youtubei_failed" };
+}
+
 async function runYtDlpJson(videoId) {
   const url = `https://www.youtube.com/watch?v=${videoId}`;
   const args = [
@@ -258,15 +444,34 @@ async function resolveVideo(videoId) {
     console.warn(`[resolver] yt-dlp failed for ${videoId}: ${ytDlpError}`);
   }
 
-  const info = await ytdl.getInfo(videoId);
-  const formats = info.formats || [];
+  let info = null;
+  let ytdlError = null;
+  try {
+    info = await ytdl.getInfo(videoId);
+  } catch (error) {
+    ytdlError = String(error?.message || error);
+  }
+
+  const formats = info?.formats || [];
   const audio = pickAudioFormat(formats);
   const muxed = pickMuxedFormat(formats);
 
   if (!audio && !muxed) {
+    const ytInfo = await resolveWithYoutubei(videoId);
+    if (ytInfo && !ytInfo.error) {
+      const payload = {
+        ...ytInfo,
+        ytDlpError: ytDlpError || ytdlError || null,
+        cached: false,
+      };
+      writeCachedResolve(videoId, payload);
+      return payload;
+    }
+
     const error = new Error("no_playable_formats");
     error.code = "no_playable_formats";
-    error.detail = ytDlpError || undefined;
+    error.detail =
+      ytInfo?.error || ytdlError || ytDlpError || "resolver_sources_exhausted";
     throw error;
   }
 
@@ -292,8 +497,8 @@ async function resolveVideo(videoId) {
           mimeType: muxed.mimeType || null,
         }
       : null,
-    title: info.videoDetails?.title || null,
-    author: info.videoDetails?.author?.name || null,
+    title: info?.videoDetails?.title || null,
+    author: info?.videoDetails?.author?.name || null,
     cached: false,
   };
 

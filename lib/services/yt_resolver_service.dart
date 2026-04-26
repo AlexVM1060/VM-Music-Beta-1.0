@@ -1,3 +1,5 @@
+import 'dart:developer';
+
 import 'package:dio/dio.dart';
 
 class YtResolverResult {
@@ -36,6 +38,7 @@ class YtResolverService {
     if (cleanVideoId.isEmpty) return null;
 
     final endpoint = '${_baseUrl.trim()}/resolve';
+    log('[yt-resolver-service] request videoId=$cleanVideoId endpoint=$endpoint');
     final headers = <String, String>{};
     if (_apiKey.trim().isNotEmpty) {
       headers['x-api-key'] = _apiKey.trim();
@@ -46,13 +49,22 @@ class YtResolverService {
       queryParameters: <String, dynamic>{'videoId': cleanVideoId},
       options: Options(
         headers: headers,
+        validateStatus: (_) => true,
         sendTimeout: const Duration(seconds: 8),
         receiveTimeout: const Duration(seconds: 12),
       ),
     );
+    log(
+      '[yt-resolver-service] response videoId=$cleanVideoId status=${response.statusCode}',
+    );
 
     final data = response.data;
-    if (response.statusCode != 200 || data is! Map) return null;
+    if (response.statusCode != 200 || data is! Map) {
+      log(
+        '[yt-resolver-service] non-success videoId=$cleanVideoId status=${response.statusCode} body=${response.data}',
+      );
+      return null;
+    }
     if (data['ok'] != true) return null;
 
     final sourceUrl = (data['sourceUrl'] ?? '').toString().trim();

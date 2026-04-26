@@ -1721,9 +1721,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (!started && !_preferForegroundVideoPlayback) {
         final backendSource = await _resolveDownloadSourceViaBackend(videoId);
         if (backendSource != null) {
+          log(
+            '[playback] trying backend source for videoId=$videoId isVideo=${backendSource.isVideoSource}',
+          );
           started = await _attemptPlaybackFromDownloadSource(
             backendSource,
             keepVideoEngine: _preferForegroundVideoPlayback,
+          );
+          log(
+            '[playback] backend source result for videoId=$videoId started=$started',
           );
         }
       }
@@ -1921,13 +1927,22 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
               e is HandshakeException ||
               e is SocketException ||
               e is HttpException)) {
+        final backendAltSource = await _resolveDownloadSourceViaBackend(videoId);
         final altSource =
-            await _resolveDownloadSourceViaBackend(videoId) ??
-            await _resolveDownloadSourceViaYoutubei(videoId);
+            backendAltSource ?? await _resolveDownloadSourceViaYoutubei(videoId);
         if (altSource != null) {
+          final altOrigin = identical(altSource, backendAltSource)
+              ? 'backend'
+              : 'youtubei';
+          log(
+            '[playback] recovery source selected origin=$altOrigin videoId=$videoId isVideo=${altSource.isVideoSource}',
+          );
           final played = await _attemptPlaybackFromDownloadSource(
             altSource,
             keepVideoEngine: _preferForegroundVideoPlayback,
+          );
+          log(
+            '[playback] recovery source result origin=$altOrigin videoId=$videoId played=$played',
           );
           if (played) {
             _errorMessage = null;
@@ -2128,28 +2143,52 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<DownloadSourceInfo?> _resolveDownloadSourceViaBackend(
     String videoId,
   ) async {
-    if (!_ytResolverService.isConfigured) return null;
+    if (!_ytResolverService.isConfigured) {
+      log('[backend-resolver] disabled: service not configured');
+      return null;
+    }
+    log('[backend-resolver] resolving source for videoId=$videoId');
     try {
       final resolved = await _ytResolverService.resolveVideo(videoId);
-      if (resolved == null) return null;
+      if (resolved == null) {
+        log('[backend-resolver] no source returned for videoId=$videoId');
+        return null;
+      }
 
       final audio = resolved.audioUrl?.trim() ?? '';
       if (audio.isNotEmpty) {
+        log(
+          '[backend-resolver] audio source resolved for videoId=$videoId url=${Uri.tryParse(audio)?.host ?? audio}',
+        );
         return DownloadSourceInfo(sourceUrl: audio, isVideoSource: false);
       }
 
       final muxed = resolved.muxedUrl?.trim() ?? '';
       if (muxed.isNotEmpty) {
+        log(
+          '[backend-resolver] muxed source resolved for videoId=$videoId url=${Uri.tryParse(muxed)?.host ?? muxed}',
+        );
         return DownloadSourceInfo(sourceUrl: muxed, isVideoSource: true);
       }
 
       final source = resolved.sourceUrl.trim();
-      if (source.isEmpty) return null;
+      if (source.isEmpty) {
+        log('[backend-resolver] empty fallback source for videoId=$videoId');
+        return null;
+      }
+      log(
+        '[backend-resolver] generic source resolved for videoId=$videoId isVideo=${resolved.isVideoSource} url=${Uri.tryParse(source)?.host ?? source}',
+      );
       return DownloadSourceInfo(
         sourceUrl: source,
         isVideoSource: resolved.isVideoSource,
       );
-    } catch (_) {
+    } catch (e, s) {
+      log(
+        '[backend-resolver] failed resolving source for videoId=$videoId',
+        error: e,
+        stackTrace: s,
+      );
       return null;
     }
   }
@@ -2331,6 +2370,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }) async {
     final uri = Uri.parse(source.sourceUrl);
     final headers = _headersForStreamUri(uri) ?? const <String, String>{};
+    log(
+      '[playback-source] attempt uriHost=${uri.host} isVideo=${source.isVideoSource}',
+    );
 
     if (!source.isVideoSource) {
       try {
@@ -2349,8 +2391,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
         _syncSystemPlaybackState(force: true);
         notifyListeners();
+        log('[playback-source] success using audio engine uriHost=${uri.host}');
         return true;
-      } catch (_) {}
+      } catch (e) {
+        log(
+          '[playback-source] audio engine failed, trying video engine uriHost=${uri.host}',
+          error: e,
+        );
+      }
     }
 
     try {
@@ -2372,8 +2420,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
       _syncSystemPlaybackState(force: true);
       notifyListeners();
+      log('[playback-source] success using video engine uriHost=${uri.host}');
       return true;
-    } catch (_) {
+    } catch (e) {
+      log('[playback-source] video engine failed uriHost=${uri.host}', error: e);
       return false;
     }
   }
