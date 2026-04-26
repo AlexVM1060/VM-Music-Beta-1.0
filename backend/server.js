@@ -54,9 +54,23 @@ const YTDLP_BINARY =
     : YTDLP_BINARY_ENV;
 
 function parseCookieHeader(rawCookie) {
-  const raw = String(rawCookie || "").trim();
+  const raw = String(rawCookie || "")
+    .trim()
+    .replace(/^cookie:\s*/i, "");
   if (!raw) return [];
+  const cookieAttributes = new Set([
+    "domain",
+    "path",
+    "expires",
+    "max-age",
+    "samesite",
+    "secure",
+    "httponly",
+    "priority",
+    "partitioned",
+  ]);
   const parts = raw
+    .replace(/\r?\n/g, ";")
     .split(";")
     .map((part) => part.trim())
     .filter(Boolean);
@@ -67,6 +81,8 @@ function parseCookieHeader(rawCookie) {
     const name = part.slice(0, idx).trim();
     const value = part.slice(idx + 1).trim();
     if (!name || !value) continue;
+    if (cookieAttributes.has(name.toLowerCase())) continue;
+    if (name.startsWith("$")) continue;
     cookies.push({
       name,
       value,
@@ -107,6 +123,12 @@ async function writeYtDlpCookiesFile() {
 
 const YTDL_COOKIES = parseCookieHeader(YOUTUBE_COOKIE);
 const YTDL_AGENT = YTDL_COOKIES.length ? ytdl.createAgent(YTDL_COOKIES) : null;
+if (YOUTUBE_COOKIE && YTDL_COOKIES.length === 0) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[resolver] YOUTUBE_COOKIE is set but no valid cookie pairs were parsed. Expected format: name=value; name2=value2"
+  );
+}
 
 const allowedOrigins = CORS_ALLOW_ORIGINS
   ? CORS_ALLOW_ORIGINS.split(",")
