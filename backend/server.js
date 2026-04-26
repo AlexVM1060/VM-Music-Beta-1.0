@@ -12,7 +12,7 @@ const app = express();
 
 const PORT = Number(process.env.PORT || 10000);
 const API_KEY = (process.env.RESOLVER_API_KEY || "").trim();
-const YTDLP_BINARY = (process.env.YTDLP_BINARY || "yt-dlp").trim();
+const YTDLP_BINARY_ENV = (process.env.YTDLP_BINARY || "yt-dlp").trim();
 const YTDLP_TIMEOUT_MS = Number(process.env.YTDLP_TIMEOUT_MS || 20 * 1000);
 const YOUTUBE_COOKIE = (process.env.YOUTUBE_COOKIE || "").trim();
 const RESOLVE_CACHE_TTL_MS = Number(
@@ -40,6 +40,40 @@ const YOUTUBEI_PLAYER_ENDPOINT =
 
 const startedAt = new Date();
 const resolveCache = new Map();
+const YTDLP_LOCAL_BINARY = path.join(__dirname, ".bin", "yt-dlp");
+const YTDLP_BINARY =
+  YTDLP_BINARY_ENV === "yt-dlp" && fs.existsSync(YTDLP_LOCAL_BINARY)
+    ? YTDLP_LOCAL_BINARY
+    : YTDLP_BINARY_ENV;
+
+function parseCookieHeader(rawCookie) {
+  const raw = String(rawCookie || "").trim();
+  if (!raw) return [];
+  const parts = raw
+    .split(";")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const cookies = [];
+  for (const part of parts) {
+    const idx = part.indexOf("=");
+    if (idx <= 0) continue;
+    const name = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (!name || !value) continue;
+    cookies.push({
+      name,
+      value,
+      domain: ".youtube.com",
+      path: "/",
+      secure: true,
+      httpOnly: false,
+    });
+  }
+  return cookies;
+}
+
+const YTDL_COOKIES = parseCookieHeader(YOUTUBE_COOKIE);
+const YTDL_AGENT = YTDL_COOKIES.length ? ytdl.createAgent(YTDL_COOKIES) : null;
 
 const allowedOrigins = CORS_ALLOW_ORIGINS
   ? CORS_ALLOW_ORIGINS.split(",")
@@ -455,9 +489,7 @@ async function resolveVideo(videoId) {
   let info = null;
   let ytdlError = null;
   try {
-    const ytdlOptions = YOUTUBE_COOKIE
-      ? { requestOptions: { headers: { cookie: YOUTUBE_COOKIE } } }
-      : undefined;
+    const ytdlOptions = YTDL_AGENT ? { agent: YTDL_AGENT } : undefined;
     info = await ytdl.getInfo(videoId, ytdlOptions);
   } catch (error) {
     ytdlError = String(error?.message || error);
@@ -601,7 +633,8 @@ app.get("/info", authMiddleware, async (req, res) => {
   }
 
   try {
-    const info = await ytdl.getBasicInfo(videoId);
+    const ytdlOptions = YTDL_AGENT ? { agent: YTDL_AGENT } : undefined;
+    const info = await ytdl.getBasicInfo(videoId, ytdlOptions);
     const details = info?.videoDetails;
     return res.json({
       ok: true,
