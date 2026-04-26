@@ -1,100 +1,86 @@
-# VMMusic YouTube Resolver (Render)
+# VMMusic Backend (YouTube Resolver + AI helpers)
 
-Backend de fallback para resolver URLs de audio/video cuando YouTube limita solicitudes directas desde el iPhone.
+Backend para tu app de reproducción de videos/audio. Resuelve URLs directas de YouTube, permite separación de stems y animación de carátulas.
 
-## Endpoint
+## Endpoints
 
 - `GET /health`
 - `GET /resolve?videoId=<youtube_video_id>`
+- `POST /resolve/batch`
+- `GET /info?videoId=<youtube_video_id>`
 - `POST /stems/separate`
 - `POST /cover/animate`
 
-Respuesta de `resolve`:
+## Ejemplos
 
-```json
-{
-  "ok": true,
-  "videoId": "abc123",
-  "sourceUrl": "https://...",
-  "isVideoSource": false,
-  "audio": { "url": "https://..." },
-  "muxed": { "url": "https://..." }
-}
+### Resolver 1 video
+
+```bash
+curl "http://localhost:10000/resolve?videoId=dQw4w9WgXcQ"
 ```
 
-Body de `POST /stems/separate`:
+### Resolver varios videos
 
-```json
-{
-  "trackId": "opcional_id_cancion",
-  "sourceUrl": "https://url-directa-de-audio"
-}
+```bash
+curl -X POST "http://localhost:10000/resolve/batch" \
+  -H "Content-Type: application/json" \
+  -d '{"videoIds":["dQw4w9WgXcQ","kJQP7kiw5Fk"]}'
 ```
 
-Respuesta:
+### Obtener metadata rápida
 
-```json
-{
-  "ok": true,
-  "trackId": "abc123",
-  "instrumentalUrl": "https://<tu-servicio>/stems-files/cache/..."
-}
+```bash
+curl "http://localhost:10000/info?videoId=dQw4w9WgXcQ"
 ```
 
-Body de `POST /cover/animate`:
+## Variables de entorno
 
-```json
-{
-  "trackId": "opcional_id_cancion",
-  "sourceUrl": "https://url-de-caratula"
-}
+Copia `backend/.env.example` como referencia para configurar:
+
+- `PORT`
+- `RESOLVER_API_KEY`
+- `CORS_ALLOW_ORIGINS`
+- `YTDLP_BINARY`
+- `YTDLP_TIMEOUT_MS`
+- `RESOLVE_CACHE_TTL_MS`
+- `RESOLVE_BATCH_LIMIT`
+- `STEMS_ROOT`
+- `STEMS_MODEL`
+- `STEMS_PYTHON`
+- `STEMS_TIMEOUT_MS`
+- `COVER_ANIMATION_PROXY_URL`
+- `COVER_ANIMATION_PROXY_KEY`
+- `COVER_ANIMATION_TIMEOUT_MS`
+
+## Correr local
+
+```bash
+cd backend
+npm install
+npm start
 ```
 
-Respuesta:
-
-```json
-{
-  "ok": true,
-  "trackId": "abc123",
-  "animatedCoverUrl": "https://..."
-}
-```
+Servidor: `http://localhost:10000`
 
 ## Deploy en Render
 
-1. Sube esta carpeta al repo (`backend/`).
-2. En Render: `New` -> `Web Service`.
-3. Selecciona tu repo.
-4. Configura:
-   - `Root Directory`: `backend`
-   - `Build Command`: `npm install`
-   - `Start Command`: `npm start`
-   - `Runtime`: Node
-5. Variables de entorno:
-   - opcional `RESOLVER_API_KEY` (si la pones, la app debe enviarla).
-   - opcional `STEMS_ROOT` (default: `/tmp/vmmusic-stems`)
-   - opcional `STEMS_MODEL` (default: `htdemucs_ft`)
-   - opcional `STEMS_PYTHON` (default: `python3`)
-   - opcional `STEMS_TIMEOUT_MS` (default: `720000`)
-   - opcional `COVER_ANIMATION_PROXY_URL` (endpoint de tu servicio IA que anima carátulas)
-   - opcional `COVER_ANIMATION_PROXY_KEY` (si tu proxy requiere API key)
-   - opcional `COVER_ANIMATION_TIMEOUT_MS` (default: `90000`)
-6. Deploy.
-7. Prueba:
-   - `https://<tu-servicio>.onrender.com/health`
-   - `https://<tu-servicio>.onrender.com/resolve?videoId=dQw4w9WgXcQ`
+1. Crea un `Web Service`.
+2. `Root Directory`: `backend`
+3. `Build Command`: `npm install`
+4. `Start Command`: `npm start`
+5. Configura tus variables de entorno.
 
-## Requisitos AI Stems (Demucs)
+### Opcion recomendada: Blueprint (`render.yaml`)
 
-El endpoint de stems usa `backend/scripts/stems_demucs.py`, que requiere:
+Este repo ya incluye `render.yaml` en la raiz. Puedes desplegarlo asi:
 
-- Python 3
-- paquete `demucs` instalado en el servidor (`pip install demucs`)
-- `ffmpeg` disponible en PATH
+1. Sube tus cambios a GitHub.
+2. En Render: `New` -> `Blueprint`.
+3. Selecciona tu repo y branch.
+4. Confirma la creacion del servicio `vmmusic-backend`.
+5. Cuando termine, abre `https://<tu-servicio>.onrender.com/health`.
 
 ## Integración Flutter
-
-Ejecuta la app con:
 
 ```bash
 flutter run \
@@ -106,4 +92,8 @@ flutter run \
   --dart-define=COVER_ANIMATION_API_KEY=<tu_key_opcional>
 ```
 
-> Si no usas `RESOLVER_API_KEY` en Render, omite `YT_RESOLVER_API_KEY`.
+## Notas
+
+- El endpoint `/resolve` se mantiene compatible con tu app actual.
+- `/resolve/batch` te ayuda para precargar colas o playlists.
+- Para stems necesitas Python + `demucs` + `ffmpeg` en el servidor.

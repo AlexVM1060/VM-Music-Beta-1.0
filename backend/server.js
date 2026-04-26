@@ -10,10 +10,15 @@ const { spawn } = require("node:child_process");
 
 const app = express();
 
-const PORT = process.env.PORT || 10000;
+const PORT = Number(process.env.PORT || 10000);
 const API_KEY = (process.env.RESOLVER_API_KEY || "").trim();
 const YTDLP_BINARY = (process.env.YTDLP_BINARY || "yt-dlp").trim();
 const YTDLP_TIMEOUT_MS = Number(process.env.YTDLP_TIMEOUT_MS || 20 * 1000);
+const RESOLVE_CACHE_TTL_MS = Number(
+  process.env.RESOLVE_CACHE_TTL_MS || 10 * 60 * 1000
+);
+const RESOLVE_BATCH_LIMIT = Number(process.env.RESOLVE_BATCH_LIMIT || 20);
+const CORS_ALLOW_ORIGINS = (process.env.CORS_ALLOW_ORIGINS || "").trim();
 const STEMS_ROOT = path.resolve(
   process.env.STEMS_ROOT || path.join(os.tmpdir(), "vmmusic-stems")
 );
@@ -30,7 +35,25 @@ const COVER_ANIMATION_TIMEOUT_MS = Number(
   process.env.COVER_ANIMATION_TIMEOUT_MS || 90 * 1000
 );
 
-app.use(cors());
+const startedAt = new Date();
+const resolveCache = new Map();
+
+const allowedOrigins = CORS_ALLOW_ORIGINS
+  ? CORS_ALLOW_ORIGINS.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  : [];
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("cors_not_allowed"));
+    },
+  })
+);
 app.use(express.json({ limit: "2mb" }));
 app.use("/stems-files", express.static(STEMS_ROOT));
 
@@ -99,6 +122,36 @@ function pickYtDlpMuxedFormat(formats) {
       .includes("mp4")
   );
   return mp4 || muxed[0];
+}
+
+function readCachedResolve(videoId) {
+  const entry = resolveCache.get(videoId);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    resolveCache.delete(videoId);
+    return null;
+  }
+  return entry.payload;
+}
+
+function writeCachedResolve(videoId, payload) {
+  if (RESOLVE_CACHE_TTL_MS <= 0) return;
+  resolveCache.set(videoId, {
+    payload,
+    expiresAt: Date.now() + RESOLVE_CACHE_TTL_MS,
+  });
+}
+
+function parseVideoIds(input) {
+  if (!Array.isArray(input)) return [];
+  const unique = new Set();
+  for (const item of input) {
+    const id = String(item || "").trim();
+    if (!id || !ytdl.validateID(id)) continue;
+    unique.add(id);
+    if (unique.size >= RESOLVE_BATCH_LIMIT) break;
+  }
+  return Array.from(unique);
 }
 
 async function runYtDlpJson(videoId) {
@@ -182,10 +235,82 @@ async function resolveWithYtDlp(videoId) {
   };
 }
 
+async function resolveVideo(videoId) {
+  const cached = readCachedResolve(videoId);
+  if (cached) {
+    return {
+      ...cached,
+      cached: true,
+    };
+  }
+
+  let ytDlpError = null;
+  try {
+    const resolved = await resolveWithYtDlp(videoId);
+    if (resolved) {
+      const payload = { ...resolved, ytDlpError: null, cached: false };
+      writeCachedResolve(videoId, payload);
+      return payload;
+    }
+  } catch (error) {
+    ytDlpError = String(error?.message || error);
+    // eslint-disable-next-line no-console
+    console.warn(`[resolver] yt-dlp failed for ${videoId}: ${ytDlpError}`);
+  }
+
+  const info = await ytdl.getInfo(videoId);
+  const formats = info.formats || [];
+  const audio = pickAudioFormat(formats);
+  const muxed = pickMuxedFormat(formats);
+
+  if (!audio && !muxed) {
+    const error = new Error("no_playable_formats");
+    error.code = "no_playable_formats";
+    error.detail = ytDlpError || undefined;
+    throw error;
+  }
+
+  const source = audio || muxed;
+  const payload = {
+    resolver: "ytdl-core",
+    ytDlpError,
+    videoId,
+    sourceUrl: source.url,
+    isVideoSource: source === muxed && source !== audio,
+    audio: audio
+      ? {
+          url: audio.url,
+          bitrate: audio.audioBitrate || null,
+          mimeType: audio.mimeType || null,
+        }
+      : null,
+    muxed: muxed
+      ? {
+          url: muxed.url,
+          bitrate: muxed.bitrate || null,
+          qualityLabel: muxed.qualityLabel || null,
+          mimeType: muxed.mimeType || null,
+        }
+      : null,
+    title: info.videoDetails?.title || null,
+    author: info.videoDetails?.author?.name || null,
+    cached: false,
+  };
+
+  writeCachedResolve(videoId, payload);
+  return payload;
+}
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "vmmusic-yt-resolver",
+    version: "1.1.0",
+    startedAt: startedAt.toISOString(),
+    now: new Date().toISOString(),
+    uptimeSeconds: Math.round(process.uptime()),
+    cacheTtlMs: RESOLVE_CACHE_TTL_MS,
+    batchLimit: RESOLVE_BATCH_LIMIT,
     stems: true,
     coverAnimation: Boolean(COVER_ANIMATION_PROXY_URL),
   });
@@ -198,61 +323,90 @@ app.get("/resolve", authMiddleware, async (req, res) => {
   }
 
   try {
-    let ytDlpError = null;
-    try {
-      const resolved = await resolveWithYtDlp(videoId);
-      if (resolved) {
-        return res.json({ ok: true, ...resolved });
-      }
-    } catch (error) {
-      ytDlpError = String(error?.message || error);
-      // eslint-disable-next-line no-console
-      console.warn(`[resolver] yt-dlp failed for ${videoId}: ${ytDlpError}`);
-    }
-
-    const info = await ytdl.getInfo(videoId);
-    const formats = info.formats || [];
-    const audio = pickAudioFormat(formats);
-    const muxed = pickMuxedFormat(formats);
-
-    if (!audio && !muxed) {
+    const payload = await resolveVideo(videoId);
+    return res.json({ ok: true, ...payload });
+  } catch (error) {
+    const code = String(error?.code || "");
+    if (code === "no_playable_formats") {
       return res.status(404).json({
         ok: false,
         error: "no_playable_formats",
-        detail: ytDlpError || undefined,
+        detail: error?.detail || undefined,
       });
     }
+    return res.status(500).json({
+      ok: false,
+      error: "resolve_failed",
+      detail: String(error?.message || error),
+    });
+  }
+});
 
-    const source = audio || muxed;
+app.post("/resolve/batch", authMiddleware, async (req, res) => {
+  const videoIds = parseVideoIds(req.body?.videoIds);
+  if (!videoIds.length) {
+    return res.status(400).json({ ok: false, error: "invalid_video_ids" });
+  }
+
+  const settled = await Promise.allSettled(
+    videoIds.map(async (videoId) => {
+      const data = await resolveVideo(videoId);
+      return { videoId, ok: true, data };
+    })
+  );
+
+  const items = settled.map((entry, index) => {
+    const videoId = videoIds[index];
+    if (entry.status === "fulfilled") {
+      return entry.value;
+    }
+    return {
+      videoId,
+      ok: false,
+      error: "resolve_failed",
+      detail: String(entry.reason?.message || entry.reason || "unknown_error"),
+    };
+  });
+
+  const resolved = items.filter((item) => item.ok).length;
+  return res.json({
+    ok: true,
+    total: items.length,
+    resolved,
+    failed: items.length - resolved,
+    items,
+  });
+});
+
+app.get("/info", authMiddleware, async (req, res) => {
+  const videoId = String(req.query.videoId || "").trim();
+  if (!videoId || !ytdl.validateID(videoId)) {
+    return res.status(400).json({ ok: false, error: "invalid_video_id" });
+  }
+
+  try {
+    const info = await ytdl.getBasicInfo(videoId);
+    const details = info?.videoDetails;
     return res.json({
       ok: true,
-      resolver: "ytdl-core",
-      ytDlpError: ytDlpError || null,
       videoId,
-      sourceUrl: source.url,
-      isVideoSource: source === muxed && source !== audio,
-      audio: audio
-        ? {
-            url: audio.url,
-            bitrate: audio.audioBitrate || null,
-            mimeType: audio.mimeType || null,
-          }
-        : null,
-      muxed: muxed
-        ? {
-            url: muxed.url,
-            bitrate: muxed.bitrate || null,
-            qualityLabel: muxed.qualityLabel || null,
-            mimeType: muxed.mimeType || null,
-          }
-        : null,
-      title: info.videoDetails?.title || null,
-      author: info.videoDetails?.author?.name || null,
+      title: details?.title || null,
+      author: details?.author?.name || null,
+      channelId: details?.channelId || null,
+      durationSeconds: Number(details?.lengthSeconds || 0) || null,
+      thumbnails: Array.isArray(details?.thumbnails)
+        ? details.thumbnails
+            .map((thumb) => String(thumb?.url || "").trim())
+            .filter(Boolean)
+        : [],
+      isLiveContent: details?.isLiveContent === true,
+      publishDate: details?.publishDate || null,
+      viewCount: Number(details?.viewCount || 0) || null,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      error: "resolve_failed",
+      error: "info_failed",
       detail: String(error?.message || error),
     });
   }
@@ -480,6 +634,17 @@ app.post("/cover/animate", authMiddleware, async (req, res) => {
       detail: String(error?.message || error),
     });
   }
+});
+
+app.use((error, _req, res, _next) => {
+  if (String(error?.message || "") === "cors_not_allowed") {
+    return res.status(403).json({ ok: false, error: "cors_not_allowed" });
+  }
+  return res.status(500).json({
+    ok: false,
+    error: "internal_error",
+    detail: String(error?.message || error),
+  });
 });
 
 app.listen(PORT, () => {
