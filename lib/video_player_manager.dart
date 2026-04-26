@@ -20,6 +20,7 @@ import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/now_playing_artwork_service.dart';
 import 'package:myapp/services/song_stream_cache_service.dart';
+import 'package:myapp/services/yt_resolver_service.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/thumbnail_cache_service.dart';
@@ -131,6 +132,9 @@ class _DjTransitionPlan {
   final double? preferredIncomingSpeed;
   final double incomingCurvePower;
   final double outgoingCurvePower;
+  final double outgoingDuckStartRatio;
+  final double outgoingDuckDepth;
+  final double outgoingDuckCurvePower;
 
   const _DjTransitionPlan({
     required this.preferredMixDuration,
@@ -140,6 +144,9 @@ class _DjTransitionPlan {
     required this.preferredIncomingSpeed,
     required this.incomingCurvePower,
     required this.outgoingCurvePower,
+    required this.outgoingDuckStartRatio,
+    required this.outgoingDuckDepth,
+    required this.outgoingDuckCurvePower,
   });
 }
 
@@ -183,6 +190,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   String? _currentVideoId;
   bool _isMinimized = false;
+  int _trackTransitionDirection = 0;
   bool _isFullScreen = false;
   bool _appInForeground = true;
   bool _isLowPowerModeEnabled = false;
@@ -247,6 +255,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   final NowPlayingArtworkService _nowPlayingArtworkService =
       NowPlayingArtworkService();
   final AiStemsService _aiStemsService = AiStemsService();
+  final YtResolverService _ytResolverService = YtResolverService();
   final Map<String, Uri> _systemArtworkByVideoId = {};
   final Map<String, String> _systemArtworkSourceByVideoId = {};
   String? _lastNowPlayingArtVideoId;
@@ -568,6 +577,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   String? get currentVideoId => _currentVideoId;
   bool get isMinimized => _isMinimized;
+  int get trackTransitionDirection => _trackTransitionDirection;
   bool get isFullScreen => _isFullScreen;
   bool get isAppInForeground => _appInForeground;
   bool get isLowPowerModeEnabled => _isLowPowerModeEnabled;
@@ -1538,6 +1548,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _searchThumbnailOverrides[videoId] = thumbnailUrl.trim();
   }
 
+  void _setTrackTransitionDirection(int direction) {
+    _trackTransitionDirection = direction.clamp(-1, 1);
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
@@ -1550,8 +1564,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_refreshLowPowerModeStatus());
       _backgroundEngineSwitchTimer?.cancel();
       _resumeSharedSongTimer?.cancel();
+      _resumeSiriPlayTimer?.cancel();
       _resumeSharedSongTimer = Timer(const Duration(milliseconds: 380), () {
         unawaited(_consumePendingSharedSongRequest());
+      });
+      _resumeSiriPlayTimer = Timer(const Duration(milliseconds: 430), () {
+        unawaited(_consumePendingSiriPlayRequest());
       });
       if (_preferForegroundVideoPlayback &&
           !_isLocal &&
@@ -1567,6 +1585,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             state == AppLifecycleState.inactive) &&
         _usingHiddenVideo) {
       _backgroundEngineSwitchTimer?.cancel();
+      // Migramos de inmediato a audio-only para evitar cierres al ir a background.
+      unawaited(_switchHiddenVideoToAudioEngine());
       _backgroundEngineSwitchTimer = Timer(
         const Duration(milliseconds: 650),
         () => unawaited(_switchHiddenVideoToAudioEngine()),
@@ -1615,7 +1635,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _currentVideoId = videoId;
     _isLocal = isLocalVideo;
     _preferForegroundVideoPlayback = preferVideoPlayback && !isLocalVideo;
-    _isMinimized = false;
     _isFullScreen = false;
     _position = Duration.zero;
     _bufferedPosition = Duration.zero;
@@ -1696,6 +1715,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           unawaited(_warmSongCacheFromUri(videoId: videoId, uri: preloadedUri));
         } catch (e) {
           lastAudioError = e;
+        }
+      }
+
+      if (!started && !_preferForegroundVideoPlayback) {
+        final backendSource = await _resolveDownloadSourceViaBackend(videoId);
+        if (backendSource != null) {
+          started = await _attemptPlaybackFromDownloadSource(
+            backendSource,
+            keepVideoEngine: _preferForegroundVideoPlayback,
+          );
         }
       }
 
@@ -1892,7 +1921,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
               e is HandshakeException ||
               e is SocketException ||
               e is HttpException)) {
-        final altSource = await _resolveDownloadSourceViaYoutubei(videoId);
+        final altSource =
+            await _resolveDownloadSourceViaBackend(videoId) ??
+            await _resolveDownloadSourceViaYoutubei(videoId);
         if (altSource != null) {
           final played = await _attemptPlaybackFromDownloadSource(
             altSource,
@@ -2046,11 +2077,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
 
-      return null;
+      return _resolveDownloadSourceViaBackend(videoId);
     } on RequestLimitExceededException {
+      final backend = await _resolveDownloadSourceViaBackend(videoId);
+      if (backend != null) return backend;
       return _resolveDownloadSourceViaYoutubei(videoId);
     } catch (_) {
-      return null;
+      return _resolveDownloadSourceViaBackend(videoId);
     }
   }
 
@@ -2084,7 +2117,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       // Fallback final: regresar mejor esfuerzo sin probe.
       return resolveDownloadSourceSilently(videoId);
     } on RequestLimitExceededException {
+      final backend = await _resolveDownloadSourceViaBackend(videoId);
+      if (backend != null) return backend;
       return _resolveDownloadSourceViaYoutubei(videoId);
+    } catch (_) {
+      return _resolveDownloadSourceViaBackend(videoId);
+    }
+  }
+
+  Future<DownloadSourceInfo?> _resolveDownloadSourceViaBackend(
+    String videoId,
+  ) async {
+    if (!_ytResolverService.isConfigured) return null;
+    try {
+      final resolved = await _ytResolverService.resolveVideo(videoId);
+      if (resolved == null) return null;
+
+      final audio = resolved.audioUrl?.trim() ?? '';
+      if (audio.isNotEmpty) {
+        return DownloadSourceInfo(sourceUrl: audio, isVideoSource: false);
+      }
+
+      final muxed = resolved.muxedUrl?.trim() ?? '';
+      if (muxed.isNotEmpty) {
+        return DownloadSourceInfo(sourceUrl: muxed, isVideoSource: true);
+      }
+
+      final source = resolved.sourceUrl.trim();
+      if (source.isEmpty) return null;
+      return DownloadSourceInfo(
+        sourceUrl: source,
+        isVideoSource: resolved.isVideoSource,
+      );
     } catch (_) {
       return null;
     }
@@ -4953,7 +5017,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _currentVideoId = id;
     _isLocal = true;
     _preferForegroundVideoPlayback = false;
-    _isMinimized = false;
     _isFullScreen = false;
     _trackTitle = title;
     _trackThumbnailUrl = thumbnailUrl;
@@ -5161,6 +5224,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> playNextInQueue() async {
+    _setTrackTransitionDirection(1);
     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) {
       await _hydrateQueueForManualNext();
     }
@@ -5190,6 +5254,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> playPreviousInQueue() async {
+    _setTrackTransitionDirection(-1);
     if (_playbackHistory.isEmpty) {
       await seekTo(Duration.zero);
       return;
@@ -5672,6 +5737,41 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return safeTarget;
   }
 
+  Future<double> _setPlayerPitchSmooth(
+    AudioPlayer player,
+    double target, {
+    required double minPitch,
+    required double maxPitch,
+  }) async {
+    final safeTarget = target.clamp(minPitch, maxPitch).toDouble();
+    double current = 1.0;
+    try {
+      current = player.pitch;
+    } catch (_) {}
+
+    final delta = (safeTarget - current).abs();
+    if (delta < 0.0025) {
+      try {
+        await player.setPitch(safeTarget);
+      } catch (_) {}
+      return safeTarget;
+    }
+
+    final steps = ((delta / 0.0035).ceil()).clamp(2, 6);
+    for (var i = 1; i <= steps; i++) {
+      final ratio = i / steps;
+      final eased = 1 - math.pow(1 - ratio, 2).toDouble();
+      final nextPitch = current + ((safeTarget - current) * eased);
+      try {
+        await player.setPitch(nextPitch);
+      } catch (_) {
+        return current;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 34));
+    }
+    return safeTarget;
+  }
+
   Future<void> _applyTrackStartFadeInIfEnabled() async {
     if (!_isMixingEnabled) return;
     final fadeId = ++_volumeFadeEpoch;
@@ -6010,6 +6110,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     _backgroundEngineSwitchTimer?.cancel();
     _resumeSharedSongTimer?.cancel();
+    _resumeSiriPlayTimer?.cancel();
     unawaited(_persistPlaybackSession(force: true));
     _settingsService.removeListener(_onSettingsChanged);
     WidgetsBinding.instance.removeObserver(this);
@@ -6282,24 +6383,44 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           }
         }
         if (!restoredFromSessionStream) {
-          final manifest = await _getManifestWithRetry(
-            videoId,
-          ).timeout(const Duration(seconds: 6));
-          if (isStale()) return;
-          final audioStreams = _prioritizeAudioStreams(
-            manifest.audioOnly.toList(),
-          );
-          if (audioStreams.isEmpty) {
-            if (isStale()) return;
-            await _clearPersistedPlaybackSession();
-            _isLoading = false;
-            return;
+          StreamManifest? manifest;
+          try {
+            manifest = await _getManifestWithRetry(
+              videoId,
+            ).timeout(const Duration(seconds: 6));
+          } catch (_) {
+            manifest = null;
           }
-          final stream = audioStreams.first;
-          _currentStreamUrl = stream.url.toString();
-          await _player.setAudioSource(
-            AudioSource.uri(stream.url, headers: _youtubeHeaders),
-          );
+          if (isStale()) return;
+          final audioStreams =
+              manifest == null
+              ? const <AudioOnlyStreamInfo>[]
+              : _prioritizeAudioStreams(manifest.audioOnly.toList());
+          if (audioStreams.isNotEmpty) {
+            final stream = audioStreams.first;
+            _currentStreamUrl = stream.url.toString();
+            await _player.setAudioSource(
+              AudioSource.uri(stream.url, headers: _youtubeHeaders),
+            );
+          } else {
+            final backendSource = await _resolveDownloadSourceViaBackend(
+              videoId,
+            );
+            if (backendSource == null || backendSource.isVideoSource) {
+              if (isStale()) return;
+              await _clearPersistedPlaybackSession();
+              _isLoading = false;
+              return;
+            }
+            _currentStreamUrl = backendSource.sourceUrl;
+            final streamUri = Uri.parse(backendSource.sourceUrl);
+            await _player.setAudioSource(
+              AudioSource.uri(
+                streamUri,
+                headers: _headersForStreamUri(streamUri) ?? _youtubeHeaders,
+              ),
+            );
+          }
         }
       }
 
@@ -6712,6 +6833,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _playNextFromQueue({bool triggeredByCrossfade = false}) async {
+    _setTrackTransitionDirection(1);
     if (_isAdvancingQueue) return;
     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) return;
     _isAdvancingQueue = true;
@@ -6825,7 +6947,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       _currentVideoId = next.videoId;
       _isLocal = next.isLocal;
-      _isMinimized = false;
       _isFullScreen = false;
       _trackTitle = next.title;
       _trackArtist = cleanArtistName(next.artist);
@@ -7298,9 +7419,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
       double outgoingSpeed = 1.0;
       double incomingSpeed = 1.0;
+      double outgoingPitch = 1.0;
+      double incomingPitch = 1.0;
       var outgoingStoppedEarly = false;
-      var outgoingCutEndMs = (totalMs * 0.87).round();
-      var outgoingCutStartMs = math.max(0, outgoingCutEndMs - 220);
+      var outgoingCutEndMs = (totalMs * 0.93).round();
+      var outgoingCutStartMs = math.max(0, outgoingCutEndMs - 280);
       if (_settingsService.djMode && totalMs > 0) {
         final remainingMs = math.max(
           1,
@@ -7355,6 +7478,50 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           );
         }
 
+        final sharedBlendSpeed =
+            ((outgoingSpeed * 0.56) + (incomingSpeed * 0.44)).clamp(
+              0.985,
+              1.04,
+            );
+        outgoingSpeed = await _setPlayerSpeedSmooth(
+          currentPlayer,
+          ((outgoingSpeed * 0.72) + (sharedBlendSpeed * 0.28)).clamp(
+            0.985,
+            1.055,
+          ),
+          minSpeed: 0.985,
+          maxSpeed: 1.06,
+        );
+        incomingSpeed = await _setPlayerSpeedSmooth(
+          nextPlayer,
+          ((incomingSpeed * 0.52) + (sharedBlendSpeed * 0.48)).clamp(
+            0.985,
+            1.045,
+          ),
+          minSpeed: 0.985,
+          maxSpeed: 1.05,
+        );
+
+        final harmonicShift = _resolveHarmonicBlendPitchShift(
+          outgoingTitle: _trackTitle ?? '',
+          outgoingArtist: cleanArtistName(_trackArtist),
+          incomingTitle: next.title,
+          incomingArtist: cleanArtistName(next.artist),
+        );
+        final sharedBlendPitch = (1.0 + harmonicShift).clamp(0.988, 1.012);
+        outgoingPitch = await _setPlayerPitchSmooth(
+          currentPlayer,
+          sharedBlendPitch,
+          minPitch: 0.985,
+          maxPitch: 1.015,
+        );
+        incomingPitch = await _setPlayerPitchSmooth(
+          nextPlayer,
+          sharedBlendPitch,
+          minPitch: 0.985,
+          maxPitch: 1.015,
+        );
+
         final lyricDistanceMs =
             incomingFirstLyricOffset == null ||
                 incomingFirstLyricOffset <= Duration.zero
@@ -7363,18 +7530,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         if (lyricDistanceMs != null && lyricDistanceMs > 0) {
           final lyricHitMs = (lyricDistanceMs / incomingSpeed).round();
           final clampedHitMs = lyricHitMs.clamp(
-            (totalMs * 0.45).round(),
-            (totalMs * 0.94).round(),
-          );
-          outgoingCutEndMs = (clampedHitMs + 140).clamp(
-            (totalMs * 0.58).round(),
+            (totalMs * 0.5).round(),
             (totalMs * 0.95).round(),
           );
+          outgoingCutEndMs = (clampedHitMs + 140).clamp(
+            (totalMs * 0.72).round(),
+            (totalMs * 0.97).round(),
+          );
           outgoingCutStartMs = math.max(
-            (totalMs * 0.46).round(),
-            outgoingCutEndMs - 260,
+            (totalMs * 0.62).round(),
+            outgoingCutEndMs - 300,
           );
         }
+
       }
       for (var step = 1; step <= steps; step++) {
         final ratio = step / steps;
@@ -7384,16 +7552,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         final curvedOutRatio = math.pow(ratio, outgoingCurvePower).toDouble();
         final inGain = _settingsService.djMode
             ? math.sin(curvedInRatio * math.pi / 2)
-            : ratio;
+            : math.sin(ratio * math.pi / 2);
         final outGain = _settingsService.djMode
             ? math.cos(curvedOutRatio * math.pi / 2)
-            : (1.0 - ratio);
+            : math.cos(ratio * math.pi / 2);
         final inVol = targetVolume * inGain;
         var outVol = targetVolume * outGain;
         if (_settingsService.djMode) {
-          // En modo DJ mantenemos el track saliente al mismo volumen
-          // durante casi toda la mezcla para una transición más "overlay".
-          // Solo aplicamos un micro fade-out al final para evitar corte brusco.
+          // Mantiene la pista saliente "pegada" con la entrante para una
+          // transición tipo fusión, y solo recorta al cierre.
           outVol = targetVolume;
           final elapsedMs = (ratio * totalMs).round();
           if (elapsedMs >= outgoingCutStartMs) {
@@ -7455,6 +7622,26 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           );
         } catch (_) {}
       }
+      if ((outgoingPitch - 1.0).abs() > 0.003) {
+        try {
+          await _setPlayerPitchSmooth(
+            currentPlayer,
+            1.0,
+            minPitch: 0.95,
+            maxPitch: 1.08,
+          );
+        } catch (_) {}
+      }
+      if ((incomingPitch - 1.0).abs() > 0.003) {
+        try {
+          await _setPlayerPitchSmooth(
+            nextPlayer,
+            1.0,
+            minPitch: 0.95,
+            maxPitch: 1.08,
+          );
+        } catch (_) {}
+      }
 
       _rememberCurrentForHistory();
       _player = nextPlayer;
@@ -7463,7 +7650,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       _currentVideoId = next.videoId;
       _isLocal = next.isLocal;
-      _isMinimized = false;
       _isFullScreen = false;
       _position = Duration.zero;
       _bufferedPosition = Duration.zero;
@@ -7560,6 +7746,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         await nextPlayer.setSpeed(1.0);
       } catch (_) {}
       try {
+        await currentPlayer.setPitch(1.0);
+      } catch (_) {}
+      try {
+        await nextPlayer.setPitch(1.0);
+      } catch (_) {}
+      try {
         await nextPlayer.stop();
       } catch (_) {}
       _syncSystemNowPlaying();
@@ -7626,11 +7818,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    final manifest = await _getManifestWithRetry(next.videoId);
-    final audioStreams = manifest.audioOnly.toList();
-    if (audioStreams.isEmpty && manifest.muxed.isEmpty) return false;
+    StreamManifest? manifest;
+    try {
+      manifest = await _getManifestWithRetry(next.videoId);
+    } catch (_) {
+      manifest = null;
+    }
+    final audioStreams =
+        manifest?.audioOnly.toList() ?? const <AudioOnlyStreamInfo>[];
+    final muxedStreams = manifest?.muxed.toList() ?? const <MuxedStreamInfo>[];
     final ordered = _prioritizeAudioStreams(audioStreams);
-    final orderedMuxed = _prioritizeMuxedStreams(manifest.muxed.toList());
+    final orderedMuxed = _prioritizeMuxedStreams(muxedStreams);
 
     final candidateUris = <Uri>[];
     final seenCandidateUrls = <String>{};
@@ -7644,6 +7842,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       final key = stream.url.toString();
       if (seenCandidateUrls.add(key)) {
         candidateUris.add(stream.url);
+      }
+    }
+    if (candidateUris.isEmpty) {
+      final backendSource = await _resolveDownloadSourceViaBackend(next.videoId);
+      if (backendSource != null) {
+        final uri = Uri.tryParse(backendSource.sourceUrl);
+        if (uri != null) {
+          candidateUris.add(uri);
+        }
       }
     }
     if (candidateUris.isEmpty) return false;
@@ -7947,6 +8154,74 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return score.clamp(0.72, 1.38);
   }
 
+  double _estimateTrackTonalProfile({
+    required String title,
+    required String artist,
+  }) {
+    final haystack = '$title $artist'.toLowerCase();
+    const brightHints = <String>{
+      'major',
+      'happy',
+      'pop',
+      'dance',
+      'edm',
+      'nightcore',
+      'sped up',
+      'upbeat',
+      'festival',
+    };
+    const darkHints = <String>{
+      'minor',
+      'sad',
+      'dark',
+      'deep',
+      'slowed',
+      'reverb',
+      'bass',
+      'lofi',
+      'chill',
+      'ambient',
+    };
+    const neutralizers = <String>{
+      'acoustic',
+      'live',
+      'orchestral',
+      'instrumental',
+      'piano',
+    };
+
+    var score = 0.0;
+    for (final hint in brightHints) {
+      if (haystack.contains(hint)) score += 0.2;
+    }
+    for (final hint in darkHints) {
+      if (haystack.contains(hint)) score -= 0.2;
+    }
+    for (final hint in neutralizers) {
+      if (haystack.contains(hint)) score *= 0.85;
+    }
+    return score.clamp(-1.0, 1.0);
+  }
+
+  double _resolveHarmonicBlendPitchShift({
+    required String outgoingTitle,
+    required String outgoingArtist,
+    required String incomingTitle,
+    required String incomingArtist,
+  }) {
+    final outgoingTone = _estimateTrackTonalProfile(
+      title: outgoingTitle,
+      artist: outgoingArtist,
+    );
+    final incomingTone = _estimateTrackTonalProfile(
+      title: incomingTitle,
+      artist: incomingArtist,
+    );
+    final toneDelta = incomingTone - outgoingTone;
+    if (toneDelta.abs() < 0.08) return 0.0;
+    return (toneDelta * 0.0085).clamp(-0.012, 0.012);
+  }
+
   _DjTransitionPlan _buildHeuristicDjTransitionPlan({
     required PlaybackQueueItem next,
     required Duration incomingDuration,
@@ -7995,7 +8270,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     );
 
     final incomingCurvePower = (1.0 - (energyDelta * 0.33)).clamp(0.78, 1.22);
-    final outgoingCurvePower = (1.0 + (energyDelta * 0.28)).clamp(0.78, 1.22);
+    final outgoingCurvePower =
+        (1.06 + (energyDelta * 0.24) + (hasLyricAnchor ? 0.14 : 0.02)).clamp(
+          0.88,
+          1.42,
+        );
+    final outgoingDuckStartRatio = (0.36 -
+            (energyDelta > 0 ? (energyDelta * 0.11) : 0.0) -
+            (hasLyricAnchor ? 0.07 : 0.0))
+        .clamp(0.2, 0.5);
+    final outgoingDuckDepth = (0.5 +
+            (energyDelta > 0 ? (energyDelta * 0.2) : 0.0) +
+            (hasLyricAnchor ? 0.16 : 0.06))
+        .clamp(0.42, 0.82);
+    final outgoingDuckCurvePower = (1.18 +
+            (hasLyricAnchor ? 0.24 : 0.0) +
+            (energyDelta.abs() * 0.26))
+        .clamp(1.0, 1.9);
 
     return _DjTransitionPlan(
       preferredMixDuration: mixDuration,
@@ -8007,6 +8298,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       preferredIncomingSpeed: null,
       incomingCurvePower: incomingCurvePower,
       outgoingCurvePower: outgoingCurvePower,
+      outgoingDuckStartRatio: outgoingDuckStartRatio,
+      outgoingDuckDepth: outgoingDuckDepth,
+      outgoingDuckCurvePower: outgoingDuckCurvePower,
     );
   }
 

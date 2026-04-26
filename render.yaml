@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: vmmusic-backend
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 18
+      - key: PORT
+        value: 10000
+      - key: RESOLVE_CACHE_TTL_MS
+        value: 600000
+      - key: RESOLVE_BATCH_LIMIT
+        value: 20
+      - key: YTDLP_TIMEOUT_MS
+        value: 20000
+      - key: STEMS_TIMEOUT_MS
+        value: 720000
+      - key: COVER_ANIMATION_TIMEOUT_MS
+        value: 90000

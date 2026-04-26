@@ -178,8 +178,12 @@ class _MiniPlayer extends StatefulWidget {
 
 class _MiniPlayerState extends State<_MiniPlayer> {
   double _dragLift = 0.0;
+  double _horizontalDragDx = 0.0;
   bool _isOpening = false;
+  bool _isSwitchingTrack = false;
   static const double _maxDragLift = 52.0;
+  static const double _miniSwipeDistanceThreshold = 36;
+  static const double _miniSwipeVelocityThreshold = 320;
 
   double get _dragProgress => (_dragLift / _maxDragLift).clamp(0.0, 1.0);
 
@@ -200,6 +204,27 @@ class _MiniPlayerState extends State<_MiniPlayer> {
     widget.manager.maximize();
     _isOpening = false;
     _setDragLift(0.0);
+  }
+
+  bool _shouldTriggerMiniSwipe(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    return _horizontalDragDx.abs() >= _miniSwipeDistanceThreshold ||
+        velocity.abs() >= _miniSwipeVelocityThreshold;
+  }
+
+  Future<void> _handleMiniSwipe(bool toNext) async {
+    if (_isSwitchingTrack) return;
+    _isSwitchingTrack = true;
+    unawaited(HapticFeedback.selectionClick());
+    try {
+      if (toNext) {
+        await widget.manager.playNextInQueue();
+      } else {
+        await widget.manager.playPreviousInQueue();
+      }
+    } finally {
+      _isSwitchingTrack = false;
+    }
   }
 
   @override
@@ -242,6 +267,26 @@ class _MiniPlayerState extends State<_MiniPlayer> {
         ),
         child: GestureDetector(
           behavior: HitTestBehavior.translucent,
+          onHorizontalDragStart: (_) {
+            _horizontalDragDx = 0;
+          },
+          onHorizontalDragUpdate: (details) {
+            _horizontalDragDx += details.delta.dx;
+          },
+          onHorizontalDragEnd: (details) {
+            if (!_shouldTriggerMiniSwipe(details)) {
+              _horizontalDragDx = 0;
+              return;
+            }
+            final velocity = details.primaryVelocity ?? 0;
+            final swipeRight =
+                velocity > 0 || (velocity == 0 && _horizontalDragDx > 0);
+            unawaited(_handleMiniSwipe(!swipeRight));
+            _horizontalDragDx = 0;
+          },
+          onHorizontalDragCancel: () {
+            _horizontalDragDx = 0;
+          },
           onVerticalDragUpdate: (details) {
             if (_isOpening) return;
             if (details.delta.dy < 0) {
@@ -316,44 +361,44 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                       padding: const EdgeInsets.symmetric(horizontal: 10),
                       child: Row(
                         children: [
-                          _ArtworkImage(
-                            url: miniState.trackThumbnailUrl,
-                            size: 44,
-                            borderRadius: 10,
+                          _ArtworkSwipeNavigator(
+                            manager: widget.manager,
+                            child: _ArtworkImage(
+                              url: miniState.trackThumbnailUrl,
+                              size: 44,
+                              borderRadius: 10,
+                            ),
                           ),
                           const SizedBox(width: 10),
                           Expanded(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  miniState.trackTitle ?? 'Reproduciendo',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: CupertinoTheme.of(context)
-                                      .textTheme
-                                      .textStyle
-                                      .copyWith(
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                ),
-                                Text(
+                            child: _AnimatedTrackMeta(
+                              trackKey:
+                                  miniState.trackTitle ??
                                   miniState.trackArtist ??
-                                      'Artista desconocido',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: CupertinoTheme.of(context)
-                                      .textTheme
-                                      .textStyle
-                                      .copyWith(
-                                        fontSize: 12,
-                                        color: CupertinoColors.secondaryLabel
-                                            .resolveFrom(context),
-                                      ),
-                                ),
-                              ],
+                                  'mini_unknown',
+                              title: miniState.trackTitle ?? 'Reproduciendo',
+                              artist:
+                                  miniState.trackArtist ??
+                                  'Artista desconocido',
+                              direction: widget.manager.trackTransitionDirection,
+                              titleStyle: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                              artistStyle: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
+                                    fontSize: 12,
+                                    color: CupertinoColors.secondaryLabel
+                                        .resolveFrom(context),
+                                  ),
+                              titleMaxLines: 1,
+                              artistMaxLines: 1,
+                              verticalPadding: 0,
                             ),
                           ),
                           CupertinoButton(
@@ -387,6 +432,82 @@ class _MiniPlayerState extends State<_MiniPlayer> {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AnimatedTrackMeta extends StatelessWidget {
+  final String trackKey;
+  final String title;
+  final String artist;
+  final int direction;
+  final TextStyle titleStyle;
+  final TextStyle artistStyle;
+  final int titleMaxLines;
+  final int artistMaxLines;
+  final double verticalPadding;
+
+  const _AnimatedTrackMeta({
+    required this.trackKey,
+    required this.title,
+    required this.artist,
+    this.direction = 0,
+    required this.titleStyle,
+    required this.artistStyle,
+    this.titleMaxLines = 2,
+    this.artistMaxLines = 1,
+    this.verticalPadding = 2,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final dx = direction < 0 ? -0.06 : 0.06;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 280),
+      reverseDuration: const Duration(milliseconds: 220),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      layoutBuilder: (currentChild, previousChildren) {
+        return Stack(
+          alignment: Alignment.centerLeft,
+          children: <Widget>[
+            ...previousChildren,
+            if (currentChild != null) currentChild,
+          ],
+        );
+      },
+      transitionBuilder: (child, animation) {
+        final slide = Tween<Offset>(
+          begin: Offset(dx, 0),
+          end: Offset.zero,
+        ).animate(animation);
+        return FadeTransition(
+          opacity: animation,
+          child: SlideTransition(position: slide, child: child),
+        );
+      },
+      child: Padding(
+        key: ValueKey('track_meta_$trackKey'),
+        padding: EdgeInsets.symmetric(vertical: verticalPadding),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              maxLines: titleMaxLines,
+              overflow: TextOverflow.ellipsis,
+              style: titleStyle,
+            ),
+            Text(
+              artist,
+              maxLines: artistMaxLines,
+              overflow: TextOverflow.ellipsis,
+              style: artistStyle,
+            ),
+          ],
         ),
       ),
     );
@@ -1731,6 +1852,77 @@ class _InlineAutoplayButton extends StatelessWidget {
   }
 }
 
+class _ArtworkSwipeNavigator extends StatefulWidget {
+  final VideoPlayerManager manager;
+  final Widget child;
+  final VoidCallback? onTap;
+
+  const _ArtworkSwipeNavigator({
+    required this.manager,
+    required this.child,
+    this.onTap,
+  });
+
+  @override
+  State<_ArtworkSwipeNavigator> createState() => _ArtworkSwipeNavigatorState();
+}
+
+class _ArtworkSwipeNavigatorState extends State<_ArtworkSwipeNavigator> {
+  static const double _swipeDistanceThreshold = 36;
+  static const double _swipeVelocityThreshold = 320;
+  bool _isSwitchingTrack = false;
+  double _dragDx = 0;
+
+  bool _shouldTriggerSwipe(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    return _dragDx.abs() >= _swipeDistanceThreshold ||
+        velocity.abs() >= _swipeVelocityThreshold;
+  }
+
+  Future<void> _handleSwipe(bool toNext) async {
+    if (_isSwitchingTrack) return;
+    _isSwitchingTrack = true;
+    unawaited(HapticFeedback.selectionClick());
+    try {
+      if (toNext) {
+        await widget.manager.playNextInQueue();
+      } else {
+        await widget.manager.playPreviousInQueue();
+      }
+    } finally {
+      _isSwitchingTrack = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.onTap,
+      onHorizontalDragStart: (_) {
+        _dragDx = 0;
+      },
+      onHorizontalDragUpdate: (details) {
+        _dragDx += details.delta.dx;
+      },
+      onHorizontalDragEnd: (details) {
+        if (!_shouldTriggerSwipe(details)) {
+          _dragDx = 0;
+          return;
+        }
+        final velocity = details.primaryVelocity ?? 0;
+        final swipeRight = velocity > 0 || (velocity == 0 && _dragDx > 0);
+        unawaited(_handleSwipe(!swipeRight));
+        _dragDx = 0;
+      },
+      onHorizontalDragCancel: () {
+        _dragDx = 0;
+      },
+      child: widget.child,
+    );
+  }
+}
+
 class _DefaultNowPlayingHero extends StatelessWidget {
   final VideoPlayerManager manager;
   final double artworkSize;
@@ -1753,6 +1945,7 @@ class _DefaultNowPlayingHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final transitionDx = manager.trackTransitionDirection < 0 ? -0.03 : 0.03;
     final motionEnergy = _estimateTrackMotionEnergy(
       manager.trackTitle,
       manager.trackArtist,
@@ -1762,39 +1955,58 @@ class _DefaultNowPlayingHero extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Center(
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 260),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            transitionBuilder: (child, animation) {
-              return FadeTransition(
-                opacity: animation,
-                child: ScaleTransition(
-                  scale: Tween<double>(
-                    begin: 0.985,
-                    end: 1.0,
-                  ).animate(animation),
-                  child: child,
-                ),
-              );
-            },
-            child: _ArtworkImage(
-              key: ValueKey('hero-artwork-${manager.trackThumbnailUrl ?? ''}'),
-              url: manager.trackThumbnailUrl,
-              size: artworkSize,
-              animated: !preferStaticArtwork,
-              isPlaying: manager.isPlaying,
-              motionEnergy: motionEnergy,
+          child: _ArtworkSwipeNavigator(
+            manager: manager,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 260),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) {
+                return FadeTransition(
+                  opacity: animation,
+                  child: ScaleTransition(
+                    scale: Tween<double>(
+                      begin: 0.985,
+                      end: 1.0,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                );
+              },
+              child: _ArtworkImage(
+                key: ValueKey('hero-artwork-${manager.trackThumbnailUrl ?? ''}'),
+                url: manager.trackThumbnailUrl,
+                size: artworkSize,
+                animated: !preferStaticArtwork,
+                isPlaying: manager.isPlaying,
+                motionEnergy: motionEnergy,
+              ),
             ),
           ),
         ),
         const SizedBox(height: 28),
-        SizedBox(
-          width: double.infinity,
-          child: _AutoScrollText(
-            text: manager.trackTitle ?? 'Cargando canción...',
-            style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
-                .copyWith(fontSize: 34, fontWeight: FontWeight.w700),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: Offset(transitionDx, 0),
+                end: Offset.zero,
+              ).animate(animation),
+              child: child,
+            ),
+          ),
+          child: SizedBox(
+            key: ValueKey('hero_title_${manager.currentVideoId ?? ''}'),
+            width: double.infinity,
+            child: _AutoScrollText(
+              text: manager.trackTitle ?? 'Cargando canción...',
+              style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
+                  .copyWith(fontSize: 34, fontWeight: FontWeight.w700),
+            ),
           ),
         ),
         const SizedBox(height: 8),
@@ -1804,15 +2016,42 @@ class _DefaultNowPlayingHero extends StatelessWidget {
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: onArtistTap,
-                child: _AutoScrollText(
-                  text: manager.trackArtist ?? 'Artista desconocido',
-                  style: CupertinoTheme.of(context).textTheme.textStyle
-                      .copyWith(
-                        fontSize: 20,
-                        color: CupertinoColors.secondaryLabel.resolveFrom(
-                          context,
-                        ),
-                      ),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 280),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  layoutBuilder: (currentChild, previousChildren) {
+                    return Stack(
+                      alignment: Alignment.centerLeft,
+                      children: <Widget>[
+                        ...previousChildren,
+                        if (currentChild != null) currentChild,
+                      ],
+                    );
+                  },
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: Offset(transitionDx, 0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: child,
+                    ),
+                  ),
+                  child: KeyedSubtree(
+                    key: ValueKey('hero_artist_${manager.currentVideoId ?? ''}'),
+                    child: _AutoScrollText(
+                      text: manager.trackArtist ?? 'Artista desconocido',
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(
+                            fontSize: 20,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                          ),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1859,6 +2098,7 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final transitionDx = manager.trackTransitionDirection < 0 ? -0.03 : 0.03;
     final value = controller.value;
     final ratio = value.isInitialized && value.aspectRatio > 0
         ? value.aspectRatio
@@ -1904,12 +2144,28 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 28),
-        SizedBox(
-          width: double.infinity,
-          child: _AutoScrollText(
-            text: manager.trackTitle ?? 'Cargando video...',
-            style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
-                .copyWith(fontSize: 34, fontWeight: FontWeight.w700),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          switchInCurve: Curves.easeOutCubic,
+          switchOutCurve: Curves.easeInCubic,
+          transitionBuilder: (child, animation) => FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: Offset(transitionDx, 0),
+                end: Offset.zero,
+              ).animate(animation),
+              child: child,
+            ),
+          ),
+          child: SizedBox(
+            key: ValueKey('video_hero_title_${manager.currentVideoId ?? ''}'),
+            width: double.infinity,
+            child: _AutoScrollText(
+              text: manager.trackTitle ?? 'Cargando video...',
+              style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
+                  .copyWith(fontSize: 34, fontWeight: FontWeight.w700),
+            ),
           ),
         ),
         const SizedBox(height: 8),
@@ -1919,15 +2175,44 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: onArtistTap,
-                child: _AutoScrollText(
-                  text: manager.trackArtist ?? 'Artista desconocido',
-                  style: CupertinoTheme.of(context).textTheme.textStyle
-                      .copyWith(
-                        fontSize: 20,
-                        color: CupertinoColors.secondaryLabel.resolveFrom(
-                          context,
-                        ),
-                      ),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 280),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  layoutBuilder: (currentChild, previousChildren) {
+                    return Stack(
+                      alignment: Alignment.centerLeft,
+                      children: <Widget>[
+                        ...previousChildren,
+                        if (currentChild != null) currentChild,
+                      ],
+                    );
+                  },
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: Offset(transitionDx, 0),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: child,
+                    ),
+                  ),
+                  child: KeyedSubtree(
+                    key: ValueKey(
+                      'video_hero_artist_${manager.currentVideoId ?? ''}',
+                    ),
+                    child: _AutoScrollText(
+                      text: manager.trackArtist ?? 'Artista desconocido',
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(
+                            fontSize: 20,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                          ),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -2297,6 +2582,7 @@ class _CompactNowPlayingHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final transitionDx = manager.trackTransitionDirection < 0 ? -0.04 : 0.04;
     final motionEnergy = _estimateTrackMotionEnergy(
       manager.trackTitle,
       manager.trackArtist,
@@ -2316,8 +2602,8 @@ class _CompactNowPlayingHeader extends StatelessWidget {
         ),
         child: Row(
           children: [
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
+            _ArtworkSwipeNavigator(
+              manager: manager,
               onTap: onArtworkTap,
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 220),
@@ -2340,55 +2626,72 @@ class _CompactNowPlayingHeader extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    manager.trackTitle ?? 'Cargando canción...',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: CupertinoTheme.of(context).textTheme.textStyle
-                        .copyWith(fontSize: 19, fontWeight: FontWeight.w700),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 280),
+                reverseDuration: const Duration(milliseconds: 220),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: Offset(transitionDx, 0),
+                      end: Offset.zero,
+                    ).animate(animation),
+                    child: child,
                   ),
-                  const SizedBox(height: 3),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: onArtistTap,
-                          child: Text(
-                            manager.trackArtist ?? 'Artista desconocido',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: CupertinoTheme.of(context)
-                                .textTheme
-                                .textStyle
-                                .copyWith(
-                                  fontSize: 14,
-                                  color: CupertinoColors.secondaryLabel
-                                      .resolveFrom(context),
-                                ),
+                ),
+                child: Column(
+                  key: ValueKey('compact_meta_${manager.currentVideoId ?? ''}'),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      manager.trackTitle ?? 'Cargando canción...',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(fontSize: 19, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: onArtistTap,
+                            child: Text(
+                              manager.trackArtist ?? 'Artista desconocido',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
+                                    fontSize: 14,
+                                    color: CupertinoColors.secondaryLabel
+                                        .resolveFrom(context),
+                                  ),
+                            ),
                           ),
                         ),
-                      ),
-                      if (canAddToPlaylist) ...[
-                        const SizedBox(width: 8),
-                        _InlineArtistActionButton(
-                          icon: CupertinoIcons.add,
-                          onPressed: onAddToPlaylist,
-                          compact: true,
-                        ),
-                        const SizedBox(width: 6),
-                        _InlineArtistActionButton(
-                          icon: CupertinoIcons.star_fill,
-                          onPressed: onAddToFavorites,
-                          compact: true,
-                        ),
+                        if (canAddToPlaylist) ...[
+                          const SizedBox(width: 8),
+                          _InlineArtistActionButton(
+                            icon: CupertinoIcons.add,
+                            onPressed: onAddToPlaylist,
+                            compact: true,
+                          ),
+                          const SizedBox(width: 6),
+                          _InlineArtistActionButton(
+                            icon: CupertinoIcons.star_fill,
+                            onPressed: onAddToFavorites,
+                            compact: true,
+                          ),
+                        ],
                       ],
-                    ],
-                  ),
-                ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
@@ -3603,7 +3906,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   static final Map<String, Future<Color?>> _lyricsAccentRequests =
       <String, Future<Color?>>{};
   final ScrollController _syncedScrollController = ScrollController();
-  final Map<int, GlobalKey> _syncedLineKeys = <int, GlobalKey>{};
+  final Map<int, BuildContext> _syncedLineContexts = <int, BuildContext>{};
   int _lastSyncedIndex = -1;
   int _lastSyncedLength = 0;
   String? _lastVideoId;
@@ -3872,7 +4175,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       _lastVideoId = manager.currentVideoId;
       _lastSyncedIndex = -1;
       _lastSyncedLength = 0;
-      _syncedLineKeys.clear();
+      _syncedLineContexts.clear();
       _latestResolvedCurrentIndex = -1;
       _autoFollowCurrentLyric = true;
       _resumeAutoFollowTimer?.cancel();
@@ -3915,7 +4218,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
         final lyricsNow = _effectiveLyricsNow(manager);
         if (_lastSyncedLength != syncedLyrics.length) {
           _lastSyncedLength = syncedLyrics.length;
-          _syncedLineKeys.clear();
+          _syncedLineContexts.clear();
         }
         final rawCurrentIndex = manager.currentSyncedLyricIndex;
         final currentIndex = _resolveDisplayedCurrentIndex(
@@ -3936,10 +4239,6 @@ class _LyricsPanelState extends State<_LyricsPanel> {
           itemBuilder: (context, index) {
             final line = syncedLyrics[index];
             final isActive = index == currentIndex;
-            final lineKey = _syncedLineKeys.putIfAbsent(
-              index,
-              () => GlobalKey(),
-            );
             double liveProgress = 0.0;
             if (isActive) {
               final lineStart = line.timestamp;
@@ -3968,66 +4267,69 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                 }
               }
             }
-            return KeyedSubtree(
-              key: lineKey,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => unawaited(
-                  _seekToLyricLine(index: index, timestamp: line.timestamp),
-                ),
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 320),
-                  curve: Curves.easeInOutCubic,
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 6,
-                    horizontal: 4,
+            return Builder(
+              key: ValueKey('lyric_line_${manager.currentVideoId}_$index'),
+              builder: (lineContext) {
+                _syncedLineContexts[index] = lineContext;
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => unawaited(
+                    _seekToLyricLine(index: index, timestamp: line.timestamp),
                   ),
-                  child: AnimatedOpacity(
-                    duration: const Duration(milliseconds: 300),
-                    curve: Curves.easeInOut,
-                    opacity: isActive ? 1 : 0.86,
-                    child: AnimatedDefaultTextStyle(
-                      duration: const Duration(milliseconds: 320),
-                      curve: Curves.easeInOutCubic,
-                      style: textStyle.copyWith(
-                        fontSize: isActive ? activeFontSize : baseFontSize,
-                        fontWeight: isActive
-                            ? FontWeight.w700
-                            : FontWeight.w500,
-                        color: isActive
-                            ? activeLyricsColor
-                            : CupertinoColors.secondaryLabel.resolveFrom(
-                                context,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 320),
+                    curve: Curves.easeInOutCubic,
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 6,
+                      horizontal: 4,
+                    ),
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeInOut,
+                      opacity: isActive ? 1 : 0.86,
+                      child: AnimatedDefaultTextStyle(
+                        duration: const Duration(milliseconds: 320),
+                        curve: Curves.easeInOutCubic,
+                        style: textStyle.copyWith(
+                          fontSize: isActive ? activeFontSize : baseFontSize,
+                          fontWeight: isActive
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: isActive
+                              ? activeLyricsColor
+                              : CupertinoColors.secondaryLabel.resolveFrom(
+                                  context,
+                                ),
+                        ),
+                        child: isActive && liveLyricsEnabled
+                            ? _LiveLyricSweepText(
+                                key: ValueKey(
+                                  'live_${manager.currentVideoId}_$index',
+                                ),
+                                text: line.text,
+                                progress: liveProgress,
+                                baseStyle: textStyle.copyWith(
+                                  fontSize: activeFontSize,
+                                  fontWeight: FontWeight.w700,
+                                  color: CupertinoColors.secondaryLabel
+                                      .resolveFrom(context),
+                                ),
+                                activeStyle: textStyle.copyWith(
+                                  fontSize: activeFontSize,
+                                  fontWeight: FontWeight.w700,
+                                  color: activeLyricsColor,
+                                ),
+                              )
+                            : Text(
+                                line.text,
+                                textAlign: TextAlign.left,
+                                softWrap: true,
                               ),
                       ),
-                      child: isActive && liveLyricsEnabled
-                          ? _LiveLyricSweepText(
-                              key: ValueKey(
-                                'live_${manager.currentVideoId}_$index',
-                              ),
-                              text: line.text,
-                              progress: liveProgress,
-                              baseStyle: textStyle.copyWith(
-                                fontSize: activeFontSize,
-                                fontWeight: FontWeight.w700,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
-                              ),
-                              activeStyle: textStyle.copyWith(
-                                fontSize: activeFontSize,
-                                fontWeight: FontWeight.w700,
-                                color: activeLyricsColor,
-                              ),
-                            )
-                          : Text(
-                              line.text,
-                              textAlign: TextAlign.left,
-                              softWrap: true,
-                            ),
                     ),
                   ),
-                ),
-              ),
+                );
+              },
             );
           },
         );
@@ -4472,8 +4774,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (!_syncedScrollController.hasClients) return;
-      final targetKey = _syncedLineKeys[currentIndex];
-      final targetContext = targetKey?.currentContext;
+      final targetContext = _syncedLineContexts[currentIndex];
       final targetRenderObject = targetContext?.findRenderObject();
       if (targetRenderObject != null) {
         try {
@@ -4493,9 +4794,12 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   }
 
   bool _canResolveLyricTarget(int index) {
-    final key = _syncedLineKeys[index];
-    final ctx = key?.currentContext;
+    final ctx = _syncedLineContexts[index];
     if (ctx == null) return false;
+    if (!ctx.mounted) {
+      _syncedLineContexts.remove(index);
+      return false;
+    }
     return ctx.findRenderObject() != null;
   }
 

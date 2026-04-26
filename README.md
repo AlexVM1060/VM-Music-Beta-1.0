@@ -1,16 +1,52 @@
 # myapp
 
-A new Flutter project.
+## Backend para reproduccion de videos
 
-## Getting Started
+Este proyecto incluye un backend en `backend/` para resolver streams de YouTube y soportar funciones AI auxiliares.
 
-This project is a starting point for a Flutter application.
+Endpoints principales:
 
-A few resources to get you started if this is your first Flutter project:
+- `GET /health`
+- `GET /resolve?videoId=<youtube_video_id>`
+- `POST /resolve/batch`
+- `GET /info?videoId=<youtube_video_id>`
+- `POST /stems/separate`
+- `POST /cover/animate`
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+### Ejecutar backend local
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+cd backend
+npm install
+npm start
+```
+
+Por defecto corre en `http://localhost:10000`.
+
+### Conectar Flutter al backend
+
+```bash
+flutter run \
+  --dart-define=YT_RESOLVER_BASE_URL=http://localhost:10000 \
+  --dart-define=YT_RESOLVER_API_KEY=
+```
+
+Si configuras `RESOLVER_API_KEY` en el backend, envia el mismo valor en `YT_RESOLVER_API_KEY`.
+
+### Variables sugeridas
+
+Revisa `backend/.env.example` para una plantilla de configuracion (API key, CORS, cache, stems, cover animation).
+
+### Publicarlo en linea con Render
+
+Este repo ya trae `render.yaml`. Publica asi:
+
+1. Sube este proyecto a GitHub.
+2. En Render crea `New` -> `Blueprint`.
+3. Conecta tu repo y confirma el servicio.
+4. Verifica con `https://<tu-servicio>.onrender.com/health`.
+
+## Notas
+
+- La app usa `/resolve` para fallback de reproduccion.
+- `/resolve/batch` sirve para precarga de cola.
