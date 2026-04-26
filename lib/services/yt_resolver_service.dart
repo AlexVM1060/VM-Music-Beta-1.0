@@ -21,7 +21,7 @@ class YtResolverService {
 
   static const String _baseUrl = String.fromEnvironment(
     'YT_RESOLVER_BASE_URL',
-    defaultValue: '',
+    defaultValue: 'https://vmmusic-backend.onrender.com',
   );
   static const String _apiKey = String.fromEnvironment(
     'YT_RESOLVER_API_KEY',

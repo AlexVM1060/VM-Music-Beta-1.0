@@ -27,11 +27,14 @@ Por defecto corre en `http://localhost:10000`.
 
 ```bash
 flutter run \
-  --dart-define=YT_RESOLVER_BASE_URL=http://localhost:10000 \
+  --dart-define=YT_RESOLVER_BASE_URL=https://vmmusic-backend.onrender.com \
   --dart-define=YT_RESOLVER_API_KEY=
 ```
 
 Si configuras `RESOLVER_API_KEY` en el backend, envia el mismo valor en `YT_RESOLVER_API_KEY`.
+
+La app ya queda preconfigurada por defecto para usar:
+`https://vmmusic-backend.onrender.com`
 
 ### Variables sugeridas
 

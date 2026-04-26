@@ -13,7 +13,7 @@ class AiCoverAnimationService {
 
   static const String _baseUrl = String.fromEnvironment(
     'COVER_ANIMATION_API_BASE_URL',
-    defaultValue: '',
+    defaultValue: 'https://vmmusic-backend.onrender.com',
   );
   static const String _apiKey = String.fromEnvironment(
     'COVER_ANIMATION_API_KEY',
