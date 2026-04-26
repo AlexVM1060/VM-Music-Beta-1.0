@@ -356,6 +356,10 @@ async function runYtDlpJson(videoId) {
     "US",
     url,
   ];
+  if (YOUTUBE_COOKIE) {
+    args.unshift(`Cookie: ${YOUTUBE_COOKIE}`);
+    args.unshift("--add-header");
+  }
   return await new Promise((resolve, reject) => {
     const child = spawn(YTDLP_BINARY, args, {
       cwd: __dirname,
