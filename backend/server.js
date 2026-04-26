@@ -15,6 +15,11 @@ const API_KEY = (process.env.RESOLVER_API_KEY || "").trim();
 const YTDLP_BINARY_ENV = (process.env.YTDLP_BINARY || "yt-dlp").trim();
 const YTDLP_TIMEOUT_MS = Number(process.env.YTDLP_TIMEOUT_MS || 20 * 1000);
 const YOUTUBE_COOKIE = (process.env.YOUTUBE_COOKIE || "").trim();
+const YTDLP_PROXY_URL = (process.env.YTDLP_PROXY_URL || "").trim();
+const YTDLP_PROXY_POOL = (process.env.YTDLP_PROXY_POOL || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
 const YTDLP_CLIENT_PROFILES = (
   process.env.YTDLP_CLIENT_PROFILES ||
   "default,android,web,tv_embedded,web_creator"
@@ -22,6 +27,10 @@ const YTDLP_CLIENT_PROFILES = (
   .split(",")
   .map((value) => value.trim().toLowerCase())
   .filter(Boolean);
+const YTDLP_MAX_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.YTDLP_MAX_ATTEMPTS || 10)
+);
 const RESOLVE_CACHE_TTL_MS = Number(
   process.env.RESOLVE_CACHE_TTL_MS || 10 * 60 * 1000
 );
@@ -52,6 +61,14 @@ const YTDLP_BINARY =
   YTDLP_BINARY_ENV === "yt-dlp" && fs.existsSync(YTDLP_LOCAL_BINARY)
     ? YTDLP_LOCAL_BINARY
     : YTDLP_BINARY_ENV;
+const YTDLP_PROXIES = (() => {
+  const list = [];
+  if (YTDLP_PROXY_URL) list.push(YTDLP_PROXY_URL);
+  for (const proxy of YTDLP_PROXY_POOL) {
+    if (!list.includes(proxy)) list.push(proxy);
+  }
+  return list;
+})();
 
 function parseCookieHeader(rawCookie) {
   const raw = String(rawCookie || "")
@@ -499,7 +516,7 @@ function ytDlpExtractorArgsForProfile(profile) {
   }
 }
 
-async function runYtDlpJson(videoId, profile = "default") {
+async function runYtDlpJson(videoId, profile = "default", proxyUrl = null) {
   const url = `https://www.youtube.com/watch?v=${videoId}`;
   const args = [
     "--ignore-config",
@@ -516,6 +533,10 @@ async function runYtDlpJson(videoId, profile = "default") {
   if (extractorArgs) {
     args.unshift(extractorArgs);
     args.unshift("--extractor-args");
+  }
+  if (proxyUrl) {
+    args.unshift(proxyUrl);
+    args.unshift("--proxy");
   }
   const cookiesFile = await writeYtDlpCookiesFile();
   if (cookiesFile) {
@@ -573,20 +594,32 @@ async function resolveWithYtDlp(videoId) {
   const profiles = YTDLP_CLIENT_PROFILES.length
     ? YTDLP_CLIENT_PROFILES
     : ["default"];
-  const errors = [];
+  const proxies = YTDLP_PROXIES.length ? [null, ...YTDLP_PROXIES] : [null];
+  const attempts = [];
   for (const profile of profiles) {
+    for (const proxy of proxies) {
+      attempts.push({ profile, proxy });
+    }
+  }
+
+  const errors = [];
+  const limitedAttempts = attempts.slice(0, YTDLP_MAX_ATTEMPTS);
+  for (const attempt of limitedAttempts) {
+    const { profile, proxy } = attempt;
     try {
-      const info = await runYtDlpJson(videoId, profile);
+      const info = await runYtDlpJson(videoId, profile, proxy);
       const formats = Array.isArray(info?.formats) ? info.formats : [];
       const audio = pickYtDlpAudioFormat(formats);
       const muxed = pickYtDlpMuxedFormat(formats);
       if (!audio && !muxed) {
-        errors.push(`yt_dlp_no_formats_${profile}`);
+        errors.push(
+          `yt_dlp_no_formats profile=${profile} proxy=${proxy || "none"}`
+        );
         continue;
       }
       const source = audio || muxed;
       return {
-        resolver: `yt-dlp-${profile}`,
+        resolver: `yt-dlp-${profile}${proxy ? "-proxy" : ""}`,
         videoId,
         sourceUrl: source.url,
         isVideoSource: source === muxed && source !== audio,
@@ -609,7 +642,9 @@ async function resolveWithYtDlp(videoId) {
         author: info?.uploader || null,
       };
     } catch (error) {
-      errors.push(`${profile}:${String(error?.message || error)}`);
+      errors.push(
+        `profile=${profile} proxy=${proxy || "none"}: ${String(error?.message || error)}`
+      );
     }
   }
   if (errors.length) {

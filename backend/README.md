@@ -43,6 +43,9 @@ Copia `backend/.env.example` como referencia para configurar:
 - `YTDLP_BINARY`
 - `YTDLP_TIMEOUT_MS`
 - `YTDLP_CLIENT_PROFILES`
+- `YTDLP_PROXY_URL` (opcional, proxy único para yt-dlp)
+- `YTDLP_PROXY_POOL` (opcional, proxies separados por coma para rotación)
+- `YTDLP_MAX_ATTEMPTS` (máximo intentos por video combinando perfil+proxy)
 - `YOUTUBE_COOKIE` (opcional, recomendado si YouTube responde bot-check)
 - `RESOLVE_CACHE_TTL_MS`
 - `RESOLVE_BATCH_LIMIT`
