@@ -69,6 +69,7 @@ Copia `backend/.env.example` como referencia para configurar:
 ```bash
 cd backend
 npm install
+dart pub get --directory dart_resolver
 npm start
 ```
 
@@ -107,7 +108,7 @@ flutter run \
 ## Notas
 
 - El endpoint `/resolve` se mantiene compatible con tu app actual.
-- El backend ahora intenta resolver primero con `youtube_explode_dart` (script Dart `tool/yt_resolve.dart`) y deja `yt-dlp`/`ytdl-core` como respaldo.
+- El backend ahora intenta resolver primero con `youtube_explode_dart` (script Dart `backend/dart_resolver/bin/yt_resolve.dart`) y deja `yt-dlp`/`ytdl-core` como respaldo.
 - Para ese resolver principal necesitas tener `dart` disponible en el servidor (o configurar `DART_BINARY`).
 - `/resolve/batch` te ayuda para precargar colas o playlists.
 - Para stems necesitas Python + `demucs` + `ffmpeg` en el servidor.

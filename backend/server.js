@@ -67,7 +67,12 @@ const COVER_ANIMATION_TIMEOUT_MS = Number(
 const startedAt = new Date();
 const resolveCache = new Map();
 const YTDLP_LOCAL_BINARY = path.join(__dirname, ".bin", "yt-dlp");
-const YTEXPLODE_DART_SCRIPT = path.resolve(__dirname, "..", "tool", "yt_resolve.dart");
+const YTEXPLODE_DART_ROOT = path.resolve(__dirname, "dart_resolver");
+const YTEXPLODE_DART_SCRIPT = path.join(
+  YTEXPLODE_DART_ROOT,
+  "bin",
+  "yt_resolve.dart"
+);
 const YTDLP_BINARY =
   YTDLP_BINARY_ENV === "yt-dlp" && fs.existsSync(YTDLP_LOCAL_BINARY)
     ? YTDLP_LOCAL_BINARY
@@ -276,9 +281,17 @@ async function runYoutubeExplodeDart(videoId) {
     throw err;
   }
   return await new Promise((resolve, reject) => {
-    const args = ["run", "tool/yt_resolve.dart", "--video-id", videoId];
+    const args = [
+      "--disable-analytics",
+      "run",
+      "--directory",
+      YTEXPLODE_DART_ROOT,
+      "bin/yt_resolve.dart",
+      "--video-id",
+      videoId,
+    ];
     const child = spawn(DART_BINARY, args, {
-      cwd: path.resolve(__dirname, ".."),
+      cwd: __dirname,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
