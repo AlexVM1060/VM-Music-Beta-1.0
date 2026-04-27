@@ -11,7 +11,18 @@ String? _argValue(List<String> args, String key) {
 
 Map<String, dynamic>? _audioInfo(StreamManifest manifest) {
   if (manifest.audioOnly.isEmpty) return null;
-  final best = manifest.audioOnly.withHighestBitrate();
+  final sorted = manifest.audioOnly.toList()
+    ..sort((a, b) {
+      final aContainer = a.container.name.toLowerCase();
+      final bContainer = b.container.name.toLowerCase();
+      final aIosPreferred = (aContainer == 'mp4' || aContainer == 'm4a') ? 1 : 0;
+      final bIosPreferred = (bContainer == 'mp4' || bContainer == 'm4a') ? 1 : 0;
+      if (aIosPreferred != bIosPreferred) {
+        return bIosPreferred.compareTo(aIosPreferred);
+      }
+      return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+    });
+  final best = sorted.first;
   return {
     'url': best.url.toString(),
     'bitrate': best.bitrate.bitsPerSecond,
@@ -21,12 +32,23 @@ Map<String, dynamic>? _audioInfo(StreamManifest manifest) {
 
 Map<String, dynamic>? _muxedInfo(StreamManifest manifest) {
   if (manifest.muxed.isEmpty) return null;
-  final best = manifest.muxed.withHighestBitrate();
+  final sorted = manifest.muxed.toList()
+    ..sort((a, b) {
+      final aContainer = a.container.name.toLowerCase();
+      final bContainer = b.container.name.toLowerCase();
+      final aIosPreferred = aContainer == 'mp4' ? 1 : 0;
+      final bIosPreferred = bContainer == 'mp4' ? 1 : 0;
+      if (aIosPreferred != bIosPreferred) {
+        return bIosPreferred.compareTo(aIosPreferred);
+      }
+      return b.bitrate.bitsPerSecond.compareTo(a.bitrate.bitsPerSecond);
+    });
+  final best = sorted.first;
   return {
     'url': best.url.toString(),
     'bitrate': best.bitrate.bitsPerSecond,
     'qualityLabel': best.qualityLabel,
-    'mimeType': best.container.mimeType,
+    'mimeType': 'video/${best.container.name}',
   };
 }
 
@@ -61,9 +83,16 @@ Future<void> main(List<String> args) async {
     }
 
     final sourceUrl = (audio?['url'] ?? muxed?['url'] ?? '').toString();
-    final thumbnails = video.thumbnails
-        .map((t) => t.url.toString())
+    final thumbnails = <String?>[
+      video.thumbnails.maxResUrl,
+      video.thumbnails.highResUrl,
+      video.thumbnails.standardResUrl,
+      video.thumbnails.mediumResUrl,
+      video.thumbnails.lowResUrl,
+    ]
+        .whereType<String>()
         .where((u) => u.isNotEmpty)
+        .toSet()
         .toList(growable: false);
 
     stdout.writeln(jsonEncode({
