@@ -7,8 +7,10 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
+const { Readable } = require("node:stream");
 
 const app = express();
+app.set("trust proxy", true);
 
 const PORT = Number(process.env.PORT || 10000);
 const API_KEY = (process.env.RESOLVER_API_KEY || "").trim();
@@ -284,14 +286,12 @@ async function runYoutubeExplodeDart(videoId) {
     const args = [
       "--disable-analytics",
       "run",
-      "--directory",
-      YTEXPLODE_DART_ROOT,
       "bin/yt_resolve.dart",
       "--video-id",
       videoId,
     ];
     const child = spawn(DART_BINARY, args, {
-      cwd: __dirname,
+      cwd: YTEXPLODE_DART_ROOT,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -773,6 +773,48 @@ async function resolveVideo(videoId) {
   return payload;
 }
 
+function externalBaseUrl(req) {
+  const protoHeader = String(req.header("x-forwarded-proto") || "")
+    .split(",")[0]
+    .trim();
+  const hostHeader = String(req.header("x-forwarded-host") || "")
+    .split(",")[0]
+    .trim();
+  const proto = protoHeader || req.protocol || "http";
+  const host = hostHeader || req.get("host") || "";
+  if (!host) return "";
+  return `${proto}://${host}`;
+}
+
+function withProxyUrls(req, payload, videoId) {
+  const base = externalBaseUrl(req);
+  if (!base) return payload;
+  const id = String(videoId || "").trim();
+  if (!id) return payload;
+  const qp = encodeURIComponent(id);
+  return {
+    ...payload,
+    sourceProxyUrl: `${base}/stream?videoId=${qp}&kind=source`,
+    audioProxyUrl: payload?.audio?.url
+      ? `${base}/stream?videoId=${qp}&kind=audio`
+      : null,
+    muxedProxyUrl: payload?.muxed?.url
+      ? `${base}/stream?videoId=${qp}&kind=muxed`
+      : null,
+  };
+}
+
+function pickStreamUrlByKind(payload, kind) {
+  const safeKind = String(kind || "source").trim().toLowerCase();
+  if (safeKind === "audio") {
+    return String(payload?.audio?.url || "").trim();
+  }
+  if (safeKind === "muxed") {
+    return String(payload?.muxed?.url || "").trim();
+  }
+  return String(payload?.sourceUrl || "").trim();
+}
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
@@ -798,7 +840,7 @@ app.get("/resolve", authMiddleware, async (req, res) => {
 
   try {
     const payload = await resolveVideo(videoId);
-    return res.json({ ok: true, ...payload });
+    return res.json({ ok: true, ...withProxyUrls(req, payload, videoId) });
   } catch (error) {
     const code = String(error?.code || "");
     if (code === "no_playable_formats") {
@@ -811,6 +853,76 @@ app.get("/resolve", authMiddleware, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "resolve_failed",
+      detail: String(error?.message || error),
+    });
+  }
+});
+
+app.get("/stream", authMiddleware, async (req, res) => {
+  const videoId = String(req.query.videoId || "").trim();
+  if (!videoId || !isValidVideoId(videoId)) {
+    return res.status(400).json({ ok: false, error: "invalid_video_id" });
+  }
+  const kind = String(req.query.kind || "source").trim().toLowerCase();
+  if (!["source", "audio", "muxed"].includes(kind)) {
+    return res.status(400).json({ ok: false, error: "invalid_stream_kind" });
+  }
+
+  try {
+    const payload = await resolveVideo(videoId);
+    const targetUrl = pickStreamUrlByKind(payload, kind);
+    if (!targetUrl) {
+      return res.status(404).json({
+        ok: false,
+        error: "stream_not_available",
+        kind,
+      });
+    }
+
+    const outboundHeaders = {
+      "user-agent":
+        req.header("user-agent") ||
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+      accept: req.header("accept") || "*/*",
+      connection: "keep-alive",
+    };
+    const range = String(req.header("range") || "").trim();
+    if (range) outboundHeaders.range = range;
+
+    const upstream = await fetch(targetUrl, { headers: outboundHeaders });
+    if (!upstream.ok && upstream.status !== 206) {
+      return res.status(upstream.status || 502).json({
+        ok: false,
+        error: "upstream_stream_failed",
+        status: upstream.status || 0,
+      });
+    }
+    if (!upstream.body) {
+      return res.status(502).json({ ok: false, error: "empty_upstream_body" });
+    }
+
+    res.status(upstream.status);
+    const passHeaders = [
+      "content-type",
+      "content-length",
+      "content-range",
+      "accept-ranges",
+      "cache-control",
+      "etag",
+      "last-modified",
+      "expires",
+    ];
+    for (const headerName of passHeaders) {
+      const value = upstream.headers.get(headerName);
+      if (value) res.setHeader(headerName, value);
+    }
+    res.setHeader("x-vmmusic-stream-proxy", "1");
+
+    Readable.fromWeb(upstream.body).pipe(res);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "stream_proxy_failed",
       detail: String(error?.message || error),
     });
   }

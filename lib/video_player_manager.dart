@@ -2172,19 +2172,40 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       final preferVideo = _preferForegroundVideoPlayback;
       final audio = resolved.audioUrl?.trim() ?? '';
       final muxed = resolved.muxedUrl?.trim() ?? '';
+      final isIos = !kIsWeb && Platform.isIOS;
       if (preferVideo && muxed.isNotEmpty) {
+        if (isIos && !_isIosFriendlyVideoSource(muxed)) {
+          log(
+            '[backend-resolver] iOS rejected muxed source for videoId=$videoId because it is likely unsupported',
+          );
+          return null;
+        }
         log(
           '[backend-resolver] muxed source resolved (preferVideo=true) for videoId=$videoId url=${Uri.tryParse(muxed)?.host ?? muxed}',
         );
         return DownloadSourceInfo(sourceUrl: muxed, isVideoSource: true);
       }
       if (audio.isNotEmpty) {
+        if (isIos &&
+            !_isIosFriendlyAudioSource(audio) &&
+            muxed.isNotEmpty) {
+          log(
+            '[backend-resolver] iOS fallback to muxed source for videoId=$videoId because audio is likely unsupported',
+          );
+          return DownloadSourceInfo(sourceUrl: muxed, isVideoSource: true);
+        }
         log(
           '[backend-resolver] audio source resolved for videoId=$videoId url=${Uri.tryParse(audio)?.host ?? audio}',
         );
         return DownloadSourceInfo(sourceUrl: audio, isVideoSource: false);
       }
       if (muxed.isNotEmpty) {
+        if (isIos && !_isIosFriendlyVideoSource(muxed)) {
+          log(
+            '[backend-resolver] iOS rejected muxed source for videoId=$videoId because it is likely unsupported',
+          );
+          return null;
+        }
         log(
           '[backend-resolver] muxed source resolved for videoId=$videoId url=${Uri.tryParse(muxed)?.host ?? muxed}',
         );
@@ -2195,6 +2216,17 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (source.isEmpty) {
         log('[backend-resolver] empty fallback source for videoId=$videoId');
         return null;
+      }
+      if (isIos) {
+        final likelySupported = resolved.isVideoSource
+            ? _isIosFriendlyVideoSource(source)
+            : _isIosFriendlyAudioSource(source);
+        if (!likelySupported) {
+          log(
+            '[backend-resolver] iOS rejected generic source for videoId=$videoId because it is likely unsupported',
+          );
+          return null;
+        }
       }
       log(
         '[backend-resolver] generic source resolved for videoId=$videoId isVideo=${resolved.isVideoSource} url=${Uri.tryParse(source)?.host ?? source}',
@@ -2211,6 +2243,84 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
       return null;
     }
+  }
+
+  bool _isIosFriendlyAudioSource(String rawUrl) {
+    final trimmed = rawUrl.trim();
+    if (trimmed.isEmpty) return false;
+    Uri? uri;
+    try {
+      uri = Uri.parse(trimmed);
+    } catch (_) {
+      return false;
+    }
+
+    final path = uri.path.toLowerCase();
+    final itag = _extractYoutubeItag(uri);
+    if (itag != null) {
+      // AAC/M4A itags confiables en iOS.
+      const iosAudioItags = <int>{139, 140, 141, 256, 258, 325, 328};
+      if (!iosAudioItags.contains(itag)) return false;
+    }
+    if (path.endsWith('.m4a') ||
+        path.endsWith('.mp4') ||
+        path.endsWith('.aac') ||
+        path.endsWith('.mp3')) {
+      return true;
+    }
+
+    final mime = (uri.queryParameters['mime'] ?? '')
+        .toLowerCase()
+        .replaceAll(' ', '');
+    if (mime.isEmpty) return false;
+    if (mime.contains('audio/webm') || mime.contains('audio/ogg')) {
+      return false;
+    }
+    return mime.contains('audio/mp4') ||
+        mime.contains('audio/mpeg') ||
+        mime.contains('audio/aac') ||
+        mime.contains('audio/x-m4a');
+  }
+
+  bool _isIosFriendlyVideoSource(String rawUrl) {
+    final trimmed = rawUrl.trim();
+    if (trimmed.isEmpty) return false;
+    Uri? uri;
+    try {
+      uri = Uri.parse(trimmed);
+    } catch (_) {
+      return false;
+    }
+
+    final path = uri.path.toLowerCase();
+    final itag = _extractYoutubeItag(uri);
+    if (itag != null) {
+      // MP4 muxed típicamente compatibles con AVPlayer.
+      const iosMuxedItags = <int>{18, 22, 59, 78};
+      if (!iosMuxedItags.contains(itag)) return false;
+    }
+    if (path.endsWith('.mp4') || path.endsWith('.m3u8') || path.endsWith('.mov')) {
+      return true;
+    }
+
+    final mime = (uri.queryParameters['mime'] ?? '')
+        .toLowerCase()
+        .replaceAll(' ', '');
+    if (mime.isEmpty) {
+      return path.endsWith('.m3u8');
+    }
+    if (mime.contains('video/webm') || mime.contains('video/ogg')) {
+      return false;
+    }
+    return mime.contains('video/mp4') ||
+        mime.contains('application/x-mpegurl') ||
+        mime.contains('application/vnd.apple.mpegurl');
+  }
+
+  int? _extractYoutubeItag(Uri uri) {
+    final raw = (uri.queryParameters['itag'] ?? '').trim();
+    if (raw.isEmpty) return null;
+    return int.tryParse(raw);
   }
 
   Future<DownloadSourceInfo?> _resolveDownloadSourceViaYoutubei(
@@ -2274,6 +2384,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
         final adaptive = streamingData['adaptiveFormats'];
         if (adaptive is List) {
+          final isIos = !kIsWeb && Platform.isIOS;
           final audioFormats =
               adaptive
                   .whereType<Map>()
@@ -2281,8 +2392,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
                   .where((f) {
                     final mime = (f['mimeType']?.toString() ?? '')
                         .toLowerCase();
-                    return mime.contains('audio/') &&
-                        (f['url']?.toString().isNotEmpty ?? false);
+                    final url = (f['url'] ?? '').toString().trim();
+                    if (!mime.contains('audio/') || url.isEmpty) return false;
+                    if (!isIos) return true;
+                    return _isIosFriendlyAudioSource(url);
                   })
                   .toList()
                 ..sort(
@@ -2312,17 +2425,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
         final formats = streamingData['formats'];
         if (formats is List) {
+          final isIos = !kIsWeb && Platform.isIOS;
           final targetHeight = _targetVideoHeightForCurrentQuality();
           final muxedFormats =
               formats
                   .whereType<Map>()
                   .map((e) => Map<String, dynamic>.from(e))
                   .where((f) {
-                    final hasUrl = f['url']?.toString().isNotEmpty ?? false;
-                    final mime = (f['mimeType']?.toString() ?? '')
-                        .toLowerCase();
-                    return hasUrl &&
-                        (mime.contains('video/') || mime.contains('mp4'));
+                    final url = (f['url'] ?? '').toString().trim();
+                    if (url.isEmpty) return false;
+                    if (!isIos) {
+                      final mime = (f['mimeType']?.toString() ?? '')
+                          .toLowerCase();
+                      return mime.contains('video/') || mime.contains('mp4');
+                    }
+                    return _isIosFriendlyVideoSource(url);
                   })
                   .toList()
                 ..sort((a, b) {
@@ -2378,6 +2495,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           );
         }
         if (hlsManifest != null && hlsManifest.trim().isNotEmpty) {
+          if (!kIsWeb && Platform.isIOS && !_isIosFriendlyVideoSource(hlsManifest)) {
+            continue;
+          }
           return DownloadSourceInfo(
             sourceUrl: hlsManifest.trim(),
             isVideoSource: true,
@@ -2397,6 +2517,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     DownloadSourceInfo source, {
     bool keepVideoEngine = false,
   }) async {
+    if (!kIsWeb && Platform.isIOS) {
+      if (source.isVideoSource &&
+          !_isIosFriendlyVideoSource(source.sourceUrl)) {
+        log('[playback-source] iOS skipped unsupported video source');
+        return false;
+      }
+      if (!source.isVideoSource &&
+          !_isIosFriendlyAudioSource(source.sourceUrl)) {
+        log('[playback-source] iOS skipped unsupported audio source');
+        return false;
+      }
+    }
+
     final uri = Uri.parse(source.sourceUrl);
     final headers = _headersForStreamUri(uri) ?? const <String, String>{};
     log(

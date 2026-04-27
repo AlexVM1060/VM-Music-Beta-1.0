@@ -23,7 +23,7 @@ class YtResolverService {
 
   static const String _baseUrl = String.fromEnvironment(
     'YT_RESOLVER_BASE_URL',
-    defaultValue: 'https://vmmusic-backend.onrender.com',
+    defaultValue: 'http://136.119.37.116:10000',
   );
   static const String _apiKey = String.fromEnvironment(
     'YT_RESOLVER_API_KEY',
@@ -71,7 +71,9 @@ class YtResolverService {
     }
     if (data['ok'] != true) return null;
 
-    final sourceUrl = (data['sourceUrl'] ?? '').toString().trim();
+    final sourceUrlRaw = (data['sourceUrl'] ?? '').toString().trim();
+    final sourceProxyUrl = (data['sourceProxyUrl'] ?? '').toString().trim();
+    final sourceUrl = sourceProxyUrl.isNotEmpty ? sourceProxyUrl : sourceUrlRaw;
     final isVideoSource = data['isVideoSource'] == true;
 
     String? audioUrl;
@@ -80,12 +82,20 @@ class YtResolverService {
       final raw = (audio['url'] ?? '').toString().trim();
       if (raw.isNotEmpty) audioUrl = raw;
     }
+    final audioProxyUrl = (data['audioProxyUrl'] ?? '').toString().trim();
+    if (audioProxyUrl.isNotEmpty) {
+      audioUrl = audioProxyUrl;
+    }
 
     String? muxedUrl;
     final muxed = data['muxed'];
     if (muxed is Map) {
       final raw = (muxed['url'] ?? '').toString().trim();
       if (raw.isNotEmpty) muxedUrl = raw;
+    }
+    final muxedProxyUrl = (data['muxedProxyUrl'] ?? '').toString().trim();
+    if (muxedProxyUrl.isNotEmpty) {
+      muxedUrl = muxedProxyUrl;
     }
 
     if (sourceUrl.isEmpty && audioUrl == null && muxedUrl == null) {

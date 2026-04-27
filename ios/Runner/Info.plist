@@ -56,6 +56,11 @@
 	<string>Usamos tu galería para elegir una portada personalizada para tus playlists.</string>
 	<key>NSSiriUsageDescription</key>
 	<string>Usamos Siri para que puedas pedir canciones por voz y reproducirlas en VM Music.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>
