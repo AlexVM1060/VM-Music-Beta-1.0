@@ -2254,6 +2254,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       return false;
     }
+    if (_isBackendProxyStreamUri(uri)) return true;
 
     final path = uri.path.toLowerCase();
     final itag = _extractYoutubeItag(uri);
@@ -2291,6 +2292,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       return false;
     }
+    if (_isBackendProxyStreamUri(uri)) return true;
 
     final path = uri.path.toLowerCase();
     final itag = _extractYoutubeItag(uri);
@@ -2321,6 +2323,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final raw = (uri.queryParameters['itag'] ?? '').trim();
     if (raw.isEmpty) return null;
     return int.tryParse(raw);
+  }
+
+  bool _isBackendProxyStreamUri(Uri uri) {
+    final path = uri.path.toLowerCase();
+    if (path != '/stream' && !path.endsWith('/stream')) return false;
+    final kind = (uri.queryParameters['kind'] ?? '').trim().toLowerCase();
+    return kind == 'audio' || kind == 'muxed' || kind == 'source';
   }
 
   Future<DownloadSourceInfo?> _resolveDownloadSourceViaYoutubei(

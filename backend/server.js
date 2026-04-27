@@ -665,8 +665,9 @@ async function resolveWithYtDlp(videoId) {
   return null;
 }
 
-async function resolveVideo(videoId) {
-  const cached = readCachedResolve(videoId);
+async function resolveVideo(videoId, options = {}) {
+  const forceFresh = options?.forceFresh === true;
+  const cached = forceFresh ? null : readCachedResolve(videoId);
   if (cached) {
     return {
       ...cached,
@@ -869,16 +870,6 @@ app.get("/stream", authMiddleware, async (req, res) => {
   }
 
   try {
-    const payload = await resolveVideo(videoId);
-    const targetUrl = pickStreamUrlByKind(payload, kind);
-    if (!targetUrl) {
-      return res.status(404).json({
-        ok: false,
-        error: "stream_not_available",
-        kind,
-      });
-    }
-
     const outboundHeaders = {
       "user-agent":
         req.header("user-agent") ||
@@ -889,12 +880,47 @@ app.get("/stream", authMiddleware, async (req, res) => {
     const range = String(req.header("range") || "").trim();
     if (range) outboundHeaders.range = range;
 
-    const upstream = await fetch(targetUrl, { headers: outboundHeaders });
-    if (!upstream.ok && upstream.status !== 206) {
-      return res.status(upstream.status || 502).json({
+    const openUpstream = async (forceFresh = false) => {
+      const payload = await resolveVideo(videoId, { forceFresh });
+      const targetUrl = pickStreamUrlByKind(payload, kind);
+      if (!targetUrl) {
+        return { missing: true, upstream: null };
+      }
+      const upstream = await fetch(targetUrl, { headers: outboundHeaders });
+      return { missing: false, upstream };
+    };
+
+    let attempt = await openUpstream(false);
+    if (attempt.missing) {
+      return res.status(404).json({
+        ok: false,
+        error: "stream_not_available",
+        kind,
+      });
+    }
+    // Si el enlace firmado ya venció o quedó inválido en cache, forzamos resolve
+    // fresco una sola vez.
+    if (
+      attempt.upstream &&
+      (attempt.upstream.status === 401 || attempt.upstream.status === 403)
+    ) {
+      resolveCache.delete(videoId);
+      attempt = await openUpstream(true);
+      if (attempt.missing) {
+        return res.status(404).json({
+          ok: false,
+          error: "stream_not_available",
+          kind,
+        });
+      }
+    }
+
+    const upstream = attempt.upstream;
+    if (!upstream || (!upstream.ok && upstream.status !== 206)) {
+      return res.status((upstream && upstream.status) || 502).json({
         ok: false,
         error: "upstream_stream_failed",
-        status: upstream.status || 0,
+        status: (upstream && upstream.status) || 0,
       });
     }
     if (!upstream.body) {
