@@ -871,10 +871,14 @@ app.get("/stream", authMiddleware, async (req, res) => {
 
   try {
     const outboundHeaders = {
+      // Forzamos headers estables de navegador para evitar bloqueos por UA de
+      // clientes como curl/AVPlayer.
       "user-agent":
-        req.header("user-agent") ||
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
-      accept: req.header("accept") || "*/*",
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+      accept: "*/*",
+      "accept-language": "en-US,en;q=0.9",
+      referer: `https://www.youtube.com/watch?v=${videoId}`,
+      origin: "https://www.youtube.com",
       connection: "keep-alive",
     };
     const range = String(req.header("range") || "").trim();
