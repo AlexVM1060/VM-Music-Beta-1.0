@@ -17,6 +17,13 @@ const YTDLP_TIMEOUT_MS = Number(process.env.YTDLP_TIMEOUT_MS || 20 * 1000);
 const YOUTUBE_COOKIE = (process.env.YOUTUBE_COOKIE || "").trim();
 const YOUTUBE_COOKIES_FILE = (process.env.YOUTUBE_COOKIES_FILE || "").trim();
 const YOUTUBE_COOKIES_B64 = (process.env.YOUTUBE_COOKIES_B64 || "").trim();
+const YTDLP_PO_TOKEN = (process.env.YTDLP_PO_TOKEN || "").trim();
+const YTDLP_PO_TOKEN_CLIENT = (
+  process.env.YTDLP_PO_TOKEN_CLIENT || "mweb"
+)
+  .trim()
+  .toLowerCase();
+const YTDLP_VISITOR_DATA = (process.env.YTDLP_VISITOR_DATA || "").trim();
 const YTDLP_PROXY_URL = (process.env.YTDLP_PROXY_URL || "").trim();
 const YTDLP_PROXY_POOL = (process.env.YTDLP_PROXY_POOL || "")
   .split(",")
@@ -24,7 +31,7 @@ const YTDLP_PROXY_POOL = (process.env.YTDLP_PROXY_POOL || "")
   .filter(Boolean);
 const YTDLP_CLIENT_PROFILES = (
   process.env.YTDLP_CLIENT_PROFILES ||
-  "default,android,web,tv_embedded,web_creator"
+  "default,mweb,web_safari,android,web,tv_embedded,web_creator"
 )
   .split(",")
   .map((value) => value.trim().toLowerCase())
@@ -560,22 +567,45 @@ async function resolveWithYoutubei(videoId) {
   };
 }
 
-function ytDlpExtractorArgsForProfile(profile) {
+function ytDlpPlayerClientForProfile(profile) {
   switch (profile) {
+    case "mweb":
+      return "mweb";
+    case "web_safari":
+      return "web_safari";
     case "android":
-      return "youtube:player_client=android";
+      return "android";
     case "web":
-      return "youtube:player_client=web";
+      return "web";
     case "tv":
     case "tv_embedded":
-      return "youtube:player_client=tv_embedded";
+      return "tv_embedded";
     case "web_creator":
-      return "youtube:player_client=web_creator";
+      return "web_creator";
     case "ios":
-      return "youtube:player_client=ios";
+      return "ios";
+    case "android_vr":
+      return "android_vr";
     default:
       return null;
   }
+}
+
+function ytDlpExtractorArgsForProfile(profile) {
+  const args = [];
+  const playerClient = ytDlpPlayerClientForProfile(profile);
+  if (playerClient) {
+    args.push(`player_client=${playerClient}`);
+  }
+  if (YTDLP_PO_TOKEN) {
+    const tokenClient = YTDLP_PO_TOKEN_CLIENT || playerClient || "mweb";
+    args.push(`po_token=${tokenClient}+${YTDLP_PO_TOKEN}`);
+  }
+  if (YTDLP_VISITOR_DATA) {
+    args.push(`visitor_data=${YTDLP_VISITOR_DATA}`);
+  }
+  if (!args.length) return null;
+  return `youtube:${args.join(";")}`;
 }
 
 async function runYtDlpJson(videoId, profile = "default", proxyUrl = null) {

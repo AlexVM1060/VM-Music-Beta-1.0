@@ -43,6 +43,9 @@ Copia `backend/.env.example` como referencia para configurar:
 - `YTDLP_BINARY`
 - `YTDLP_TIMEOUT_MS`
 - `YTDLP_CLIENT_PROFILES`
+- `YTDLP_PO_TOKEN` (opcional, recomendado para casos de bot-check de YouTube)
+- `YTDLP_PO_TOKEN_CLIENT` (cliente para el token, por defecto `mweb`)
+- `YTDLP_VISITOR_DATA` (opcional, útil junto con PO Token en algunos casos)
 - `YTDLP_PROXY_URL` (opcional, proxy único para yt-dlp)
 - `YTDLP_PROXY_POOL` (opcional, proxies separados por coma para rotación)
 - `YTDLP_MAX_ATTEMPTS` (máximo intentos por video combinando perfil+proxy)
