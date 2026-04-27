@@ -78,6 +78,15 @@ const YTDLP_PROXIES = (() => {
   }
   return list;
 })();
+const YTDLP_MIN_PROFILES = ["default", "mweb", "web", "android", "tv_embedded"];
+
+function buildYtDlpProfiles() {
+  const merged = [...YTDLP_CLIENT_PROFILES];
+  for (const profile of YTDLP_MIN_PROFILES) {
+    if (!merged.includes(profile)) merged.push(profile);
+  }
+  return merged;
+}
 
 function parseCookieHeader(rawCookie) {
   const raw = String(rawCookie || "")
@@ -215,6 +224,14 @@ if (
     "[resolver] YOUTUBE_COOKIE is set but no valid cookie pairs were parsed. Expected format: name=value; name2=value2"
   );
 }
+// eslint-disable-next-line no-console
+console.info(
+  `[resolver] startup ytProfiles=${buildYtDlpProfiles().join(",")} maxAttempts=${YTDLP_MAX_ATTEMPTS} hasPoToken=${Boolean(
+    YTDLP_PO_TOKEN
+  )} poTokenClient=${YTDLP_PO_TOKEN_CLIENT || "none"} hasVisitorData=${Boolean(
+    YTDLP_VISITOR_DATA
+  )} proxies=${YTDLP_PROXIES.length}`
+);
 
 const allowedOrigins = CORS_ALLOW_ORIGINS
   ? CORS_ALLOW_ORIGINS.split(",")
@@ -684,9 +701,7 @@ async function runYtDlpJson(videoId, profile = "default", proxyUrl = null) {
 }
 
 async function resolveWithYtDlp(videoId) {
-  const profiles = YTDLP_CLIENT_PROFILES.length
-    ? YTDLP_CLIENT_PROFILES
-    : ["default"];
+  const profiles = buildYtDlpProfiles();
   const proxies = YTDLP_PROXIES.length ? [null, ...YTDLP_PROXIES] : [null];
   const attempts = [];
   for (const profile of profiles) {
@@ -699,6 +714,10 @@ async function resolveWithYtDlp(videoId) {
   const limitedAttempts = attempts.slice(0, YTDLP_MAX_ATTEMPTS);
   for (const attempt of limitedAttempts) {
     const { profile, proxy } = attempt;
+    // eslint-disable-next-line no-console
+    console.info(
+      `[resolver] yt-dlp attempt videoId=${videoId} profile=${profile} proxy=${proxy || "none"}`
+    );
     try {
       const info = await runYtDlpJson(videoId, profile, proxy);
       const formats = Array.isArray(info?.formats) ? info.formats : [];
