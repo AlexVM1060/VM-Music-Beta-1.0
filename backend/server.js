@@ -816,6 +816,48 @@ function pickStreamUrlByKind(payload, kind) {
   return String(payload?.sourceUrl || "").trim();
 }
 
+async function fetchUpstreamStream(url, rangeHeader) {
+  const headerProfiles = [
+    {
+      "user-agent":
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+      accept: "*/*",
+      "accept-language": "en-US,en;q=0.9",
+      origin: "https://www.youtube.com",
+      referer: "https://www.youtube.com/",
+    },
+    {
+      "user-agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      accept: "*/*",
+      "accept-language": "en-US,en;q=0.9",
+      origin: "https://www.youtube.com",
+      referer: "https://www.youtube.com/",
+    },
+    {
+      "user-agent":
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+      accept: "*/*",
+    },
+  ];
+
+  let lastResponse = null;
+  for (const baseHeaders of headerProfiles) {
+    const headers = { ...baseHeaders };
+    if (rangeHeader) headers.range = rangeHeader;
+    // eslint-disable-next-line no-await-in-loop
+    const response = await fetch(url, { headers });
+    if (response.ok || response.status === 206) {
+      return response;
+    }
+    lastResponse = response;
+    if (response.status !== 401 && response.status !== 403) {
+      return response;
+    }
+  }
+  return lastResponse;
+}
+
 app.get("/health", (_req, res) => {
   res.json({
     ok: true,
@@ -870,19 +912,7 @@ app.get("/stream", authMiddleware, async (req, res) => {
   }
 
   try {
-    const outboundHeaders = {
-      // Forzamos headers estables de navegador para evitar bloqueos por UA de
-      // clientes como curl/AVPlayer.
-      "user-agent":
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
-      accept: "*/*",
-      "accept-language": "en-US,en;q=0.9",
-      referer: `https://www.youtube.com/watch?v=${videoId}`,
-      origin: "https://www.youtube.com",
-      connection: "keep-alive",
-    };
     const range = String(req.header("range") || "").trim();
-    if (range) outboundHeaders.range = range;
 
     const openUpstream = async (forceFresh = false) => {
       const payload = await resolveVideo(videoId, { forceFresh });
@@ -890,7 +920,7 @@ app.get("/stream", authMiddleware, async (req, res) => {
       if (!targetUrl) {
         return { missing: true, upstream: null };
       }
-      const upstream = await fetch(targetUrl, { headers: outboundHeaders });
+      const upstream = await fetchUpstreamStream(targetUrl, range);
       return { missing: false, upstream };
     };
 
