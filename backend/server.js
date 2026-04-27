@@ -51,6 +51,10 @@ const STEMS_ROOT = path.resolve(
 const STEMS_MODEL = (process.env.STEMS_MODEL || "htdemucs_ft").trim();
 const STEMS_PYTHON = (process.env.STEMS_PYTHON || "python3").trim();
 const STEMS_TIMEOUT_MS = Number(process.env.STEMS_TIMEOUT_MS || 12 * 60 * 1000);
+const DART_BINARY = (process.env.DART_BINARY || "dart").trim();
+const YTEXPLODE_DART_TIMEOUT_MS = Number(
+  process.env.YTEXPLODE_DART_TIMEOUT_MS || 30 * 1000
+);
 const COVER_ANIMATION_PROXY_URL = (
   process.env.COVER_ANIMATION_PROXY_URL || ""
 ).trim();
@@ -60,12 +64,10 @@ const COVER_ANIMATION_PROXY_KEY = (
 const COVER_ANIMATION_TIMEOUT_MS = Number(
   process.env.COVER_ANIMATION_TIMEOUT_MS || 90 * 1000
 );
-const YOUTUBEI_PLAYER_ENDPOINT =
-  "https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-
 const startedAt = new Date();
 const resolveCache = new Map();
 const YTDLP_LOCAL_BINARY = path.join(__dirname, ".bin", "yt-dlp");
+const YTEXPLODE_DART_SCRIPT = path.resolve(__dirname, "..", "tool", "yt_resolve.dart");
 const YTDLP_BINARY =
   YTDLP_BINARY_ENV === "yt-dlp" && fs.existsSync(YTDLP_LOCAL_BINARY)
     ? YTDLP_LOCAL_BINARY
@@ -230,7 +232,9 @@ console.info(
     YTDLP_PO_TOKEN
   )} poTokenClient=${YTDLP_PO_TOKEN_CLIENT || "none"} hasVisitorData=${Boolean(
     YTDLP_VISITOR_DATA
-  )} proxies=${YTDLP_PROXIES.length}`
+  )} proxies=${YTDLP_PROXIES.length} youtubeExplodeDartScript=${fs.existsSync(
+    YTEXPLODE_DART_SCRIPT
+  )}`
 );
 
 const allowedOrigins = CORS_ALLOW_ORIGINS
@@ -259,6 +263,108 @@ function authMiddleware(req, res, next) {
     return res.status(401).json({ ok: false, error: "unauthorized" });
   }
   return next();
+}
+
+function isValidVideoId(videoId) {
+  return /^[a-zA-Z0-9_-]{11}$/.test(String(videoId || "").trim());
+}
+
+async function runYoutubeExplodeDart(videoId) {
+  if (!fs.existsSync(YTEXPLODE_DART_SCRIPT)) {
+    const err = new Error("youtube_explode_dart_script_missing");
+    err.code = "youtube_explode_dart_script_missing";
+    throw err;
+  }
+  return await new Promise((resolve, reject) => {
+    const args = ["run", "tool/yt_resolve.dart", "--video-id", videoId];
+    const child = spawn(DART_BINARY, args, {
+      cwd: path.resolve(__dirname, ".."),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      const err = new Error("youtube_explode_dart_timeout");
+      err.code = "youtube_explode_dart_timeout";
+      reject(err);
+    }, YTEXPLODE_DART_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const lines = String(stdout || "")
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const raw = lines.length ? lines[lines.length - 1] : "";
+      if (code !== 0) {
+        reject(
+          new Error(
+            `youtube_explode_dart_failed_${code}: ${
+              raw || stderr || stdout || "no_output"
+            }`
+          )
+        );
+        return;
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        resolve(parsed);
+      } catch (error) {
+        reject(
+          new Error(
+            `youtube_explode_dart_parse_failed: ${String(
+              error?.message || error
+            )} | raw=${raw || stderr || stdout || "empty"}`
+          )
+        );
+      }
+    });
+  });
+}
+
+async function getExplodeInfo(videoId) {
+  const data = await runYoutubeExplodeDart(videoId);
+  if (!data || data.ok !== true) {
+    const err = new Error("youtube_explode_dart_info_failed");
+    err.code = String(data?.error || "youtube_explode_dart_info_failed");
+    err.detail = String(data?.detail || data?.error || "unknown");
+    throw err;
+  }
+  return data;
+}
+
+async function resolveWithYoutubeExplode(videoId) {
+  const data = await runYoutubeExplodeDart(videoId);
+  if (!data || data.ok !== true) {
+    const err = new Error("no_playable_formats");
+    err.code = "no_playable_formats";
+    err.detail = String(
+      data?.detail || data?.error || "youtube_explode_dart_no_playable_formats"
+    );
+    throw err;
+  }
+  return {
+    resolver: String(data.resolver || "youtube_explode_dart"),
+    videoId,
+    sourceUrl: String(data.sourceUrl || "").trim(),
+    isVideoSource: data.isVideoSource === true,
+    audio: data.audio || null,
+    muxed: data.muxed || null,
+    title: data.title || null,
+    author: data.author || null,
+  };
 }
 
 function pickAudioFormat(formats) {
@@ -356,232 +462,11 @@ function parseVideoIds(input) {
   const unique = new Set();
   for (const item of input) {
     const id = String(item || "").trim();
-    if (!id || !ytdl.validateID(id)) continue;
+    if (!id || !isValidVideoId(id)) continue;
     unique.add(id);
     if (unique.size >= RESOLVE_BATCH_LIMIT) break;
   }
   return Array.from(unique);
-}
-
-function pickYoutubeiAudioFormat(formats) {
-  const list = Array.isArray(formats) ? formats : [];
-  const audio = list.filter((f) => {
-    const mime = String(f?.mimeType || "").toLowerCase();
-    const url = String(f?.url || "").trim();
-    return url && mime.includes("audio/");
-  });
-  if (!audio.length) return null;
-  audio.sort((a, b) => Number(b?.bitrate || 0) - Number(a?.bitrate || 0));
-  return audio[0];
-}
-
-function pickYoutubeiMuxedFormat(formats) {
-  const list = Array.isArray(formats) ? formats : [];
-  const muxed = list.filter((f) => {
-    const mime = String(f?.mimeType || "").toLowerCase();
-    const url = String(f?.url || "").trim();
-    return url && mime.includes("video/");
-  });
-  if (!muxed.length) return null;
-  muxed.sort((a, b) => Number(b?.bitrate || 0) - Number(a?.bitrate || 0));
-  const mp4 = muxed.find((f) =>
-    String(f?.mimeType || "")
-      .toLowerCase()
-      .includes("mp4")
-  );
-  return mp4 || muxed[0];
-}
-
-async function resolveWithYoutubei(videoId) {
-  const clients = [
-    {
-      name: "WEB_REMIX",
-      version: "1.20240226.01.00",
-      userAgent:
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      xClientName: "67",
-      xClientVersion: "1.20240226.01.00",
-      origin: "https://music.youtube.com",
-      referer: `https://music.youtube.com/watch?v=${videoId}`,
-    },
-    {
-      name: "WEB",
-      version: "2.20240224.11.00",
-      userAgent:
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      xClientName: "1",
-      xClientVersion: "2.20240224.11.00",
-    },
-    {
-      name: "ANDROID",
-      version: "19.09.37",
-      userAgent: "com.google.android.youtube/19.09.37 (Linux; U; Android 14)",
-      xClientName: "3",
-      xClientVersion: "19.09.37",
-    },
-    {
-      name: "IOS",
-      version: "19.09.3",
-      userAgent:
-        "com.google.ios.youtube/19.09.3 (iPhone16,2; U; CPU iOS 17_3 like Mac OS X;)",
-      xClientName: "5",
-      xClientVersion: "19.09.3",
-    },
-    {
-      name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-      version: "2.0",
-      userAgent:
-        "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
-      xClientName: "85",
-      xClientVersion: "2.0",
-      thirdPartyEmbedUrl: "https://www.youtube.com/",
-    },
-  ];
-
-  let lastReason = null;
-  const reasons = [];
-  for (const client of clients) {
-    const headers = {
-      "content-type": "application/json",
-      "user-agent": client.userAgent,
-      accept: "application/json",
-      origin: client.origin || "https://www.youtube.com",
-      referer: client.referer || `https://www.youtube.com/watch?v=${videoId}`,
-      "x-youtube-client-name": client.xClientName,
-      "x-youtube-client-version": client.xClientVersion,
-    };
-    if (YOUTUBE_COOKIE) {
-      headers.cookie = YOUTUBE_COOKIE;
-    }
-    const body = {
-      videoId,
-      contentCheckOk: true,
-      racyCheckOk: true,
-      context: {
-        client: {
-          clientName: client.name,
-          clientVersion: client.version,
-          hl: "en",
-          gl: "US",
-        },
-      },
-    };
-    if (client.thirdPartyEmbedUrl) {
-      body.context.thirdParty = {
-        embedUrl: client.thirdPartyEmbedUrl,
-      };
-    }
-    const response = await fetch(YOUTUBEI_PLAYER_ENDPOINT, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      lastReason = `youtubei_status_${response.status}_${client.name}`;
-      reasons.push(lastReason);
-      continue;
-    }
-    const data = await response.json().catch(() => null);
-    if (!data || typeof data !== "object") {
-      lastReason = `youtubei_invalid_json_${client.name}`;
-      reasons.push(lastReason);
-      continue;
-    }
-
-    const playability = data?.playabilityStatus || {};
-    const status = String(playability?.status || "").trim();
-    const reason = String(playability?.reason || "").trim();
-    if (status && status !== "OK") {
-      lastReason = reason || `youtubei_playability_${status}_${client.name}`;
-      reasons.push(lastReason);
-      continue;
-    }
-
-    const streamingData = data?.streamingData || {};
-    const adaptiveFormats = Array.isArray(streamingData?.adaptiveFormats)
-      ? streamingData.adaptiveFormats
-      : [];
-    const formats = Array.isArray(streamingData?.formats)
-      ? streamingData.formats
-      : [];
-
-    const audio = pickYoutubeiAudioFormat(adaptiveFormats);
-    const muxed = pickYoutubeiMuxedFormat(formats);
-    const hlsManifestUrl = String(streamingData?.hlsManifestUrl || "").trim();
-    if (!audio && !muxed && !hlsManifestUrl) {
-      lastReason = `youtubei_no_formats_${client.name}`;
-      reasons.push(lastReason);
-      continue;
-    }
-
-    const details = data?.videoDetails || {};
-    if (audio) {
-      return {
-        resolver: `youtubei-${client.name.toLowerCase()}`,
-        videoId,
-        sourceUrl: String(audio.url || "").trim(),
-        isVideoSource: false,
-        audio: {
-          url: String(audio.url || "").trim(),
-          bitrate: Number(audio?.bitrate || 0) || null,
-          mimeType: String(audio?.mimeType || "").trim() || null,
-        },
-        muxed: muxed
-          ? {
-              url: String(muxed.url || "").trim(),
-              bitrate: Number(muxed?.bitrate || 0) || null,
-              qualityLabel: String(muxed?.qualityLabel || "").trim() || null,
-              mimeType: String(muxed?.mimeType || "").trim() || null,
-            }
-          : null,
-        title: String(details?.title || "").trim() || null,
-        author: String(details?.author || "").trim() || null,
-      };
-    }
-
-    if (muxed) {
-      return {
-        resolver: `youtubei-${client.name.toLowerCase()}`,
-        videoId,
-        sourceUrl: String(muxed.url || "").trim(),
-        isVideoSource: true,
-        audio: null,
-        muxed: {
-          url: String(muxed.url || "").trim(),
-          bitrate: Number(muxed?.bitrate || 0) || null,
-          qualityLabel: String(muxed?.qualityLabel || "").trim() || null,
-          mimeType: String(muxed?.mimeType || "").trim() || null,
-        },
-        title: String(details?.title || "").trim() || null,
-        author: String(details?.author || "").trim() || null,
-      };
-    }
-
-    if (hlsManifestUrl) {
-      return {
-        resolver: `youtubei-${client.name.toLowerCase()}`,
-        videoId,
-        sourceUrl: hlsManifestUrl,
-        isVideoSource: true,
-        audio: null,
-        muxed: {
-          url: hlsManifestUrl,
-          bitrate: null,
-          qualityLabel: "hls",
-          mimeType: "application/x-mpegURL",
-        },
-        title: String(details?.title || "").trim() || null,
-        author: String(details?.author || "").trim() || null,
-      };
-    }
-  }
-
-  return {
-    error:
-      reasons.length > 0
-        ? reasons.join(" | ")
-        : lastReason || "youtubei_failed",
-  };
 }
 
 function ytDlpPlayerClientForProfile(profile) {
@@ -776,11 +661,37 @@ async function resolveVideo(videoId) {
     };
   }
 
+  let youtubeExplodeError = null;
+  try {
+    const resolved = await resolveWithYoutubeExplode(videoId);
+    if (resolved) {
+      const payload = {
+        ...resolved,
+        ytDlpError: null,
+        youtubeExplodeError: null,
+        cached: false,
+      };
+      writeCachedResolve(videoId, payload);
+      return payload;
+    }
+  } catch (error) {
+    youtubeExplodeError = String(error?.detail || error?.message || error);
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[resolver] youtube_explode_dart failed for ${videoId}: ${youtubeExplodeError}`
+    );
+  }
+
   let ytDlpError = null;
   try {
     const resolved = await resolveWithYtDlp(videoId);
     if (resolved) {
-      const payload = { ...resolved, ytDlpError: null, cached: false };
+      const payload = {
+        ...resolved,
+        ytDlpError: null,
+        youtubeExplodeError,
+        cached: false,
+      };
       writeCachedResolve(videoId, payload);
       return payload;
     }
@@ -804,21 +715,16 @@ async function resolveVideo(videoId) {
   const muxed = pickMuxedFormat(formats);
 
   if (!audio && !muxed) {
-    const ytInfo = await resolveWithYoutubei(videoId);
-    if (ytInfo && !ytInfo.error) {
-      const payload = {
-        ...ytInfo,
-        ytDlpError: ytDlpError || ytdlError || null,
-        cached: false,
-      };
-      writeCachedResolve(videoId, payload);
-      return payload;
-    }
-
     const error = new Error("no_playable_formats");
     error.code = "no_playable_formats";
-    error.detail =
-      ytInfo?.error || ytdlError || ytDlpError || "resolver_sources_exhausted";
+    error.detail = [
+      youtubeExplodeError,
+      ytdlError,
+      ytDlpError,
+      "resolver_sources_exhausted",
+    ]
+      .filter(Boolean)
+      .join(" | ");
     throw error;
   }
 
@@ -826,6 +732,7 @@ async function resolveVideo(videoId) {
   const payload = {
     resolver: "ytdl-core",
     ytDlpError,
+    youtubeExplodeError,
     videoId,
     sourceUrl: source.url,
     isVideoSource: source === muxed && source !== audio,
@@ -857,12 +764,14 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "vmmusic-yt-resolver",
-    version: "1.1.0",
+    version: "1.3.0",
     startedAt: startedAt.toISOString(),
     now: new Date().toISOString(),
     uptimeSeconds: Math.round(process.uptime()),
     cacheTtlMs: RESOLVE_CACHE_TTL_MS,
     batchLimit: RESOLVE_BATCH_LIMIT,
+    youtubeExplodeDartScript: fs.existsSync(YTEXPLODE_DART_SCRIPT),
+    dartBinary: DART_BINARY,
     stems: true,
     coverAnimation: Boolean(COVER_ANIMATION_PROXY_URL),
   });
@@ -870,7 +779,7 @@ app.get("/health", (_req, res) => {
 
 app.get("/resolve", authMiddleware, async (req, res) => {
   const videoId = String(req.query.videoId || "").trim();
-  if (!videoId || !ytdl.validateID(videoId)) {
+  if (!videoId || !isValidVideoId(videoId)) {
     return res.status(400).json({ ok: false, error: "invalid_video_id" });
   }
 
@@ -932,11 +841,29 @@ app.post("/resolve/batch", authMiddleware, async (req, res) => {
 
 app.get("/info", authMiddleware, async (req, res) => {
   const videoId = String(req.query.videoId || "").trim();
-  if (!videoId || !ytdl.validateID(videoId)) {
+  if (!videoId || !isValidVideoId(videoId)) {
     return res.status(400).json({ ok: false, error: "invalid_video_id" });
   }
 
   try {
+    try {
+      const details = await getExplodeInfo(videoId);
+      return res.json({
+        ok: true,
+        videoId,
+        title: details.title || null,
+        author: details.author || null,
+        channelId: details.channelId || null,
+        durationSeconds: Number(details.durationSeconds || 0) || null,
+        thumbnails: Array.isArray(details.thumbnails) ? details.thumbnails : [],
+        isLiveContent: details.isLiveContent === true,
+        publishDate: details.publishDate || null,
+        viewCount: Number(details.viewCount || 0) || null,
+      });
+    } catch {
+      // fallback to ytdl-core below
+    }
+
     const ytdlOptions = YTDL_AGENT ? { agent: YTDL_AGENT } : undefined;
     const info = await ytdl.getBasicInfo(videoId, ytdlOptions);
     const details = info?.videoDetails;

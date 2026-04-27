@@ -40,6 +40,8 @@ Copia `backend/.env.example` como referencia para configurar:
 - `PORT`
 - `RESOLVER_API_KEY`
 - `CORS_ALLOW_ORIGINS`
+- `DART_BINARY`
+- `YTEXPLODE_DART_TIMEOUT_MS`
 - `YTDLP_BINARY`
 - `YTDLP_TIMEOUT_MS`
 - `YTDLP_CLIENT_PROFILES`
@@ -105,5 +107,7 @@ flutter run \
 ## Notas
 
 - El endpoint `/resolve` se mantiene compatible con tu app actual.
+- El backend ahora intenta resolver primero con `youtube_explode_dart` (script Dart `tool/yt_resolve.dart`) y deja `yt-dlp`/`ytdl-core` como respaldo.
+- Para ese resolver principal necesitas tener `dart` disponible en el servidor (o configurar `DART_BINARY`).
 - `/resolve/batch` te ayuda para precargar colas o playlists.
 - Para stems necesitas Python + `demucs` + `ffmpeg` en el servidor.
