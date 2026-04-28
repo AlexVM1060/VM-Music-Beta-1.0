@@ -1817,11 +1817,7 @@ class _SearchPageState extends State<SearchPage>
                   Map<String, dynamic>.from(item.cast<dynamic, dynamic>()),
                 ),
               )
-              .where(
-                (item) =>
-                    item.videoId.isNotEmpty &&
-                    item.title.isNotEmpty,
-              )
+              .where((item) => item.videoId.isNotEmpty && item.title.isNotEmpty)
               .take(_searchTabTrackHistoryMaxEntries)
               .toList(growable: false);
         }
@@ -2348,6 +2344,7 @@ class _SearchPageState extends State<SearchPage>
         preferredTitle: title,
         preferredArtist: artist,
         preferVideoPlayback: _isVideosFilterMode || _isPodcastFilterMode,
+        forceBackendResolver: _isVideosFilterMode,
       );
       _rememberSearchTrackHistory(
         _SearchTabTrackHistoryEntry(
@@ -5906,7 +5903,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       _SearchAlbumResult? suggestedAlbum;
       final suggestedRaw = map['suggestedAlbum'];
       if (suggestedRaw is Map) {
-        final m = Map<String, dynamic>.from(suggestedRaw.cast<dynamic, dynamic>());
+        final m = Map<String, dynamic>.from(
+          suggestedRaw.cast<dynamic, dynamic>(),
+        );
         final playlistId = (m['playlistId'] ?? '').toString().trim();
         final title = (m['title'] ?? '').toString().trim();
         final artist = (m['artist'] ?? '').toString().trim();
@@ -5925,7 +5924,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       final albumsRaw = map['artistAlbums'];
       if (albumsRaw is List) {
         for (final rawAlbum in albumsRaw.whereType<Map>()) {
-          final m = Map<String, dynamic>.from(rawAlbum.cast<dynamic, dynamic>());
+          final m = Map<String, dynamic>.from(
+            rawAlbum.cast<dynamic, dynamic>(),
+          );
           final playlistId = (m['playlistId'] ?? '').toString().trim();
           final title = (m['title'] ?? '').toString().trim();
           final artist = (m['artist'] ?? '').toString().trim();
@@ -5954,7 +5955,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     }
   }
 
-  Future<void> _writeArtistPersistentCache(_ArtistProfileCacheEntry entry) async {
+  Future<void> _writeArtistPersistentCache(
+    _ArtistProfileCacheEntry entry,
+  ) async {
     try {
       final box = await Hive.openBox<String>(_artistPersistentCacheBoxName);
       await _pruneArtistPersistentCache(box);

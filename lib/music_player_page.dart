@@ -380,7 +380,8 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                               artist:
                                   miniState.trackArtist ??
                                   'Artista desconocido',
-                              direction: widget.manager.trackTransitionDirection,
+                              direction:
+                                  widget.manager.trackTransitionDirection,
                               titleStyle: CupertinoTheme.of(context)
                                   .textTheme
                                   .textStyle
@@ -1230,7 +1231,8 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                 child: Column(
                                                   children: [
                                                     const SizedBox(height: 24),
-                                                    if (manager.isLoading)
+                                                    if (manager.isLoading &&
+                                                        !manager.isPlaying)
                                                       const Padding(
                                                         padding:
                                                             EdgeInsets.symmetric(
@@ -1974,7 +1976,9 @@ class _DefaultNowPlayingHero extends StatelessWidget {
                 );
               },
               child: _ArtworkImage(
-                key: ValueKey('hero-artwork-${manager.trackThumbnailUrl ?? ''}'),
+                key: ValueKey(
+                  'hero-artwork-${manager.trackThumbnailUrl ?? ''}',
+                ),
                 url: manager.trackThumbnailUrl,
                 size: artworkSize,
                 animated: !preferStaticArtwork,
@@ -2040,7 +2044,9 @@ class _DefaultNowPlayingHero extends StatelessWidget {
                     ),
                   ),
                   child: KeyedSubtree(
-                    key: ValueKey('hero_artist_${manager.currentVideoId ?? ''}'),
+                    key: ValueKey(
+                      'hero_artist_${manager.currentVideoId ?? ''}',
+                    ),
                     child: _AutoScrollText(
                       text: manager.trackArtist ?? 'Artista desconocido',
                       style: CupertinoTheme.of(context).textTheme.textStyle

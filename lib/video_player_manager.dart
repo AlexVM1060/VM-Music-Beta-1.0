@@ -355,6 +355,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     'Origin': 'https://www.youtube.com',
     'Referer': 'https://www.youtube.com/',
   };
+  static const Map<String, String> _backendProxyHeaders = {
+    'User-Agent':
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    'Accept': '*/*',
+    'Connection': 'keep-alive',
+  };
   final String? _youtubeCookieHeader = _normalizeYoutubeCookie(
     'SIDCC=AKEyXzVLOVY7QzgJ1MHgnhr3VE4VOC14spiVDL6YlgyHu2PMrmKN1ESpl4kPtMLSOkz8vxutsw; __Secure-1PSIDCC=AKEyXzVaf3-L2UfWESYnHWnB42cHusbCa2_5_MPZ28ELoZEdsAqoISaX0k-Tgi-WX-xBt6vrfQ; __Secure-3PSIDCC=AKEyXzUCJA-zjanFMW0DEdZfJ-b5auglPQ0CMko3TTFJbHTfuvcxyYAoEYVT1GKiBefyQ3OJf14; VISITOR_INFO1_LIVE=K9gqegkdBV0; VISITOR_PRIVACY_METADATA=CgJNWBIEGgAgIQ%3D%3D; PREF=f4=4010000&f6=40000000&tz=America.Mexico_City&f7=100&repeat=NONE; ST-1tk58rr=itct=CJUCENE5IhMIiqjp2sz9kwMVGnXCAR123wIZMgdiZl9uZXh0SIubw6em3Mjt5QGaAQUIERD4HcoBBJLI5Yc%3D&csn=O12rkX_62jWXNr0b&session_logininfo=AFmmF2swRgIhANQ02E54188kKG16WB62lOXcUmOiVyNq70bMQM0ypvPCAiEAxPZdXDMrrh-kfxUx1quNeaWKzoTkoPAGzeA3BPIeLwI%3AQUQ3MjNmeWVtbk83THFtTi1YRjFTMWxCXzI5cHBwQkJDSk85X0t2WER6NFN6MXRZV19YZVpwMlJxSWIxNUk3d2ZzZmFWeXlzT0hxZlpqNGUwZ2Q5VFY1TTBBa3VQOXhLRG1tYUN0eGV3dU80dVlNdzVESFd6WDFVakJIR3NpNGZJeG5ZQWFiUWF0WVVNSVhGTGp6amhJNTdiUm1pZXM3cm5n&endpoint=%7B%22clickTrackingParams%22%3A%22CJUCENE5IhMIiqjp2sz9kwMVGnXCAR123wIZMgdiZl9uZXh0SIubw6em3Mjt5QGaAQUIERD4HcoBBJLI5Yc%3D%22%2C%22commandMetadata%22%3A%7B%22webCommandMetadata%22%3A%7B%22url%22%3A%22%2Fwatch%3Fv%3DsI2TE_hYFYQ%26list%3DRD5dsi4mTwzYs%26index%3D2%26pp%3D0gcJCagCnhUGBSbi%22%2C%22webPageType%22%3A%22WEB_PAGE_TYPE_WATCH%22%2C%22rootVe%22%3A3832%7D%7D%2C%22watchEndpoint%22%3A%7B%22videoId%22%3A%22sI2TE_hYFYQ%22%2C%22playlistId%22%3A%22RD5dsi4mTwzYs%22%2C%22index%22%3A1%2C%22params%22%3A%22EAIYATgBYgs1ZHNpNG1Ud3pZc2gAuAUB%22%2C%22playerParams%22%3A%220gcJCagCnhUGBSbi%22%2C%22loggingContext%22%3A%7B%22vssLoggingContext%22%3A%7B%22serializedContextData%22%3A%22Gg1SRDVkc2k0bVR3ellz%22%7D%7D%2C%22watchEndpointSupportedOnesieConfig%22%3A%7B%22html5PlaybackOnesieConfig%22%3A%7B%22commonConfig%22%3A%7B%22url%22%3A%22https%3A%2F%2Frr1---sn-hxb5j5cax-8xgd.googlevideo.com%2Finitplayback%3Fsource%3Dyoutube%26oeis%3D1%26c%3DWEB%26oad%3D3200%26ovd%3D3200%26oaad%3D11000%26oavd%3D11000%26ocs%3D700%26oewis%3D1%26oputc%3D1%26ofpcc%3D1%26siu%3D1%26msp%3D1%26odepv%3D1%26id%3Db08d9313f8581584%26ip%3D2806%253A268%253A7403%253A88b6%253Aad62%253A1788%253A58bf%253A2e67%26initcwndbps%3D2396250%26mt%3D1776727743%26oweuc%3D%26pxtags%3DCg4KAnR4Egg1MTgyODk2MA%26rxtags%3DCg4KAnR4Egg1MTgyODk1OQ%252CCg4KAnR4Egg1MTgyODk2MA%252CCg4KAnR4Egg1MTgyODk2MQ%22%7D%7D%7D%7D%7D; APISID=0Ue7Wnl7JlbIKZD8/Akfw1aCmFcAwvCpMl; HSID=AYBu10DLSap_MUpIV; LOGIN_INFO=AFmmF2swRgIhANQ02E54188kKG16WB62lOXcUmOiVyNq70bMQM0ypvPCAiEAxPZdXDMrrh-kfxUx1quNeaWKzoTkoPAGzeA3BPIeLwI:QUQ3MjNmeWVtbk83THFtTi1YRjFTMWxCXzI5cHBwQkJDSk85X0t2WER6NFN6MXRZV19YZVpwMlJxSWIxNUk3d2ZzZmFWeXlzT0hxZlpqNGUwZ2Q5VFY1TTBBa3VQOXhLRG1tYUN0eGV3dU80dVlNdzVESFd6WDFVakJIR3NpNGZJeG5ZQWFiUWF0WVVNSVhGTGp6amhJNTdiUm1pZXM3cm5n; SAPISID=ro4mJ0xKO0Q-Be3Q/AGjxKEu1AKwNvt9U2; SID=g.a0009AiszrmMkxnOzGHN3-AgUVa8_rarWA45h6lZ1JT1PjYStBGDr5zbk4Uuud6emERx9ngw0QACgYKAc8SARESFQHGX2MieKs2Vc5yGpH4ZX6zwaDrWBoVAUF8yKpHw8Z2bkkYGODnKJ9NXqQa0076; SSID=AaGYi4Pdw-BOOpKid; __Secure-1PAPISID=ro4mJ0xKO0Q-Be3Q/AGjxKEu1AKwNvt9U2; __Secure-1PSID=g.a0009AiszrmMkxnOzGHN3-AgUVa8_rarWA45h6lZ1JT1PjYStBGDf6PPoxl1Z4e53YnveWis5wACgYKAe4SARESFQHGX2MiMI7PJaul7xu97XbXqZfzlBoVAUF8yKo4tovC-QEsjTGQuwbDHE8A0076; __Secure-1PSIDTS=sidts-CjQBWhotCaOc8R5ePw7_aWzyXzXNAOHZwcPfB5xJ9RVY4OkF398oagC6jC-_xQOCwHQoxi0GEAA; __Secure-3PAPISID=ro4mJ0xKO0Q-Be3Q/AGjxKEu1AKwNvt9U2; __Secure-3PSID=g.a0009AiszrmMkxnOzGHN3-AgUVa8_rarWA45h6lZ1JT1PjYStBGDqpkCVaMhmrHfg34U0kCHswACgYKAUESARESFQHGX2MiCyHbs2Ux0c8EKftbrnKfZBoVAUF8yKrvS-5h6NPSKHlavYLx8gaD0076; __Secure-3PSIDTS=sidts-CjQBWhotCaOc8R5ePw7_aWzyXzXNAOHZwcPfB5xJ9RVY4OkF398oagC6jC-_xQOCwHQoxi0GEAA; CONSISTENCY=AH5K9rbvTT14tkSZMxYroc2gdn2totWUwZ0DESrQIUNbkaSbV5fszt6HYlOW0wjJZLcKolOGzO-NfmwGzvElbKRJ2iF1hA-FEpaUzv9S7EAsKotgR6pcv37MXvp_dTz8gK9Fp7AAZ1uwodOx7i3isElSHPLheN9CsOMUwwujPcEAvTeQXYUQ3p6Nb4y2qHK3tg87LaqMkfyt_rQcD9hmKtHOTKI43KksJKnwQX5G9BQSREoF; __Secure-ROLLOUT_TOKEN=CJypuOvf9ryu1gEQg8uGxrf9kwMYieqXxrf9kwM%3D; __Secure-YNID=17.YT=tHe6BUg-662G2iWC-xaJhi5AZOd-oGTXVsO-7GlKDhx63eOmDSkt3bnM5ikPZbqAF7pTPbx_O0pEhQrcU2Lw-SaMD_iHQd_S91m3dqBiwkAfM54tTxzj1gJik4bO2HjWbcR_KECP0SnigaVeY0TVf7esclUcONa0uz4Xq6s7TpDsiIWQ8aOftixDmKd16r8GLjIf-fj0SsXPXm2apMhgLzrv8XSCIFPJ0-Xvbg3A9Er_yTkjoCsAFu89RrZdqNfJnsqxAgpuxvVRXAaeA0VSKfCnQv2vc5SVgZgKWktgjr-c3igMC6jgOXFCIZAR8__2NKM1oKDcIIwGNypoI46zQQ; __Secure-ROLLOUT_TOKEN=CJmCgoHO9PCRWhCy9t_L_fSTAxiT_PPBs_2TAw%3D%3D; YSC=yGNlBS3rfqY; _gcl_au=1.1.935007768.1776529815; __Secure-BUCKET=CPEB',
   );
@@ -886,6 +892,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     String? preferredArtist,
     Duration? preferredDuration,
     bool preferVideoPlayback = false,
+    bool forceBackendResolver = false,
   }) async {
     final preserveQueue = _shouldPreserveQueueForTarget(
       targetVideoId: videoId,
@@ -905,6 +912,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       preferredDuration: preferredDuration,
       preserveExistingQueue: preserveQueue,
       preferVideoPlayback: preferVideoPlayback,
+      forceBackendResolver: forceBackendResolver,
     );
   }
 
@@ -1622,6 +1630,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     bool isRecoveryAttempt = false,
     bool preserveExistingQueue = false,
     bool preferVideoPlayback = false,
+    bool forceBackendResolver = false,
   }) async {
     _sessionRestoreEpoch++;
     _rememberCurrentForHistory();
@@ -1718,23 +1727,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
-      if (!started && !_preferForegroundVideoPlayback) {
-        final backendSource = await _resolveDownloadSourceViaBackend(videoId);
-        if (backendSource != null) {
-          log(
-            '[playback] trying backend source for videoId=$videoId isVideo=${backendSource.isVideoSource}',
-          );
-          started = await _attemptPlaybackFromDownloadSource(
-            backendSource,
-            keepVideoEngine: _preferForegroundVideoPlayback,
-          );
-          log(
-            '[playback] backend source result for videoId=$videoId started=$started',
-          );
-        }
+      if (!started) {
+        started = await _attemptBackendPlaybackWithRetry(
+          videoId,
+          keepVideoEngine: _preferForegroundVideoPlayback,
+        );
       }
 
-      if (!started && !_preferForegroundVideoPlayback) {
+      if (!started && forceBackendResolver && !isLocalVideo) {
+        throw Exception(
+          'No se pudo iniciar reproducción desde backend para videoId=$videoId',
+        );
+      }
+
+      if (!started &&
+          !forceBackendResolver &&
+          !_preferForegroundVideoPlayback &&
+          !(Platform.isIOS && !kIsWeb)) {
         manifestFuture ??= _getManifestWithRetry(videoId);
         final manifest = await manifestFuture;
         final audioStreams = manifest.audioOnly.toList();
@@ -1760,7 +1769,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
-      if (!started) {
+      if (!started && !forceBackendResolver) {
         manifestFuture ??= _getManifestWithRetry(videoId);
         final manifest = await manifestFuture;
         final muxedStreams = _prioritizeMuxedStreams(manifest.muxed.toList());
@@ -1805,6 +1814,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             'No se pudo iniciar audio ni fallback de video: audio=$lastAudioError muxed=$lastMuxedError',
           );
         }
+      } else if (!started) {
+        throw Exception(
+          'No se pudo iniciar reproducción desde backend para videoId=$videoId',
+        );
       }
 
       if (!_autoplayEnabled && !preserveExistingQueue) {
@@ -1922,6 +1935,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             isRecoveryAttempt: true,
             preserveExistingQueue: preserveExistingQueue,
             preferVideoPlayback: preferVideoPlayback,
+            forceBackendResolver: forceBackendResolver,
           );
           return;
         } catch (recoveryError, recoveryStack) {
@@ -1938,31 +1952,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
               e is HandshakeException ||
               e is SocketException ||
               e is HttpException)) {
-        final backendAltSource = await _resolveDownloadSourceViaBackend(
+        final backendRecovered = await _attemptBackendPlaybackWithRetry(
           videoId,
+          keepVideoEngine: _preferForegroundVideoPlayback,
         );
-        final altSource =
-            backendAltSource ??
-            await _resolveDownloadSourceViaYoutubei(videoId);
-        if (altSource != null) {
-          final altOrigin = identical(altSource, backendAltSource)
-              ? 'backend'
-              : 'youtubei';
-          log(
-            '[playback] recovery source selected origin=$altOrigin videoId=$videoId isVideo=${altSource.isVideoSource}',
+        if (backendRecovered) {
+          _errorMessage = null;
+          _syncSystemNowPlaying();
+          _syncSystemPlaybackState(force: true);
+          return;
+        }
+
+        if (!forceBackendResolver) {
+          final youtubeiAltSource = await _resolveDownloadSourceViaYoutubei(
+            videoId,
           );
-          final played = await _attemptPlaybackFromDownloadSource(
-            altSource,
-            keepVideoEngine: _preferForegroundVideoPlayback,
-          );
-          log(
-            '[playback] recovery source result origin=$altOrigin videoId=$videoId played=$played',
-          );
-          if (played) {
-            _errorMessage = null;
-            _syncSystemNowPlaying();
-            _syncSystemPlaybackState(force: true);
-            return;
+          if (youtubeiAltSource != null) {
+            log(
+              '[playback] recovery source selected origin=youtubei videoId=$videoId isVideo=${youtubeiAltSource.isVideoSource}',
+            );
+            final played = await _attemptPlaybackFromDownloadSource(
+              youtubeiAltSource,
+              keepVideoEngine: _preferForegroundVideoPlayback,
+            );
+            log(
+              '[playback] recovery source result origin=youtubei videoId=$videoId played=$played',
+            );
+            if (played) {
+              _errorMessage = null;
+              _syncSystemNowPlaying();
+              _syncSystemPlaybackState(force: true);
+              return;
+            }
           }
         }
       }
@@ -2088,6 +2109,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   ) async {
     try {
       final manifest = await _getManifestWithRetry(videoId);
+      final isIos = !kIsWeb && Platform.isIOS;
+      final muxedStreams = manifest.muxed.toList();
+      if (isIos && muxedStreams.isNotEmpty) {
+        final selectedMuxed = _prioritizeMuxedStreams(muxedStreams).first;
+        return DownloadSourceInfo(
+          sourceUrl: selectedMuxed.url.toString(),
+          isVideoSource: true,
+        );
+      }
       final audioStreams = manifest.audioOnly.toList();
       if (audioStreams.isNotEmpty) {
         final selectedAudio = _prioritizeAudioStreams(audioStreams).first;
@@ -2097,7 +2127,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
 
-      final muxedStreams = manifest.muxed.toList();
       if (muxedStreams.isNotEmpty) {
         final selectedMuxed = _prioritizeMuxedStreams(muxedStreams).first;
         return DownloadSourceInfo(
@@ -2121,6 +2150,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   ) async {
     try {
       final manifest = await _getManifestWithRetry(videoId);
+      final isIos = !kIsWeb && Platform.isIOS;
+      final muxedStreams = _prioritizeMuxedStreams(manifest.muxed.toList());
+      if (isIos) {
+        for (final stream in muxedStreams.take(4)) {
+          final ok = await _probeVideoStreamSilently(stream.url);
+          if (ok) {
+            return DownloadSourceInfo(
+              sourceUrl: stream.url.toString(),
+              isVideoSource: true,
+            );
+          }
+        }
+      }
       final audioStreams = _prioritizeAudioStreams(manifest.audioOnly.toList());
       for (final stream in audioStreams.take(6)) {
         final ok = await _probeAudioStreamSilently(stream.url);
@@ -2132,7 +2174,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
-      final muxedStreams = _prioritizeMuxedStreams(manifest.muxed.toList());
       for (final stream in muxedStreams.take(4)) {
         final ok = await _probeVideoStreamSilently(stream.url);
         if (ok) {
@@ -2169,36 +2210,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return null;
       }
 
-      final preferVideo = _preferForegroundVideoPlayback;
       final audio = resolved.audioUrl?.trim() ?? '';
       final muxed = resolved.muxedUrl?.trim() ?? '';
       final isIos = !kIsWeb && Platform.isIOS;
-      if (preferVideo && muxed.isNotEmpty) {
-        if (isIos && !_isIosFriendlyVideoSource(muxed)) {
-          log(
-            '[backend-resolver] iOS rejected muxed source for videoId=$videoId because it is likely unsupported',
-          );
-          return null;
-        }
-        log(
-          '[backend-resolver] muxed source resolved (preferVideo=true) for videoId=$videoId url=${Uri.tryParse(muxed)?.host ?? muxed}',
-        );
-        return DownloadSourceInfo(sourceUrl: muxed, isVideoSource: true);
-      }
-      if (audio.isNotEmpty) {
-        if (isIos &&
-            !_isIosFriendlyAudioSource(audio) &&
-            muxed.isNotEmpty) {
-          log(
-            '[backend-resolver] iOS fallback to muxed source for videoId=$videoId because audio is likely unsupported',
-          );
-          return DownloadSourceInfo(sourceUrl: muxed, isVideoSource: true);
-        }
-        log(
-          '[backend-resolver] audio source resolved for videoId=$videoId url=${Uri.tryParse(audio)?.host ?? audio}',
-        );
-        return DownloadSourceInfo(sourceUrl: audio, isVideoSource: false);
-      }
       if (muxed.isNotEmpty) {
         if (isIos && !_isIosFriendlyVideoSource(muxed)) {
           log(
@@ -2210,6 +2224,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           '[backend-resolver] muxed source resolved for videoId=$videoId url=${Uri.tryParse(muxed)?.host ?? muxed}',
         );
         return DownloadSourceInfo(sourceUrl: muxed, isVideoSource: true);
+      }
+      if (audio.isNotEmpty) {
+        if (isIos && !_isIosFriendlyAudioSource(audio)) return null;
+        log(
+          '[backend-resolver] audio source resolved for videoId=$videoId url=${Uri.tryParse(audio)?.host ?? audio}',
+        );
+        return DownloadSourceInfo(sourceUrl: audio, isVideoSource: false);
       }
 
       final source = resolved.sourceUrl.trim();
@@ -2245,6 +2266,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Future<bool> _attemptBackendPlaybackWithRetry(
+    String videoId, {
+    bool keepVideoEngine = false,
+  }) async {
+    const maxAttempts = 2;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      final backendSource = await _resolveDownloadSourceViaBackend(videoId);
+      if (backendSource != null) {
+        log(
+          '[playback] trying backend source for videoId=$videoId attempt=$attempt/$maxAttempts isVideo=${backendSource.isVideoSource}',
+        );
+        final started = await _attemptPlaybackFromDownloadSource(
+          backendSource,
+          keepVideoEngine: keepVideoEngine,
+        );
+        log(
+          '[playback] backend source result for videoId=$videoId attempt=$attempt/$maxAttempts started=$started',
+        );
+        if (started) return true;
+      } else {
+        log(
+          '[playback] backend source unavailable for videoId=$videoId attempt=$attempt/$maxAttempts',
+        );
+      }
+
+      if (attempt < maxAttempts) {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+      }
+    }
+    return false;
+  }
+
   bool _isIosFriendlyAudioSource(String rawUrl) {
     final trimmed = rawUrl.trim();
     if (trimmed.isEmpty) return false;
@@ -2270,9 +2323,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return true;
     }
 
-    final mime = (uri.queryParameters['mime'] ?? '')
-        .toLowerCase()
-        .replaceAll(' ', '');
+    final mime = (uri.queryParameters['mime'] ?? '').toLowerCase().replaceAll(
+      ' ',
+      '',
+    );
     if (mime.isEmpty) return false;
     if (mime.contains('audio/webm') || mime.contains('audio/ogg')) {
       return false;
@@ -2301,13 +2355,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       const iosMuxedItags = <int>{18, 22, 59, 78};
       if (!iosMuxedItags.contains(itag)) return false;
     }
-    if (path.endsWith('.mp4') || path.endsWith('.m3u8') || path.endsWith('.mov')) {
+    if (path.endsWith('.mp4') ||
+        path.endsWith('.m3u8') ||
+        path.endsWith('.mov')) {
       return true;
     }
 
-    final mime = (uri.queryParameters['mime'] ?? '')
-        .toLowerCase()
-        .replaceAll(' ', '');
+    final mime = (uri.queryParameters['mime'] ?? '').toLowerCase().replaceAll(
+      ' ',
+      '',
+    );
     if (mime.isEmpty) {
       return path.endsWith('.m3u8');
     }
@@ -2483,6 +2540,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
         final hlsManifest = streamingData['hlsManifestUrl']?.toString();
         final preferVideo = _preferForegroundVideoPlayback;
+        final isIos = !kIsWeb && Platform.isIOS;
         if (preferVideo &&
             pickedMuxed != null &&
             pickedMuxed.trim().isNotEmpty) {
@@ -2492,6 +2550,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           );
         }
         if (pickedAudio != null && pickedAudio.trim().isNotEmpty) {
+          if (isIos && pickedMuxed != null && pickedMuxed.trim().isNotEmpty) {
+            return DownloadSourceInfo(
+              sourceUrl: pickedMuxed.trim(),
+              isVideoSource: true,
+            );
+          }
           return DownloadSourceInfo(
             sourceUrl: pickedAudio.trim(),
             isVideoSource: false,
@@ -2504,7 +2568,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           );
         }
         if (hlsManifest != null && hlsManifest.trim().isNotEmpty) {
-          if (!kIsWeb && Platform.isIOS && !_isIosFriendlyVideoSource(hlsManifest)) {
+          if (!kIsWeb &&
+              Platform.isIOS &&
+              !_isIosFriendlyVideoSource(hlsManifest)) {
             continue;
           }
           return DownloadSourceInfo(
@@ -2541,11 +2607,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     final uri = Uri.parse(source.sourceUrl);
     final headers = _headersForStreamUri(uri) ?? const <String, String>{};
+    final streamKind = (uri.queryParameters['kind'] ?? '').trim().toLowerCase();
+    final shouldTryAudioFirstForBackendMuxed =
+        source.isVideoSource &&
+        _isBackendProxyStreamUri(uri) &&
+        streamKind == 'muxed';
     log(
       '[playback-source] attempt uriHost=${uri.host} isVideo=${source.isVideoSource}',
     );
 
-    if (!source.isVideoSource) {
+    if (!source.isVideoSource || shouldTryAudioFirstForBackendMuxed) {
       try {
         await _player.setAudioSource(AudioSource.uri(uri, headers: headers));
         unawaited(_applyAudioEffects());
@@ -2562,13 +2633,30 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
         _syncSystemPlaybackState(force: true);
         notifyListeners();
-        log('[playback-source] success using audio engine uriHost=${uri.host}');
+        if (shouldTryAudioFirstForBackendMuxed) {
+          log(
+            '[playback-source] success using audio engine for backend muxed uriHost=${uri.host}',
+          );
+        } else {
+          log(
+            '[playback-source] success using audio engine uriHost=${uri.host}',
+          );
+        }
         return true;
       } catch (e) {
         log(
           '[playback-source] audio engine failed, trying video engine uriHost=${uri.host}',
           error: e,
         );
+        final shouldSkipVideoFallback =
+            shouldTryAudioFirstForBackendMuxed &&
+            _looksLikeConnectionFailure(e);
+        if (shouldSkipVideoFallback) {
+          log(
+            '[playback-source] backend connection-like failure; skipping video engine fallback uriHost=${uri.host}',
+          );
+          return false;
+        }
       }
     }
 
@@ -2602,8 +2690,26 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  bool _looksLikeConnectionFailure(Object error) {
+    if (error is SocketException ||
+        error is HandshakeException ||
+        error is HttpException) {
+      return true;
+    }
+    final text = error.toString().toLowerCase();
+    return text.contains('connection refused') ||
+        text.contains('could not connect to the server') ||
+        text.contains('failed host lookup') ||
+        text.contains('resource unavailable') ||
+        text.contains('network is unreachable') ||
+        text.contains('timed out');
+  }
+
   Map<String, String>? _headersForStreamUri(Uri uri) {
     final host = uri.host.toLowerCase();
+    if (_isBackendProxyStreamUri(uri)) {
+      return _backendProxyHeaders;
+    }
     if (host.contains('googlevideo.com')) {
       // En iOS, algunas URLs firmadas de googlevideo fallan cuando se fuerzan
       // headers tipo Origin/Referer en un segundo player (crossfade).
@@ -6607,6 +6713,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           }
         }
         if (!restoredFromSessionStream) {
+          final backendSource = await _resolveDownloadSourceViaBackend(videoId);
+          if (backendSource != null) {
+            try {
+              final streamUri = Uri.parse(backendSource.sourceUrl);
+              await _player.setAudioSource(
+                AudioSource.uri(
+                  streamUri,
+                  headers: _headersForStreamUri(streamUri) ?? _youtubeHeaders,
+                ),
+              );
+              _currentStreamUrl = backendSource.sourceUrl;
+              restoredFromSessionStream = true;
+            } catch (_) {
+              restoredFromSessionStream = false;
+            }
+          }
+        }
+        if (!restoredFromSessionStream) {
           StreamManifest? manifest;
           try {
             manifest = await _getManifestWithRetry(
@@ -6626,23 +6750,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
               AudioSource.uri(stream.url, headers: _youtubeHeaders),
             );
           } else {
-            final backendSource = await _resolveDownloadSourceViaBackend(
-              videoId,
-            );
-            if (backendSource == null || backendSource.isVideoSource) {
-              if (isStale()) return;
-              await _clearPersistedPlaybackSession();
-              _isLoading = false;
-              return;
-            }
-            _currentStreamUrl = backendSource.sourceUrl;
-            final streamUri = Uri.parse(backendSource.sourceUrl);
-            await _player.setAudioSource(
-              AudioSource.uri(
-                streamUri,
-                headers: _headersForStreamUri(streamUri) ?? _youtubeHeaders,
-              ),
-            );
+            if (isStale()) return;
+            await _clearPersistedPlaybackSession();
+            _isLoading = false;
+            return;
           }
         }
       }
@@ -8040,40 +8151,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    StreamManifest? manifest;
-    try {
-      manifest = await _getManifestWithRetry(next.videoId);
-    } catch (_) {
-      manifest = null;
-    }
-    final audioStreams =
-        manifest?.audioOnly.toList() ?? const <AudioOnlyStreamInfo>[];
-    final muxedStreams = manifest?.muxed.toList() ?? const <MuxedStreamInfo>[];
-    final ordered = _prioritizeAudioStreams(audioStreams);
-    final orderedMuxed = _prioritizeMuxedStreams(muxedStreams);
-
     final candidateUris = <Uri>[];
     final seenCandidateUrls = <String>{};
-    for (final stream in ordered) {
-      final key = stream.url.toString();
-      if (seenCandidateUrls.add(key)) {
-        candidateUris.add(stream.url);
-      }
-    }
-    for (final stream in orderedMuxed) {
-      final key = stream.url.toString();
-      if (seenCandidateUrls.add(key)) {
-        candidateUris.add(stream.url);
+    final backendSource = await _resolveDownloadSourceViaBackend(next.videoId);
+    if (backendSource != null) {
+      final uri = Uri.tryParse(backendSource.sourceUrl);
+      if (uri != null && seenCandidateUrls.add(uri.toString())) {
+        candidateUris.add(uri);
       }
     }
     if (candidateUris.isEmpty) {
-      final backendSource = await _resolveDownloadSourceViaBackend(
-        next.videoId,
-      );
-      if (backendSource != null) {
-        final uri = Uri.tryParse(backendSource.sourceUrl);
-        if (uri != null) {
-          candidateUris.add(uri);
+      StreamManifest? manifest;
+      try {
+        manifest = await _getManifestWithRetry(next.videoId);
+      } catch (_) {
+        manifest = null;
+      }
+      final audioStreams =
+          manifest?.audioOnly.toList() ?? const <AudioOnlyStreamInfo>[];
+      final muxedStreams =
+          manifest?.muxed.toList() ?? const <MuxedStreamInfo>[];
+      final ordered = _prioritizeAudioStreams(audioStreams);
+      final orderedMuxed = _prioritizeMuxedStreams(muxedStreams);
+      for (final stream in ordered) {
+        final key = stream.url.toString();
+        if (seenCandidateUrls.add(key)) {
+          candidateUris.add(stream.url);
+        }
+      }
+      for (final stream in orderedMuxed) {
+        final key = stream.url.toString();
+        if (seenCandidateUrls.add(key)) {
+          candidateUris.add(stream.url);
         }
       }
     }

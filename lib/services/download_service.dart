@@ -10,6 +10,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/services/yt_resolver_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:path_provider/path_provider.dart';
@@ -44,6 +45,7 @@ class DownloadService with ChangeNotifier {
   static const String _autoDownloadBoxName = 'auto_download_playlists';
   final YoutubeExplode _yt = YoutubeExplode();
   final Dio _dio = Dio();
+  final YtResolverService _ytResolverService = YtResolverService();
   final LyricsService _lyricsService = LyricsService();
   final AppSettingsService _settingsService;
   final Connectivity _connectivity = Connectivity();
@@ -272,136 +274,7 @@ class DownloadService with ChangeNotifier {
     String thumbnailUrl,
     String channelTitle,
   ) async {
-    final existing = await getDownloadedVideoById(videoId);
-    if (_downloadStatus[videoId] == DownloadStatus.downloading ||
-        existing != null) {
-      return false;
-    }
-    if (!await _ensureDownloadAllowedByNetwork(videoId)) {
-      return false;
-    }
-
-    _downloadStatus[videoId] = DownloadStatus.downloading;
-    _downloadProgress[videoId] = 0.0;
-    _downloadErrors.remove(videoId);
-    notifyListeners();
-
-    try {
-      final streamManifest = await _getManifestWithRetry(videoId);
-      final audioOnlyStreams = streamManifest.audioOnly.toList();
-      if (audioOnlyStreams.isEmpty) {
-        throw Exception('No se encontraron streams de audio para descarga');
-      }
-      final candidates = _prioritizeAudioStreams(audioOnlyStreams);
-      final appDir = await getApplicationDocumentsDirectory();
-      Object? lastError;
-      String? successfulPath;
-
-      for (final streamInfo in candidates) {
-        final filePath = '${appDir.path}/$videoId.${streamInfo.container.name}';
-        final file = File(filePath);
-        if (await file.exists()) {
-          await file.delete();
-        }
-
-        try {
-          final sink = file.openWrite();
-          final stream = _yt.videos.streamsClient.get(streamInfo);
-          final totalBytes = streamInfo.size.totalBytes;
-          var receivedBytes = 0;
-          await for (final chunk in stream) {
-            sink.add(chunk);
-            receivedBytes += chunk.length;
-            if (totalBytes > 0) {
-              _downloadProgress[videoId] = receivedBytes / totalBytes;
-              notifyListeners();
-            }
-          }
-          await sink.flush();
-          await sink.close();
-
-          final downloadedFile = File(filePath);
-          if (!await downloadedFile.exists() ||
-              await downloadedFile.length() == 0) {
-            throw Exception('Archivo descargado vacío');
-          }
-
-          successfulPath = filePath;
-          break;
-        } catch (e) {
-          lastError = e;
-          if (await file.exists()) {
-            await file.delete();
-          }
-          // Fallback por URL directa para casos donde falle el stream client.
-          try {
-            await _dio.download(
-              streamInfo.url.toString(),
-              filePath,
-              options: Options(
-                headers: _youtubeHeaders,
-                responseType: ResponseType.bytes,
-                followRedirects: true,
-                receiveTimeout: const Duration(minutes: 3),
-                sendTimeout: const Duration(minutes: 1),
-              ),
-              onReceiveProgress: (received, total) {
-                if (total > 0) {
-                  _downloadProgress[videoId] = received / total;
-                  notifyListeners();
-                }
-              },
-            );
-            final downloadedFile = File(filePath);
-            if (!await downloadedFile.exists() ||
-                await downloadedFile.length() == 0) {
-              throw Exception('Archivo descargado vacío');
-            }
-            successfulPath = filePath;
-            break;
-          } catch (dioError) {
-            lastError = dioError;
-            if (await file.exists()) {
-              await file.delete();
-            }
-          }
-        }
-      }
-
-      if (successfulPath == null) {
-        throw Exception('No se pudo descargar con ningún stream: $lastError');
-      }
-
-      final lyrics = await _fetchLyricsSafe(title: title, artist: channelTitle);
-      final localThumbnailPath = await _downloadThumbnailSafe(
-        videoId: videoId,
-        thumbnailUrl: thumbnailUrl,
-      );
-      final downloadedVideo = DownloadedVideo(
-        videoId: videoId,
-        title: title,
-        thumbnailUrl: thumbnailUrl,
-        channelTitle: channelTitle,
-        filePath: successfulPath,
-        plainLyrics: lyrics?.plainLyrics,
-        syncedLyrics: lyrics?.rawSyncedLyrics,
-        localThumbnailPath: localThumbnailPath,
-      );
-
-      final box = await _downloadsBox;
-      await box.put(videoId, downloadedVideo);
-
-      _downloadStatus[videoId] = DownloadStatus.downloaded;
-      _downloadProgress.remove(videoId);
-      notifyListeners();
-      return true;
-    } catch (e) {
-      _downloadStatus[videoId] = DownloadStatus.error;
-      _downloadProgress.remove(videoId);
-      _downloadErrors[videoId] = _toUserFriendlyDownloadError(e);
-      notifyListeners();
-      return false;
-    }
+    return downloadVideoLikePlayer(videoId, title, thumbnailUrl, channelTitle);
   }
 
   Future<bool> downloadVideoLikePlayer(
@@ -434,7 +307,7 @@ class DownloadService with ChangeNotifier {
       }
       return false;
     } catch (_) {
-      return downloadVideo(videoId, title, thumbnailUrl, channelTitle);
+      return false;
     }
   }
 
@@ -810,6 +683,13 @@ class DownloadService with ChangeNotifier {
   Future<List<_PlaybackDownloadSource>> _resolvePlaybackDownloadSources(
     String videoId,
   ) async {
+    final backendSources = await _resolvePlaybackDownloadSourcesViaBackend(
+      videoId,
+    );
+    if (backendSources.isNotEmpty) {
+      return backendSources;
+    }
+
     final manifest = await _getManifestWithRetry(videoId);
     final sources = <_PlaybackDownloadSource>[];
     final seen = <String>{};
@@ -835,6 +715,42 @@ class DownloadService with ChangeNotifier {
     if (sources.isEmpty) {
       throw Exception('No hay streams disponibles para descargar.');
     }
+    return sources;
+  }
+
+  Future<List<_PlaybackDownloadSource>>
+  _resolvePlaybackDownloadSourcesViaBackend(String videoId) async {
+    if (!_ytResolverService.isConfigured) {
+      return const <_PlaybackDownloadSource>[];
+    }
+    final resolved = await _ytResolverService.resolveVideo(videoId);
+    if (resolved == null) {
+      return const <_PlaybackDownloadSource>[];
+    }
+
+    final sources = <_PlaybackDownloadSource>[];
+    final seen = <String>{};
+
+    final muxed = resolved.muxedUrl?.trim() ?? '';
+    if (muxed.isNotEmpty && seen.add(muxed)) {
+      sources.add(_PlaybackDownloadSource(url: muxed, isVideoSource: true));
+    }
+
+    final audio = resolved.audioUrl?.trim() ?? '';
+    if (audio.isNotEmpty && seen.add(audio)) {
+      sources.add(_PlaybackDownloadSource(url: audio, isVideoSource: false));
+    }
+
+    final generic = resolved.sourceUrl.trim();
+    if (generic.isNotEmpty && seen.add(generic)) {
+      sources.add(
+        _PlaybackDownloadSource(
+          url: generic,
+          isVideoSource: resolved.isVideoSource,
+        ),
+      );
+    }
+
     return sources;
   }
 
