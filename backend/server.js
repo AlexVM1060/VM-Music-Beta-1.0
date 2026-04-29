@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
-const { Readable } = require("node:stream");
+const { Readable, pipeline } = require("node:stream");
 
 const app = express();
 app.set("trust proxy", true);
@@ -43,7 +43,7 @@ const YTDLP_MAX_ATTEMPTS = Math.max(
   Number(process.env.YTDLP_MAX_ATTEMPTS || 10)
 );
 const RESOLVE_CACHE_TTL_MS = Number(
-  process.env.RESOLVE_CACHE_TTL_MS || 10 * 60 * 1000
+  process.env.RESOLVE_CACHE_TTL_MS || 30 * 1000
 );
 const RESOLVE_BATCH_LIMIT = Number(process.env.RESOLVE_BATCH_LIMIT || 20);
 const CORS_ALLOW_ORIGINS = (process.env.CORS_ALLOW_ORIGINS || "").trim();
@@ -53,6 +53,9 @@ const STEMS_ROOT = path.resolve(
 const STEMS_MODEL = (process.env.STEMS_MODEL || "htdemucs_ft").trim();
 const STEMS_PYTHON = (process.env.STEMS_PYTHON || "python3").trim();
 const STEMS_TIMEOUT_MS = Number(process.env.STEMS_TIMEOUT_MS || 12 * 60 * 1000);
+const STEMS_CACHE_TTL_MS = Number(
+  process.env.STEMS_CACHE_TTL_MS || 30 * 1000
+);
 const DART_BINARY = (process.env.DART_BINARY || "dart").trim();
 const YTEXPLODE_DART_TIMEOUT_MS = Number(
   process.env.YTEXPLODE_DART_TIMEOUT_MS || 30 * 1000
@@ -850,6 +853,12 @@ async function fetchUpstreamStream(url, rangeHeader) {
     if (response.ok || response.status === 206) {
       return response;
     }
+    if (lastResponse?.body) {
+      try {
+        // Evita fuga de sockets cuando probamos varios perfiles de headers.
+        await lastResponse.body.cancel();
+      } catch {}
+    }
     lastResponse = response;
     if (response.status !== 401 && response.status !== 403) {
       return response;
@@ -951,6 +960,11 @@ app.get("/stream", authMiddleware, async (req, res) => {
 
     const upstream = attempt.upstream;
     if (!upstream || (!upstream.ok && upstream.status !== 206)) {
+      if (upstream?.body) {
+        try {
+          await upstream.body.cancel();
+        } catch {}
+      }
       return res.status((upstream && upstream.status) || 502).json({
         ok: false,
         error: "upstream_stream_failed",
@@ -978,7 +992,29 @@ app.get("/stream", authMiddleware, async (req, res) => {
     }
     res.setHeader("x-vmmusic-stream-proxy", "1");
 
-    Readable.fromWeb(upstream.body).pipe(res);
+    const nodeReadable = Readable.fromWeb(upstream.body);
+    const abortUpstream = () => {
+      try {
+        nodeReadable.destroy();
+      } catch {}
+      try {
+        upstream.body.cancel();
+      } catch {}
+    };
+    req.on("aborted", abortUpstream);
+    req.on("close", abortUpstream);
+    res.on("close", abortUpstream);
+
+    pipeline(nodeReadable, res, (error) => {
+      if (error) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[stream] pipeline error videoId=${videoId} kind=${kind}: ${String(
+            error?.message || error
+          )}`
+        );
+      }
+    });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -1097,6 +1133,52 @@ async function fileExists(filePath) {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function getFileAgeMs(filePath) {
+  try {
+    const stats = await fsp.stat(filePath);
+    return Math.max(0, Date.now() - stats.mtimeMs);
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+async function removeDirIfExists(dirPath) {
+  try {
+    await fsp.rm(dirPath, { recursive: true, force: true });
+  } catch {}
+}
+
+async function cleanupStemsCacheRoot() {
+  if (STEMS_CACHE_TTL_MS <= 0) return;
+  const root = path.join(STEMS_ROOT, "cache");
+  let trackDirs = [];
+  try {
+    trackDirs = await fsp.readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const trackEntry of trackDirs) {
+    if (!trackEntry.isDirectory()) continue;
+    const trackPath = path.join(root, trackEntry.name);
+    let hashDirs = [];
+    try {
+      hashDirs = await fsp.readdir(trackPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const hashEntry of hashDirs) {
+      if (!hashEntry.isDirectory()) continue;
+      const cacheDir = path.join(trackPath, hashEntry.name);
+      const marker = path.join(cacheDir, "instrumental.wav");
+      const ageMs = await getFileAgeMs(marker);
+      if (!Number.isFinite(ageMs) || ageMs > STEMS_CACHE_TTL_MS) {
+        await removeDirIfExists(cacheDir);
+      }
+    }
   }
 }
 
@@ -1223,7 +1305,15 @@ app.post("/stems/separate", authMiddleware, async (req, res) => {
   const instrumentalPath = path.join(cacheDir, "instrumental.wav");
 
   try {
+    void cleanupStemsCacheRoot();
     await ensureDir(cacheDir);
+    if (await fileExists(instrumentalPath)) {
+      const ageMs = await getFileAgeMs(instrumentalPath);
+      if (!Number.isFinite(ageMs) || ageMs > STEMS_CACHE_TTL_MS) {
+        await removeDirIfExists(cacheDir);
+        await ensureDir(cacheDir);
+      }
+    }
     if (!(await fileExists(instrumentalPath))) {
       if (!(await fileExists(inputPath))) {
         await downloadToFile(sourceUrl, inputPath);
@@ -1315,4 +1405,18 @@ app.use((error, _req, res, _next) => {
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`[resolver] listening on :${PORT}`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `[resolver] cache policy resolveTtlMs=${RESOLVE_CACHE_TTL_MS} stemsTtlMs=${STEMS_CACHE_TTL_MS}`
+  );
+});
+
+process.on("unhandledRejection", (reason) => {
+  // eslint-disable-next-line no-console
+  console.error("[process] unhandledRejection", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  // eslint-disable-next-line no-console
+  console.error("[process] uncaughtException", error);
 });

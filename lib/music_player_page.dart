@@ -525,6 +525,7 @@ class _FullPlayer extends StatefulWidget {
 }
 
 class _FullPlayerState extends State<_FullPlayer> {
+  bool _isOpeningArtistProfile = false;
   static const double _pullToMinimizeThreshold = 76;
   static const Duration _lyricsUiInactivityDelay = Duration(seconds: 4);
   static final bool _dynamicAlbumBackgroundEnabled = false;
@@ -1623,12 +1624,15 @@ class _FullPlayerState extends State<_FullPlayer> {
   }
 
   Future<void> _openArtistProfile(BuildContext context) async {
+    if (_isOpeningArtistProfile) return;
+    _isOpeningArtistProfile = true;
     final currentVideoId = (manager.currentVideoId ?? '').trim();
     final rawArtist = manager.trackArtist?.trim();
     if (currentVideoId.isEmpty && (rawArtist == null || rawArtist.isEmpty)) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No se encontró el nombre del artista.')),
       );
+      _isOpeningArtistProfile = false;
       return;
     }
 
@@ -1697,6 +1701,7 @@ class _FullPlayerState extends State<_FullPlayer> {
       );
     } finally {
       yt.close();
+      _isOpeningArtistProfile = false;
     }
   }
 }
@@ -7149,15 +7154,7 @@ class _DownloadButton extends StatelessWidget {
         DownloadStatus.downloading => _buildCupertinoStatusButton(
           key: const ValueKey('download_loading'),
           context: context,
-          child: SizedBox(
-            width: 18,
-            height: 18,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              value: downloadService.getDownloadProgress(videoId),
-              color: Theme.of(context).colorScheme.primary,
-            ),
-          ),
+          child: const CupertinoActivityIndicator(radius: 9),
           onPressed: null,
         ),
         DownloadStatus.downloaded => _buildCupertinoStatusButton(

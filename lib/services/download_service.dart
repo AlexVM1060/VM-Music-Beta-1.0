@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer';
 import 'dart:io';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:path/path.dart' as p;
@@ -55,6 +56,11 @@ class DownloadService with ChangeNotifier {
     'Accept': '*/*',
     'Origin': 'https://www.youtube.com',
     'Referer': 'https://www.youtube.com/',
+  };
+  static const Set<String> _backendHosts = <String>{
+    '136.114.174.34',
+    '34.28.151.222',
+    '35.202.25.111',
   };
 
   final Map<String, double> _downloadProgress = {};
@@ -141,6 +147,29 @@ class DownloadService with ChangeNotifier {
     required VideoHistory video,
     required VideoPlayerManager videoManager,
   }) async {
+    final backendSources = await _resolvePlaybackDownloadSourcesViaBackend(
+      video.videoId,
+    );
+    if (backendSources.isNotEmpty) {
+      log(
+        '[download] backend sources found for videoId=${video.videoId}; trying backend first (${backendSources.length} source(s))',
+      );
+      for (final source in backendSources) {
+        final ok = await downloadFromPlaybackSource(
+          videoId: video.videoId,
+          title: video.title,
+          thumbnailUrl: video.thumbnailUrl,
+          channelTitle: video.channelTitle,
+          sourceUrl: source.url,
+          isVideoSource: source.isVideoSource,
+        );
+        if (ok) return true;
+      }
+      log(
+        '[download] backend-first attempts failed for videoId=${video.videoId}; trying clone/playback source fallback',
+      );
+    }
+
     final source = await videoManager.resolveDownloadSourceIsolated(
       video.videoId,
     );
@@ -334,6 +363,10 @@ class DownloadService with ChangeNotifier {
     notifyListeners();
 
     try {
+      final isBackend = _isBackendSourceUrl(sourceUrl);
+      log(
+        '[download] start videoId=$videoId backend=$isBackend isVideoSource=$isVideoSource source=$sourceUrl',
+      );
       final sourceFile = File(sourceUrl);
       final isLocalSource = await sourceFile.exists();
       final appDir = await getApplicationDocumentsDirectory();
@@ -353,6 +386,7 @@ class DownloadService with ChangeNotifier {
 
       if (isLocalSource) {
         await sourceFile.copy(targetPath);
+        log('[download] local source copied videoId=$videoId path=$targetPath');
       } else {
         try {
           await _downloadFromDirectUrl(
@@ -360,7 +394,14 @@ class DownloadService with ChangeNotifier {
             targetPath: targetPath,
             videoId: videoId,
           );
+          log(
+            '[download] direct url download completed videoId=$videoId backend=$isBackend',
+          );
         } catch (directError) {
+          log(
+            '[download] direct url failed videoId=$videoId backend=$isBackend; trying manifest fallback',
+            error: directError,
+          );
           // Fallback robusto: usa youtube_explode con el mismo videoId.
           await _downloadFromManifestFallback(
             videoId: videoId,
@@ -371,6 +412,7 @@ class DownloadService with ChangeNotifier {
               'Direct URL failed: $directError | Manifest fallback failed: $fallbackError',
             );
           });
+          log('[download] manifest fallback completed videoId=$videoId');
         }
       }
 
@@ -400,12 +442,16 @@ class DownloadService with ChangeNotifier {
       _downloadStatus[videoId] = DownloadStatus.downloaded;
       _downloadProgress.remove(videoId);
       _downloadErrors.remove(videoId);
+      log(
+        '[download] success videoId=$videoId backend=$isBackend file=$targetPath',
+      );
       notifyListeners();
       return true;
     } catch (e) {
       _downloadStatus[videoId] = DownloadStatus.error;
       _downloadProgress.remove(videoId);
       _downloadErrors[videoId] = _toUserFriendlyDownloadError(e);
+      log('[download] failed videoId=$videoId source=$sourceUrl', error: e);
       notifyListeners();
       return false;
     }
@@ -721,10 +767,13 @@ class DownloadService with ChangeNotifier {
   Future<List<_PlaybackDownloadSource>>
   _resolvePlaybackDownloadSourcesViaBackend(String videoId) async {
     if (!_ytResolverService.isConfigured) {
+      log('[download] backend resolver not configured for videoId=$videoId');
       return const <_PlaybackDownloadSource>[];
     }
+    log('[download] resolving backend sources for videoId=$videoId');
     final resolved = await _ytResolverService.resolveVideo(videoId);
     if (resolved == null) {
+      log('[download] backend resolver returned null for videoId=$videoId');
       return const <_PlaybackDownloadSource>[];
     }
 
@@ -734,11 +783,13 @@ class DownloadService with ChangeNotifier {
     final muxed = resolved.muxedUrl?.trim() ?? '';
     if (muxed.isNotEmpty && seen.add(muxed)) {
       sources.add(_PlaybackDownloadSource(url: muxed, isVideoSource: true));
+      log('[download] backend muxed source added videoId=$videoId url=$muxed');
     }
 
     final audio = resolved.audioUrl?.trim() ?? '';
     if (audio.isNotEmpty && seen.add(audio)) {
       sources.add(_PlaybackDownloadSource(url: audio, isVideoSource: false));
+      log('[download] backend audio source added videoId=$videoId url=$audio');
     }
 
     final generic = resolved.sourceUrl.trim();
@@ -749,9 +800,22 @@ class DownloadService with ChangeNotifier {
           isVideoSource: resolved.isVideoSource,
         ),
       );
+      log(
+        '[download] backend generic source added videoId=$videoId isVideo=${resolved.isVideoSource} url=$generic',
+      );
     }
 
     return sources;
+  }
+
+  bool _isBackendSourceUrl(String rawUrl) {
+    final trimmed = rawUrl.trim();
+    if (trimmed.isEmpty) return false;
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return false;
+    if (_backendHosts.contains(uri.host)) return true;
+    if (uri.path.contains('/stream')) return true;
+    return false;
   }
 
   List<MuxedStreamInfo> _prioritizeMuxedStreams(List<MuxedStreamInfo> streams) {

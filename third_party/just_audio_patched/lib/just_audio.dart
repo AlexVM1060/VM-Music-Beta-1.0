@@ -3817,7 +3817,7 @@ _ProxyHandler _proxyHandlerForUri(
   Uri? redirectedUri;
   Future<void> handler(_ProxyHttpServer server, HttpRequest request) async {
     final client = _createHttpClient(userAgent: userAgent);
-    // Try to make normal request
+    
     String? host;
     try {
       final requestHeaders = <String, String>{};

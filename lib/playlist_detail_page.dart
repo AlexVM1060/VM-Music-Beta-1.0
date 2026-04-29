@@ -188,6 +188,14 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 final downloadedVideo = downloadedVideos.firstWhereOrNull(
                   (v) => v.videoId == video.videoId,
                 );
+                final downloadStatus = downloadService.getDownloadStatus(
+                  video.videoId,
+                );
+                final isDownloading =
+                    downloadStatus == DownloadStatus.downloading;
+                final isDownloaded =
+                    downloadStatus == DownloadStatus.downloaded ||
+                    downloadedVideo != null;
                 final localThumbPath = downloadedVideo?.localThumbnailPath;
                 final hasLocalThumb =
                     localThumbPath != null &&
@@ -378,7 +386,26 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                if (downloadedVideo != null) ...[
+                                if (isDownloading) ...[
+                                  Container(
+                                    padding: const EdgeInsets.all(5),
+                                    decoration: BoxDecoration(
+                                      color: CupertinoColors.tertiarySystemFill
+                                          .resolveFrom(context),
+                                      borderRadius: BorderRadius.circular(999),
+                                      border: Border.all(
+                                        color: CupertinoColors.separator
+                                            .resolveFrom(context)
+                                            .withValues(alpha: 0.32),
+                                        width: 0.5,
+                                      ),
+                                    ),
+                                    child: const CupertinoActivityIndicator(
+                                      radius: 7,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                ] else if (isDownloaded) ...[
                                   Container(
                                     padding: const EdgeInsets.all(5),
                                     decoration: BoxDecoration(

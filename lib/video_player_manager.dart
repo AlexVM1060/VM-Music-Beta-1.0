@@ -1875,8 +1875,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
         if (_autoplayEnabled && video == null && _currentVideoId == videoId) {
           try {
-            video = await _getVideoWithRetry(
-              videoId,
+            video = await _resolveQueueSeedVideo(
+              currentVideoId: videoId,
             ).timeout(const Duration(seconds: 20));
           } catch (e, s) {
             log(
@@ -2620,8 +2620,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       try {
         await _player.setAudioSource(AudioSource.uri(uri, headers: headers));
         unawaited(_applyAudioEffects());
-        await _player.play();
-        unawaited(_applyTrackStartFadeInIfEnabled());
+        unawaited(_playInBackgroundSafely(isLocalPlayback: false, fadeIn: true));
+        final ready = await _waitForPlayerReady(_player);
+        if (!ready) {
+          throw TimeoutException(
+            'Audio engine did not become ready in time for backend stream',
+          );
+        }
         _usingHiddenVideo = false;
         _preferForegroundVideoPlayback = false;
         _currentStreamUrl = source.sourceUrl;
@@ -7007,22 +7012,39 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
 
     try {
-      final related = await _getRelatedQueueWithRetry(currentVideo);
+      final persisted = await _readRelatedQueueFromSession(currentVideoId);
+      if (queueRequestId == _queueEpoch &&
+          _currentVideoId == currentVideoId &&
+          persisted.isNotEmpty) {
+        _playbackQueue = persisted;
+        _queueSeedVideoId = currentVideoId;
+        _rememberRecommendedQueue(_playbackQueue);
+        _isQueueLoading = false;
+        notifyListeners();
+      }
+
+      final related = await _getRelatedQueueWithRetry(
+        currentVideo,
+      ).timeout(const Duration(seconds: 12));
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
         return;
       }
-      _playbackQueue = related;
-      _queueSeedVideoId = currentVideoId;
-      _rememberRecommendedQueue(_playbackQueue);
-      unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
-      unawaited(_maybePreloadUpcomingQueueTrack());
+      if (related.isNotEmpty) {
+        _playbackQueue = related;
+        _queueSeedVideoId = currentVideoId;
+        _rememberRecommendedQueue(_playbackQueue);
+        unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+        unawaited(_maybePreloadUpcomingQueueTrack());
+      }
     } catch (e, s) {
       log('Error cargando recomendados', error: e, stackTrace: s);
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
         return;
       }
-      _playbackQueue = const [];
-      _queueSeedVideoId = null;
+      if (_playbackQueue.isEmpty) {
+        _playbackQueue = const [];
+        _queueSeedVideoId = null;
+      }
     } finally {
       if (queueRequestId == _queueEpoch && _currentVideoId == currentVideoId) {
         _isQueueLoading = false;
@@ -7044,19 +7066,41 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
 
     try {
-      final video = await _getVideoWithRetry(
-        currentVideoId,
+      final persisted = await _readRelatedQueueFromSession(currentVideoId);
+      if (queueRequestId == _queueEpoch &&
+          _currentVideoId == currentVideoId &&
+          persisted.isNotEmpty) {
+        _playbackQueue = persisted;
+        _queueSeedVideoId = currentVideoId;
+        _rememberRecommendedQueue(_playbackQueue);
+        _isQueueLoading = false;
+        notifyListeners();
+      }
+
+      final video = await _resolveQueueSeedVideo(
+        currentVideoId: currentVideoId,
       ).timeout(const Duration(seconds: 10));
-      final queue = await _getRelatedQueueWithRetry(video);
+      if (video == null) {
+        if (_playbackQueue.isEmpty) {
+          _playbackQueue = const [];
+          _queueSeedVideoId = null;
+        }
+        return;
+      }
+      final queue = await _getRelatedQueueWithRetry(
+        video,
+      ).timeout(const Duration(seconds: 12));
 
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
         return;
       }
-      _playbackQueue = queue;
-      _queueSeedVideoId = currentVideoId;
-      _rememberRecommendedQueue(_playbackQueue);
-      unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
-      unawaited(_maybePreloadUpcomingQueueTrack());
+      if (queue.isNotEmpty) {
+        _playbackQueue = queue;
+        _queueSeedVideoId = currentVideoId;
+        _rememberRecommendedQueue(_playbackQueue);
+        unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+        unawaited(_maybePreloadUpcomingQueueTrack());
+      }
     } catch (e, s) {
       log(
         'Error cargando cola fallback por titulo/tendencia',
@@ -7066,8 +7110,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
         return;
       }
-      _playbackQueue = const [];
-      _queueSeedVideoId = null;
+      if (_playbackQueue.isEmpty) {
+        _playbackQueue = const [];
+        _queueSeedVideoId = null;
+      }
     } finally {
       if (queueRequestId == _queueEpoch && _currentVideoId == currentVideoId) {
         _isQueueLoading = false;
@@ -7602,6 +7648,34 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     await _loadOnlineQueueFallbackFromCurrentContext(
       currentVideoId: currentVideoId,
     );
+  }
+
+  Future<Video?> _resolveQueueSeedVideo({required String currentVideoId}) async {
+    try {
+      return await _getVideoWithRetry(
+        currentVideoId,
+      ).timeout(const Duration(seconds: 8));
+    } catch (_) {}
+
+    final titleSeed = _sanitizeSearchQuery(_trackTitle ?? '');
+    final artistSeed = _sanitizeSearchQuery(_trackArtist ?? '');
+    final query = artistSeed.isEmpty ? titleSeed : '$titleSeed $artistSeed';
+    if (query.isEmpty) return null;
+
+    try {
+      final results = await _safeSearchVideos(query, limit: 10).timeout(
+        const Duration(seconds: 10),
+      );
+      if (results.isEmpty) return null;
+      final selected = _pickBestVoiceSearchResult(
+        query: titleSeed.isEmpty ? query : titleSeed,
+        preferredArtist: artistSeed.isEmpty ? null : artistSeed,
+        results: results,
+      );
+      return selected;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<bool> _tryCrossfadeTransitionToPreparedItem(
