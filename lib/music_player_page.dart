@@ -637,10 +637,15 @@ class _FullPlayerState extends State<_FullPlayer> {
                       artwork,
                       fit: BoxFit.cover,
                       filterQuality: FilterQuality.low,
+                      errorBuilder: (_, _, _) => const SizedBox.expand(),
                     ))
             : (artwork.startsWith('/')
                   ? Image.file(File(artwork), fit: BoxFit.cover)
-                  : Image.network(artwork, fit: BoxFit.cover)),
+                  : Image.network(
+                      artwork,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const SizedBox.expand(),
+                    )),
       );
     }
 
@@ -2128,7 +2133,12 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
                 children: [
                   AspectRatio(
                     aspectRatio: ratio,
-                    child: VideoPlayer(controller),
+                    child: _SafeControllerVideoPlayer(
+                      controller: controller,
+                      ownerId:
+                          'embedded_${manager.currentVideoId ?? identityHashCode(controller)}',
+                      priority: 0,
+                    ),
                   ),
                   SafeArea(
                     minimum: const EdgeInsets.all(8),
@@ -2270,7 +2280,11 @@ class _FullscreenVideoStage extends StatelessWidget {
             Center(
               child: AspectRatio(
                 aspectRatio: ratio,
-                child: VideoPlayer(controller),
+                child: _SafeControllerVideoPlayer(
+                  controller: controller,
+                  ownerId: 'fullscreen_${identityHashCode(controller)}',
+                  priority: 10,
+                ),
               ),
             ),
             SafeArea(
@@ -2301,6 +2315,127 @@ class _FullscreenVideoStage extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _SafeControllerVideoPlayer extends StatefulWidget {
+  final VideoPlayerController controller;
+  final String ownerId;
+  final int priority;
+
+  const _SafeControllerVideoPlayer({
+    required this.controller,
+    required this.ownerId,
+    this.priority = 0,
+  });
+
+  @override
+  State<_SafeControllerVideoPlayer> createState() =>
+      _SafeControllerVideoPlayerState();
+}
+
+class _SafeControllerVideoPlayerState extends State<_SafeControllerVideoPlayer> {
+  static final Map<int, ({String ownerId, int priority})> _controllerOwners =
+      <int, ({String ownerId, int priority})>{};
+  static final ValueNotifier<int> _ownershipEpoch = ValueNotifier<int>(0);
+
+  int? _controllerKey;
+
+  @override
+  void initState() {
+    super.initState();
+    _ownershipEpoch.addListener(_onOwnershipChanged);
+    _claimController();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SafeControllerVideoPlayer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller) ||
+        oldWidget.ownerId != widget.ownerId ||
+        oldWidget.priority != widget.priority) {
+      _releaseController();
+      _claimController();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ownershipEpoch.removeListener(_onOwnershipChanged);
+    _releaseController();
+    super.dispose();
+  }
+
+  void _onOwnershipChanged() {
+    if (!mounted) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {});
+    });
+  }
+
+  void _claimController() {
+    final key = identityHashCode(widget.controller);
+    final currentOwner = _controllerOwners[key];
+    _controllerKey = key;
+    if (currentOwner == null || currentOwner.ownerId == widget.ownerId) {
+      _controllerOwners[key] = (
+        ownerId: widget.ownerId,
+        priority: widget.priority,
+      );
+      _ownershipEpoch.value++;
+      return;
+    }
+    if (widget.priority > currentOwner.priority) {
+      _controllerOwners[key] = (
+        ownerId: widget.ownerId,
+        priority: widget.priority,
+      );
+      _ownershipEpoch.value++;
+      return;
+    }
+    developer.log(
+      'VideoPlayer controller already mounted by another owner. Blocking duplicate mount.',
+      name: 'music_player_page',
+      error: <String, String>{
+        'owner': widget.ownerId,
+        'currentOwner': currentOwner.ownerId,
+      },
+    );
+  }
+
+  void _releaseController() {
+    final key = _controllerKey;
+    if (key == null) return;
+    final currentOwner = _controllerOwners[key];
+    if (currentOwner?.ownerId == widget.ownerId) {
+      _controllerOwners.remove(key);
+      _ownershipEpoch.value++;
+    }
+    _controllerKey = null;
+  }
+
+  bool _isCurrentOwner() {
+    final key = _controllerKey;
+    if (key == null) return false;
+    final owner = _controllerOwners[key];
+    if (owner == null) {
+      _controllerOwners[key] = (
+        ownerId: widget.ownerId,
+        priority: widget.priority,
+      );
+      _ownershipEpoch.value++;
+      return true;
+    }
+    return owner.ownerId == widget.ownerId;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isCurrentOwner()) {
+      return const ColoredBox(color: Colors.black);
+    }
+    return VideoPlayer(widget.controller);
   }
 }
 

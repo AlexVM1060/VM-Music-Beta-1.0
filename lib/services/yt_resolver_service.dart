@@ -26,11 +26,11 @@ class YtResolverService {
 
   static const String _baseUrl = String.fromEnvironment(
     'YT_RESOLVER_BASE_URL',
-    defaultValue: 'http://136.114.174.34:10000',
+    defaultValue: 'http://136.119.120.136:10000',
   );
   static const List<String> _fallbackBaseUrls = <String>[
-    'http://34.28.151.222:10000',
-    'http://35.202.25.111:10000',
+    'http://34.41.104.248:10000',
+    'http://34.171.28.30:10000',
   ];
   static const String _apiKey = String.fromEnvironment(
     'YT_RESOLVER_API_KEY',
@@ -43,6 +43,8 @@ class YtResolverService {
   static final math.Random _random = math.Random();
   static String? _lastHealthyBaseUrl;
   static final Map<String, DateTime> _backendBlockedUntil = <String, DateTime>{};
+  static final Map<String, Future<YtResolverResult?>> _inFlightByVideoId =
+      <String, Future<YtResolverResult?>>{};
 
   void _trace(String message) {
     log(message);
@@ -56,7 +58,22 @@ class YtResolverService {
     if (!isConfigured) return null;
     final cleanVideoId = videoId.trim();
     if (cleanVideoId.isEmpty) return null;
+    final inFlight = _inFlightByVideoId[cleanVideoId];
+    if (inFlight != null) {
+      _trace('[yt-resolver-service] join in-flight resolve videoId=$cleanVideoId');
+      return inFlight;
+    }
 
+    final future = _resolveVideoInternal(cleanVideoId);
+    _inFlightByVideoId[cleanVideoId] = future;
+    try {
+      return await future;
+    } finally {
+      _inFlightByVideoId.remove(cleanVideoId);
+    }
+  }
+
+  Future<YtResolverResult?> _resolveVideoInternal(String cleanVideoId) async {
     final candidateBases = _orderedCandidateBases();
     final headers = <String, String>{};
     if (_apiKey.trim().isNotEmpty) {

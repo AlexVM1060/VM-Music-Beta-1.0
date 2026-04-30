@@ -280,12 +280,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _crossfadePreparedPrimed = false;
   String? _crossfadeFailedForCurrentVideoId;
   String? _crossfadeFailedQueueKey;
+  final Map<String, Future<bool>> _crossfadePrepareRequests = {};
+  final Map<String, DateTime> _crossfadePrepareBlockedUntil = {};
   DateTime? _lastYoutubeRequestAt;
   DateTime? _youtubeSlowModeUntil;
   int _lyricsEpoch = 0;
   bool _iosLockScreenFavoriteBound = false;
   bool _songShareBound = false;
   bool _siriChannelBound = false;
+  bool _isDisposed = false;
+  Completer<void>? _hiddenSeekCompleter;
   Timer? _backgroundEngineSwitchTimer;
   Timer? _resumeSharedSongTimer;
   Timer? _resumeSiriPlayTimer;
@@ -344,6 +348,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _crossfadeAudibleMinAdvance = Duration(
     milliseconds: 100,
   );
+  static const Duration _crossfadePrepareRetryBackoff = Duration(seconds: 8);
   static const String _youtubeiPlayerEndpoint =
       'https://www.youtube.com/youtubei/v1/player?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
   static const String _youtubeiMusicNextEndpoint =
@@ -2611,7 +2616,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final shouldTryAudioFirstForBackendMuxed =
         source.isVideoSource &&
         _isBackendProxyStreamUri(uri) &&
-        streamKind == 'muxed';
+        streamKind == 'muxed' &&
+        !keepVideoEngine;
     log(
       '[playback-source] attempt uriHost=${uri.host} isVideo=${source.isVideoSource}',
     );
@@ -2628,7 +2634,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           );
         }
         _usingHiddenVideo = false;
-        _preferForegroundVideoPlayback = false;
+        _preferForegroundVideoPlayback = keepVideoEngine ? true : false;
         _currentStreamUrl = source.sourceUrl;
         _isPlaying = true;
         _isBuffering = false;
@@ -6318,12 +6324,27 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         : (newPosition > max ? max : newPosition);
     final hidden = _hiddenVideoController;
     if (_usingHiddenVideo && hidden != null) {
+      final seekCompleter = Completer<void>();
+      _hiddenSeekCompleter = seekCompleter;
       try {
+        if (!identical(hidden, _hiddenVideoController) ||
+            !_usingHiddenVideo ||
+            _isResettingEngines) {
+          return;
+        }
         await hidden.seekTo(clamped);
         _position = clamped;
         unawaited(_persistPlaybackSession(force: true));
       } catch (e, s) {
         log('seekTo en hidden video falló', error: e, stackTrace: s);
+      } finally {
+        if (identical(_hiddenSeekCompleter, seekCompleter) &&
+            !seekCompleter.isCompleted) {
+          seekCompleter.complete();
+        }
+        if (identical(_hiddenSeekCompleter, seekCompleter)) {
+          _hiddenSeekCompleter = null;
+        }
       }
       return;
     }
@@ -6333,6 +6354,18 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(_persistPlaybackSession(force: true));
     } catch (e, s) {
       log('seekTo en audio falló', error: e, stackTrace: s);
+    }
+  }
+
+  Future<void> _waitForPendingHiddenSeek({
+    Duration timeout = const Duration(milliseconds: 450),
+  }) async {
+    final pending = _hiddenSeekCompleter;
+    if (pending == null) return;
+    try {
+      await pending.future.timeout(timeout);
+    } catch (_) {
+      // Best effort: no bloquear cambios de engine por seeks colgados.
     }
   }
 
@@ -6443,6 +6476,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _isDisposed = true;
     _backgroundEngineSwitchTimer?.cancel();
     _resumeSharedSongTimer?.cancel();
     _resumeSiriPlayTimer?.cancel();
@@ -6453,6 +6487,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _bufferedSub?.cancel();
     _durationSub?.cancel();
     _playerStateSub?.cancel();
+    final pendingHiddenSeek = _hiddenSeekCompleter;
+    if (pendingHiddenSeek != null && !pendingHiddenSeek.isCompleted) {
+      pendingHiddenSeek.complete();
+    }
+    _hiddenSeekCompleter = null;
     _hiddenVideoController?.removeListener(_syncFromHiddenVideo);
     _hiddenVideoController?.dispose();
     _player.dispose();
@@ -6885,6 +6924,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       _clearPreloadedNextTrack();
+      await _waitForPendingHiddenSeek(
+        timeout: const Duration(milliseconds: 350),
+      );
       final controller = _hiddenVideoController;
       _hiddenVideoController = null;
       _usingHiddenVideo = false;
@@ -6907,9 +6949,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _syncFromHiddenVideo() {
+    if (_isDisposed) return;
     final controller = _hiddenVideoController;
     if (controller == null) return;
-    final value = controller.value;
+    late final VideoPlayerValue value;
+    try {
+      value = controller.value;
+    } catch (_) {
+      // El controlador pudo haberse disposed entre callbacks.
+      return;
+    }
     _position = value.position;
     _bufferedPosition = value.position;
     _trackDuration = value.duration;
@@ -6943,6 +6992,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final hidden = _hiddenVideoController;
       if (hidden == null) return;
+      await _waitForPendingHiddenSeek();
+      if (!identical(hidden, _hiddenVideoController) || !_usingHiddenVideo) {
+        return;
+      }
       final position = hidden.value.position;
       hidden.removeListener(_syncFromHiddenVideo);
       try {
@@ -7236,9 +7289,13 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         next = _playbackQueue.first;
         tookFromManualQueue = false;
       }
-      final transitionedToPrepared = triggeredByCrossfade
-          ? await _tryCrossfadeTransitionToPreparedItem(next)
-          : await _tryInstantTransitionToPreparedItem(next);
+      final shouldForceVideoEngineForQueueItem =
+          _preferForegroundVideoPlayback && !next.isLocal;
+      final transitionedToPrepared = shouldForceVideoEngineForQueueItem
+          ? false
+          : (triggeredByCrossfade
+                ? await _tryCrossfadeTransitionToPreparedItem(next)
+                : await _tryInstantTransitionToPreparedItem(next));
       if (transitionedToPrepared) {
         if (tookFromManualQueue) {
           _manualPlaybackQueue = _manualPlaybackQueue.sublist(1);
@@ -8179,6 +8236,37 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required String currentVideoId,
   }) async {
     final queueKey = _queueItemKey(next);
+    final requestKey = '$currentVideoId|$queueKey';
+    final blockedUntil = _crossfadePrepareBlockedUntil[requestKey];
+    if (blockedUntil != null && blockedUntil.isAfter(DateTime.now())) {
+      return false;
+    }
+    final inFlight = _crossfadePrepareRequests[requestKey];
+    if (inFlight != null) {
+      return inFlight;
+    }
+    final request = _prepareCrossfadePlayerForQueueItemInternal(
+      next,
+      currentVideoId: currentVideoId,
+      queueKey: queueKey,
+      requestKey: requestKey,
+    );
+    _crossfadePrepareRequests[requestKey] = request;
+    try {
+      return await request;
+    } finally {
+      if (identical(_crossfadePrepareRequests[requestKey], request)) {
+        _crossfadePrepareRequests.remove(requestKey);
+      }
+    }
+  }
+
+  Future<bool> _prepareCrossfadePlayerForQueueItemInternal(
+    PlaybackQueueItem next, {
+    required String currentVideoId,
+    required String queueKey,
+    required String requestKey,
+  }) async {
     final alreadyFailedForCurrentAndQueue =
         _crossfadeFailedForCurrentVideoId == currentVideoId &&
         _crossfadeFailedQueueKey == queueKey;
@@ -8227,39 +8315,44 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
     final candidateUris = <Uri>[];
     final seenCandidateUrls = <String>{};
-    final backendSource = await _resolveDownloadSourceViaBackend(next.videoId);
-    if (backendSource != null) {
-      final uri = Uri.tryParse(backendSource.sourceUrl);
-      if (uri != null && seenCandidateUrls.add(uri.toString())) {
+    void addCandidateUrl(String? raw) {
+      final normalized = (raw ?? '').trim();
+      if (normalized.isEmpty) return;
+      final uri = Uri.tryParse(normalized);
+      if (uri == null) return;
+      if (seenCandidateUrls.add(uri.toString())) {
         candidateUris.add(uri);
       }
     }
-    if (candidateUris.isEmpty) {
-      StreamManifest? manifest;
-      try {
-        manifest = await _getManifestWithRetry(next.videoId);
-      } catch (_) {
-        manifest = null;
-      }
-      final audioStreams =
-          manifest?.audioOnly.toList() ?? const <AudioOnlyStreamInfo>[];
-      final muxedStreams =
-          manifest?.muxed.toList() ?? const <MuxedStreamInfo>[];
-      final ordered = _prioritizeAudioStreams(audioStreams);
-      final orderedMuxed = _prioritizeMuxedStreams(muxedStreams);
-      for (final stream in ordered) {
-        final key = stream.url.toString();
-        if (seenCandidateUrls.add(key)) {
-          candidateUris.add(stream.url);
-        }
-      }
-      for (final stream in orderedMuxed) {
-        final key = stream.url.toString();
-        if (seenCandidateUrls.add(key)) {
-          candidateUris.add(stream.url);
-        }
-      }
+
+    final backendSource = await _resolveDownloadSourceViaBackend(next.videoId);
+    addCandidateUrl(backendSource?.sourceUrl);
+
+    try {
+      final resolver = await _ytResolverService.resolveVideo(next.videoId);
+      addCandidateUrl(resolver?.muxedUrl);
+      addCandidateUrl(resolver?.audioUrl);
+      addCandidateUrl(resolver?.sourceUrl);
+    } catch (_) {}
+
+    StreamManifest? manifest;
+    try {
+      manifest = await _getManifestWithRetry(next.videoId);
+    } catch (_) {
+      manifest = null;
     }
+    final audioStreams =
+        manifest?.audioOnly.toList() ?? const <AudioOnlyStreamInfo>[];
+    final muxedStreams = manifest?.muxed.toList() ?? const <MuxedStreamInfo>[];
+    final ordered = _prioritizeAudioStreams(audioStreams);
+    final orderedMuxed = _prioritizeMuxedStreams(muxedStreams);
+    for (final stream in ordered) {
+      addCandidateUrl(stream.url.toString());
+    }
+    for (final stream in orderedMuxed) {
+      addCandidateUrl(stream.url.toString());
+    }
+
     if (candidateUris.isEmpty) return false;
 
     Object? lastError;
@@ -8301,6 +8394,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _crossfadePreparedPrimed = false;
     _crossfadeFailedForCurrentVideoId = currentVideoId;
     _crossfadeFailedQueueKey = queueKey;
+    _crossfadePrepareBlockedUntil[requestKey] =
+        DateTime.now().add(_crossfadePrepareRetryBackoff);
     if (lastError != null) {
       log(
         'No se pudo preparar player de crossfade para ${next.videoId}',
@@ -8979,4 +9074,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         ? 'No se pudo reproducir el archivo local: $raw'
         : 'No se pudo reproducir esta canción: $raw';
   }
+
+  @override
+  void notifyListeners() {
+    if (_isDisposed) return;
+    super.notifyListeners();
+  }
+
 }
