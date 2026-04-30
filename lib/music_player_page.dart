@@ -3131,9 +3131,7 @@ class _QueueSectionState extends State<_QueueSection> {
             itemBuilder: (context, index) {
               final item = queue[index];
               return _QueueRow(
-                key: ValueKey(
-                  'queue_${item.videoId}_${item.isLocal}_${item.localFilePath ?? ''}',
-                ),
+                key: ObjectKey(item),
                 item: item,
                 manager: manager,
                 index: index,

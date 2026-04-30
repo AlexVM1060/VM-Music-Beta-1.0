@@ -141,13 +141,13 @@ class YtResolverService {
         _markBackendFailed(base);
         failedBasesInThisResolve.add(base);
       } on DioException catch (e) {
-        final refused = _isConnectionRefused(e);
+        final immediateFailover = _shouldImmediateFailover(e);
         _trace(
-          '[yt-resolver-service] resolve failed videoId=$cleanVideoId endpoint=$endpoint dioType=${e.type} refused=$refused',
+          '[yt-resolver-service] resolve failed videoId=$cleanVideoId endpoint=$endpoint dioType=${e.type} immediateFailover=$immediateFailover',
         );
         _markBackendFailed(base);
         failedBasesInThisResolve.add(base);
-        if (refused) {
+        if (immediateFailover) {
           _trace(
             '[yt-resolver-service] immediate failover videoId=$cleanVideoId from=$base to-next-backend',
           );
@@ -192,14 +192,32 @@ class YtResolverService {
     return null;
   }
 
-  bool _isConnectionRefused(DioException error) {
-    if (error.type != DioExceptionType.connectionError) return false;
+  bool _shouldImmediateFailover(DioException error) {
     final message = (error.message ?? '').toLowerCase();
-    if (message.contains('connection refused')) return true;
+    if (message.contains('connection refused') ||
+        message.contains('connection closed before full header was received') ||
+        message.contains('connection closed')) {
+      return true;
+    }
     final inner = error.error;
     if (inner is SocketException) {
       final socketMessage = inner.message.toLowerCase();
-      if (socketMessage.contains('connection refused')) return true;
+      if (socketMessage.contains('connection refused') ||
+          socketMessage.contains(
+            'connection closed before full header was received',
+          ) ||
+          socketMessage.contains('connection closed')) {
+        return true;
+      }
+    }
+    if (inner is HttpException) {
+      final httpMessage = inner.message.toLowerCase();
+      if (httpMessage.contains(
+            'connection closed before full header was received',
+          ) ||
+          httpMessage.contains('connection closed')) {
+        return true;
+      }
     }
     return false;
   }
