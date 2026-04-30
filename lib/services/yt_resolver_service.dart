@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:developer';
 import 'dart:math' as math;
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -20,7 +21,9 @@ class YtResolverResult {
 }
 
 class YtResolverService {
-  YtResolverService({Dio? dio}) : _dio = dio ?? Dio();
+  YtResolverService({Dio? dio}) : _dio = dio ?? Dio() {
+    _dio.options.connectTimeout = _connectTimeout;
+  }
 
   final Dio _dio;
 
@@ -30,13 +33,14 @@ class YtResolverService {
   );
   static const List<String> _fallbackBaseUrls = <String>[
     'http://34.41.104.248:10000',
-    'http://34.171.28.30:10000',
+    'http://34.170.163.28:10000',
   ];
   static const String _apiKey = String.fromEnvironment(
     'YT_RESOLVER_API_KEY',
     defaultValue: '',
   );
   static const Duration _sendTimeout = Duration(seconds: 10);
+  static const Duration _connectTimeout = Duration(seconds: 4);
   static const Duration _receiveTimeout = Duration(seconds: 120);
   static const Duration _overallResolveTimeout = Duration(seconds: 25);
   static const Duration _failedBackendPenalty = Duration(seconds: 75);
@@ -136,6 +140,23 @@ class YtResolverService {
         );
         _markBackendFailed(base);
         failedBasesInThisResolve.add(base);
+      } on DioException catch (e) {
+        final refused = _isConnectionRefused(e);
+        _trace(
+          '[yt-resolver-service] resolve failed videoId=$cleanVideoId endpoint=$endpoint dioType=${e.type} refused=$refused',
+        );
+        _markBackendFailed(base);
+        failedBasesInThisResolve.add(base);
+        if (refused) {
+          _trace(
+            '[yt-resolver-service] immediate failover videoId=$cleanVideoId from=$base to-next-backend',
+          );
+          continue;
+        }
+        log(
+          '[yt-resolver-service] resolve failed videoId=$cleanVideoId endpoint=$endpoint',
+          error: e,
+        );
       } catch (e) {
         _trace(
           '[yt-resolver-service] resolve failed videoId=$cleanVideoId endpoint=$endpoint',
@@ -169,6 +190,18 @@ class YtResolverService {
       );
     }
     return null;
+  }
+
+  bool _isConnectionRefused(DioException error) {
+    if (error.type != DioExceptionType.connectionError) return false;
+    final message = (error.message ?? '').toLowerCase();
+    if (message.contains('connection refused')) return true;
+    final inner = error.error;
+    if (inner is SocketException) {
+      final socketMessage = inner.message.toLowerCase();
+      if (socketMessage.contains('connection refused')) return true;
+    }
+    return false;
   }
 
   YtResolverResult? _parseResolveResponse(Map data) {
