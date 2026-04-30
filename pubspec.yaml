@@ -1,7 +1,7 @@
 name: myapp
 description: "A Music project..."
 publish_to: 'none'
-version: 0.4.1+1
+version: 0.4.2+1
 
 environment:
   sdk: ^3.9.0

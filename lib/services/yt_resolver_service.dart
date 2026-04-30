@@ -29,11 +29,12 @@ class YtResolverService {
 
   static const String _baseUrl = String.fromEnvironment(
     'YT_RESOLVER_BASE_URL',
-    defaultValue: 'http://136.119.120.136:10000',
+    defaultValue: 'http://34.44.177.184:10000',
   );
   static const List<String> _fallbackBaseUrls = <String>[
     'http://34.41.104.248:10000',
     'http://34.170.163.28:10000',
+    'http://136.119.120.136:10000'
   ];
   static const String _apiKey = String.fromEnvironment(
     'YT_RESOLVER_API_KEY',
@@ -335,14 +336,22 @@ class YtResolverService {
     final ordered = List<String>.from(pool);
     ordered.shuffle(_random);
 
+    final primary = _normalizeBaseUrl(_baseUrl.trim());
+    if (primary != null && unique.contains(primary)) {
+      ordered.remove(primary);
+      ordered.insert(0, primary);
+    }
+
     final preferred = _lastHealthyBaseUrl;
-    if (preferred != null) {
+    if (preferred != null && preferred != primary) {
       final idx = ordered.indexOf(preferred);
       if (idx > 0) {
         final base = ordered.removeAt(idx);
-        ordered.insert(0, base);
+        final insertAt = primary == null ? 0 : 1;
+        ordered.insert(insertAt, base);
       } else if (idx < 0 && pool.contains(preferred)) {
-        ordered.insert(0, preferred);
+        final insertAt = primary == null ? 0 : 1;
+        ordered.insert(insertAt, preferred);
       }
     }
     return ordered;
