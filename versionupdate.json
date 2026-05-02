@@ -8,8 +8,8 @@
   "actions": [
     {
       "label": "Actualizar - Rene",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/0c6fac8ad18a.plist",
-      "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/0c6fac8ad18a.plist"
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/6ec486e42c00.plist",
+      "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/6ec486e42c00.plist"
     },
     {
       "label": "Actualizar - Juan",
