@@ -32,6 +32,10 @@ import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
+const MethodChannel _systemVolumeChannel = MethodChannel(
+  'com.vm.music.beta/system_volume',
+);
+
 class MusicPlayerPage extends StatefulWidget {
   const MusicPlayerPage({super.key});
 
@@ -407,9 +411,9 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                             onPressed: widget.manager.togglePlayPause,
                             child: Icon(
                               miniState.isPlaying
-                                  ? CupertinoIcons.pause_circle_fill
-                                  : CupertinoIcons.play_circle_fill,
-                              size: 28,
+                                  ? CupertinoIcons.pause_fill
+                                  : CupertinoIcons.play_fill,
+                              size: 27,
                               color: CupertinoColors.label.resolveFrom(context),
                             ),
                           ),
@@ -925,18 +929,10 @@ class _FullPlayerState extends State<_FullPlayer> {
                           ),
                         ),
                         Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          padding: const EdgeInsets.symmetric(horizontal: 22),
                           child: Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
                             children: [
-                              _TopGlassIconButton(
-                                icon: CupertinoIcons.chevron_down,
-                                onPressed: manager.minimize,
-                              ),
-                              const Spacer(),
-                              _TopGlassIconButton(
-                                icon: CupertinoIcons.list_bullet,
-                                onPressed: () => _showQueueSheet(context),
-                              ),
                               _TopGlassIconButton(
                                 icon: CupertinoIcons.square_arrow_up,
                                 onPressed: () =>
@@ -952,10 +948,6 @@ class _FullPlayerState extends State<_FullPlayer> {
                                   isVideoSource: manager.isUsingVideoFallback,
                                   downloadService: downloadService,
                                 ),
-                              _TopGlassIconButton(
-                                icon: CupertinoIcons.xmark,
-                                onPressed: manager.close,
-                              ),
                             ],
                           ),
                         ),
@@ -1243,7 +1235,7 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                 ignoring: !showLyricsControls,
                                                 child: Column(
                                                   children: [
-                                                    const SizedBox(height: 24),
+                                                    const SizedBox(height: 10),
                                                     if (manager.isLoading &&
                                                         !manager.isPlaying)
                                                       const Padding(
@@ -1257,57 +1249,56 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                     else ...[
                                                       const _ProgressSection(),
                                                       const SizedBox(
-                                                        height: 16,
-                                                      ),
-                                                      _GlassControlsGroup(
-                                                        child: Row(
-                                                          mainAxisAlignment:
-                                                              MainAxisAlignment
-                                                                  .spaceEvenly,
-                                                          children: [
-                                                            _NativeControlButton(
-                                                              icon: CupertinoIcons
-                                                                  .backward_end_fill,
-                                                              onPressed: manager
-                                                                  .playPreviousInQueue,
-                                                            ),
-                                                            _NativePrimaryPlayButton(
-                                                              isPlaying: manager
-                                                                  .isPlaying,
-                                                              onPressed: manager
-                                                                  .togglePlayPause,
-                                                            ),
-                                                            _NativeControlButton(
-                                                              icon: CupertinoIcons
-                                                                  .forward_end_fill,
-                                                              onPressed: manager
-                                                                  .playNextInQueue,
-                                                            ),
-                                                          ],
-                                                        ),
-                                                      ),
-                                                      const SizedBox(
                                                         height: 10,
                                                       ),
                                                       Row(
+                                                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                                                         children: [
-                                                          _InlineLyricsButton(
-                                                            isActive: manager
-                                                                .isLyricsLayout,
-                                                            onPressed: manager
-                                                                .toggleLyricsLayout,
+                                                          _NativeControlButton(
+                                                            icon: CupertinoIcons.backward_fill,
+                                                            onPressed: manager.playPreviousInQueue,
                                                           ),
-                                                          const Spacer(),
-                                                          _InlineAutoplayButton(
-                                                            isActive: manager
-                                                                .autoplayEnabled,
-                                                            onPressed: manager
-                                                                .toggleAutoplay,
+                                                          _NativePrimaryPlayButton(
+                                                            isPlaying: manager.isPlaying,
+                                                            onPressed: manager.togglePlayPause,
+                                                          ),
+                                                          _NativeControlButton(
+                                                            icon: CupertinoIcons.forward_fill,
+                                                            onPressed: manager.playNextInQueue,
                                                           ),
                                                         ],
                                                       ),
+                                                      const SizedBox(
+                                                        height: 6,
+                                                      ),
+                                                      SizedBox(height: 28),
+                                                      if (Platform.isIOS) ...[
+                                                        const _SystemVolumeSlider(),
+                                                        const SizedBox(
+                                                          height: 14,
+                                                        ),
+                                                      ],
+
+                                                      Row(
+                                                        children: [
+                                                          const SizedBox(width: 34),
+                                                          _InlineLyricsButton(
+                                                            isActive: manager.isLyricsLayout,
+                                                            onPressed: manager.toggleLyricsLayout,
+                                                          ),
+                                                          const Spacer(),
+                                                          _InlineAutoplayButton(
+                                                            isActive: manager.autoplayEnabled,
+                                                            onPressed: manager.toggleAutoplay,
+                                                          ),
+                                                        ],
+                                                      ),
+
+                                                      SizedBox(
+                                                        height: MediaQuery.of(context).padding.bottom + 50,
+                                                      ),
                                                     ],
-                                                    const SizedBox(height: 26),
+                                                    // Removed SizedBox(height: 26),
                                                     const _QueueSection(),
                                                   ],
                                                 ),
@@ -1476,21 +1467,6 @@ class _FullPlayerState extends State<_FullPlayer> {
     Timer(const Duration(milliseconds: 1900), () {
       entry.remove();
     });
-  }
-
-  Future<void> _showQueueSheet(BuildContext context) async {
-    await showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (sheetContext) {
-        return SafeArea(
-          child: const SingleChildScrollView(
-            padding: EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: _QueueSection(),
-          ),
-        );
-      },
-    );
   }
 
   Future<void> _shareCurrentSongLink(BuildContext context) async {
@@ -1746,56 +1722,17 @@ class _InlineLyricsButton extends StatelessWidget {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOutCubic,
-        height: 30,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          borderRadius: borderRadius,
-          gradient: isActive
-              ? LinearGradient(
-                  colors: [
-                    activeColor.withValues(alpha: 0.30),
-                    activeColor.withValues(alpha: 0.18),
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                )
-              : LinearGradient(
-                  colors: [
-                    CupertinoColors.systemGrey6
-                        .resolveFrom(context)
-                        .withValues(alpha: 0.56),
-                    CupertinoColors.systemGrey5
-                        .resolveFrom(context)
-                        .withValues(alpha: 0.44),
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-          border: Border.all(
-            color: isActive
-                ? activeColor.withValues(alpha: 0.42)
-                : CupertinoColors.white.withValues(alpha: 0.22),
-            width: 0.8,
-          ),
-        ),
+        height: 40,
+        padding: EdgeInsets.zero,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              CupertinoIcons.text_alignleft,
-              size: 14,
+              isActive ? CupertinoIcons.quote_bubble_fill : CupertinoIcons.quote_bubble,
+              size: 26,
               color: isActive
                   ? activeColor
                   : CupertinoColors.label.resolveFrom(context),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              'Lyrics',
-              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: isActive ? activeColor : null,
-              ),
             ),
           ],
         ),
@@ -2037,11 +1974,11 @@ class _DefaultNowPlayingHero extends StatelessWidget {
             child: _AutoScrollText(
               text: manager.trackTitle ?? 'Cargando canción...',
               style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
-                  .copyWith(fontSize: 34, fontWeight: FontWeight.w700),
+                  .copyWith(fontSize: 28, fontWeight: FontWeight.w700),
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 2),
         Row(
           children: [
             Expanded(
@@ -2079,7 +2016,7 @@ class _DefaultNowPlayingHero extends StatelessWidget {
                       text: manager.trackArtist ?? 'Artista desconocido',
                       style: CupertinoTheme.of(context).textTheme.textStyle
                           .copyWith(
-                            fontSize: 20,
+                            fontSize: 17,
                             color: CupertinoColors.secondaryLabel.resolveFrom(
                               context,
                             ),
@@ -2198,11 +2135,11 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
             child: _AutoScrollText(
               text: manager.trackTitle ?? 'Cargando video...',
               style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
-                  .copyWith(fontSize: 34, fontWeight: FontWeight.w700),
+                  .copyWith(fontSize: 28, fontWeight: FontWeight.w700),
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 2),
         Row(
           children: [
             Expanded(
@@ -2240,7 +2177,7 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
                       text: manager.trackArtist ?? 'Artista desconocido',
                       style: CupertinoTheme.of(context).textTheme.textStyle
                           .copyWith(
-                            fontSize: 20,
+                            fontSize: 17,
                             color: CupertinoColors.secondaryLabel.resolveFrom(
                               context,
                             ),
@@ -3672,21 +3609,12 @@ class _NativeControlButton extends StatelessWidget {
       padding: EdgeInsets.zero,
       onPressed: onPressed,
       child: Container(
-        width: 46,
-        height: 46,
-        decoration: BoxDecoration(
-          color: CupertinoColors.systemGrey5
-              .resolveFrom(context)
-              .withValues(alpha: 0.62),
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: CupertinoColors.white.withValues(alpha: 0.22),
-            width: 0.5,
-          ),
-        ),
+        width: 40,
+        height: 40,
+        alignment: Alignment.center,
         child: Icon(
           icon,
-          size: 21,
+          size: 44,
           color: CupertinoColors.label.resolveFrom(context),
         ),
       ),
@@ -3707,30 +3635,58 @@ class _NativePrimaryPlayButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return CupertinoButton(
       padding: EdgeInsets.zero,
+      minimumSize: Size.zero,
       onPressed: onPressed,
-      child: Container(
-        width: 74,
-        height: 74,
-        decoration: BoxDecoration(
-          color: CupertinoColors.white.withValues(alpha: 0.97),
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: CupertinoColors.white.withValues(alpha: 0.34),
-            width: 0.8,
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: CupertinoColors.black.withValues(alpha: 0.16),
-              blurRadius: 24,
-              offset: const Offset(0, 10),
+      child: TweenAnimationBuilder<double>(
+        tween: Tween<double>(begin: 0, end: isPlaying ? 1 : 0),
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeInOutCubic,
+        builder: (context, progress, _) {
+          final playOpacity = 1 - Curves.easeOutCubic.transform(progress);
+          final pauseOpacity = Curves.easeOutCubic.transform(progress);
+          final playScale = 1 - (0.18 * progress);
+          final pauseScale = 0.84 + (0.16 * progress);
+          final playDx = -4.0 * progress;
+          final pauseDx = 4.0 * (1 - progress);
+
+          return SizedBox(
+            width: 60,
+            height: 60,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Transform.translate(
+                  offset: Offset(playDx, 0),
+                  child: Transform.scale(
+                    scale: playScale,
+                    child: Opacity(
+                      opacity: playOpacity.clamp(0.0, 1.0),
+                      child: const Icon(
+                        CupertinoIcons.play_fill,
+                        size: 55,
+                        color: CupertinoColors.white,
+                      ),
+                    ),
+                  ),
+                ),
+                Transform.translate(
+                  offset: Offset(pauseDx, 0),
+                  child: Transform.scale(
+                    scale: pauseScale,
+                    child: Opacity(
+                      opacity: pauseOpacity.clamp(0.0, 1.0),
+                      child: const Icon(
+                        CupertinoIcons.pause_fill,
+                        size: 53,
+                        color: CupertinoColors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-        child: Icon(
-          isPlaying ? CupertinoIcons.pause_fill : CupertinoIcons.play_fill,
-          size: 34,
-          color: CupertinoColors.black,
-        ),
+          );
+        },
       ),
     );
   }
@@ -3777,126 +3733,104 @@ class _ProgressSection extends StatelessWidget {
 
     return Column(
       children: [
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 360),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.transparent,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: CupertinoColors.white.withValues(alpha: 0.2),
-                width: 0.6,
-              ),
-            ),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final maxWidth = constraints.maxWidth;
-                final thumbLeft = (maxWidth * playedRatio - 6).clamp(
-                  0.0,
-                  maxWidth - 12,
-                );
+        Align(
+          alignment: Alignment.center,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: Column(
+              children: [
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final maxWidth = constraints.maxWidth;
 
-                void seekByDx(double localDx) {
-                  if (safeTotal <= 1) return;
-                  final ratio = (localDx / maxWidth).clamp(0.0, 1.0);
-                  manager.seekTo(
-                    Duration(milliseconds: (safeTotal * ratio).round()),
-                  );
-                }
+                    void seekByDx(double localDx) {
+                      if (safeTotal <= 1) return;
+                      final ratio = (localDx / maxWidth).clamp(0.0, 1.0);
+                      manager.seekTo(
+                        Duration(milliseconds: (safeTotal * ratio).round()),
+                      );
+                    }
 
-                return GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapDown: (details) => seekByDx(details.localPosition.dx),
-                  onHorizontalDragUpdate: (details) =>
-                      seekByDx(details.localPosition.dx),
-                  child: SizedBox(
-                    height: 18,
-                    child: Stack(
-                      alignment: Alignment.centerLeft,
-                      children: [
-                        Container(
-                          height: 5,
-                          decoration: BoxDecoration(
-                            color: CupertinoColors.systemGrey4
-                                .resolveFrom(context)
-                                .withValues(alpha: 0.52),
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                        ),
-                        FractionallySizedBox(
-                          widthFactor: bufferedRatio,
-                          child: Container(
-                            height: 5,
-                            decoration: BoxDecoration(
-                              color: CupertinoColors.systemGrey2
-                                  .resolveFrom(context)
-                                  .withValues(alpha: 0.72),
-                              borderRadius: BorderRadius.circular(999),
-                            ),
-                          ),
-                        ),
-                        FractionallySizedBox(
-                          widthFactor: playedRatio,
-                          child: Container(
-                            height: 5,
-                            decoration: BoxDecoration(
-                              color: CupertinoColors.white.withValues(
-                                alpha: 0.96,
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapDown: (details) => seekByDx(details.localPosition.dx),
+                      onHorizontalDragUpdate: (details) =>
+                          seekByDx(details.localPosition.dx),
+                      child: SizedBox(
+                        height: 28,
+                        child: Stack(
+                          alignment: Alignment.centerLeft,
+                          children: [
+                            Container(
+                              height: 7,
+                              decoration: BoxDecoration(
+                                color: CupertinoColors.systemGrey4
+                                    .resolveFrom(context)
+                                    .withValues(alpha: 0.52),
+                                borderRadius: BorderRadius.circular(999),
                               ),
-                              borderRadius: BorderRadius.circular(999),
                             ),
-                          ),
-                        ),
-                        Positioned(
-                          left: thumbLeft,
-                          child: Container(
-                            width: 12,
-                            height: 12,
-                            decoration: BoxDecoration(
-                              color: CupertinoColors.white,
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(
-                                  color: CupertinoColors.black.withValues(
-                                    alpha: 0.22,
-                                  ),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2),
+                            FractionallySizedBox(
+                              widthFactor: bufferedRatio,
+                              child: Container(
+                                height: 7,
+                                decoration: BoxDecoration(
+                                  color: CupertinoColors.systemGrey2
+                                      .resolveFrom(context)
+                                      .withValues(alpha: 0.62),
+                                  borderRadius: BorderRadius.circular(999),
                                 ),
-                              ],
+                              ),
                             ),
-                          ),
+                            FractionallySizedBox(
+                              widthFactor: playedRatio,
+                              child: Container(
+                                height: 7,
+                                decoration: BoxDecoration(
+                                  color: CupertinoColors.white.withValues(
+                                    alpha: 0.98,
+                                  ),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _formatDuration(progressState.position),
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(
+                            fontSize: 13,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
                     ),
-                  ),
-                );
-              },
+                    Text(
+                      _formatDuration(Duration(milliseconds: safeTotal)),
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(
+                            fontSize: 13,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              _formatDuration(progressState.position),
-              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                fontSize: 13,
-                color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
-            Text(
-              _formatDuration(Duration(milliseconds: safeTotal)),
-              style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                fontSize: 13,
-                color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
-            ),
-          ],
         ),
       ],
     );
@@ -3910,6 +3844,126 @@ class _ProgressSection extends StatelessWidget {
       return '$hours:$minutes:$seconds';
     }
     return '${duration.inMinutes}:$seconds';
+  }
+}
+
+class _SystemVolumeSlider extends StatefulWidget {
+  const _SystemVolumeSlider();
+
+  @override
+  State<_SystemVolumeSlider> createState() => _SystemVolumeSliderState();
+}
+
+class _SystemVolumeSliderState extends State<_SystemVolumeSlider> {
+  double _volume = 0.5;
+  bool _isLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadVolume());
+  }
+
+  Future<void> _loadVolume() async {
+    try {
+      final raw = await _systemVolumeChannel.invokeMethod<double>(
+        'getSystemVolume',
+      );
+      if (!mounted || raw == null) return;
+      setState(() {
+        _volume = raw.clamp(0.0, 1.0);
+        _isLoaded = true;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isLoaded = true;
+      });
+    }
+  }
+
+  Future<void> _setVolume(double value) async {
+    final clamped = value.clamp(0.0, 1.0);
+    setState(() {
+      _volume = clamped;
+    });
+    try {
+      await _systemVolumeChannel.invokeMethod<void>('setSystemVolume', {
+        'value': clamped,
+      });
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isLoaded) {
+      return const SizedBox(height: 28);
+    }
+
+    return Row(
+      children: [
+        Icon(
+          CupertinoIcons.speaker_fill,
+          size: 18,
+          color: CupertinoColors.secondaryLabel.resolveFrom(context),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final maxWidth = constraints.maxWidth;
+
+              void updateByDx(double localDx) {
+                final ratio = (localDx / maxWidth).clamp(0.0, 1.0);
+                unawaited(_setVolume(ratio));
+              }
+
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (details) => updateByDx(details.localPosition.dx),
+                onHorizontalDragUpdate: (details) =>
+                    updateByDx(details.localPosition.dx),
+                child: SizedBox(
+                  height: 28,
+                  child: Stack(
+                    alignment: Alignment.centerLeft,
+                    children: [
+                      Container(
+                        height: 7,
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemGrey4
+                              .resolveFrom(context)
+                              .withValues(alpha: 0.52),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      FractionallySizedBox(
+                        widthFactor: _volume,
+                        child: Container(
+                          height: 7,
+                          decoration: BoxDecoration(
+                            color: CupertinoColors.white.withValues(
+                              alpha: 0.98,
+                            ),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(width: 12),
+        Icon(
+          CupertinoIcons.speaker_3_fill,
+          size: 18,
+          color: CupertinoColors.secondaryLabel.resolveFrom(context),
+        ),
+      ],
+    );
   }
 }
 

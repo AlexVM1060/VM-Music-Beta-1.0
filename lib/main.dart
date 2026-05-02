@@ -24,6 +24,7 @@ import 'package:myapp/services/app_lifecycle_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/app_update_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/services/profile_service.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/music_player_page.dart';
@@ -64,6 +65,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => AppLifecycleService()),
         ChangeNotifierProvider(create: (_) => AppTabState()),
         ChangeNotifierProvider(create: (_) => SearchViewState()),
+        ChangeNotifierProvider(create: (_) => ProfileService()..init()),
         Provider(create: (_) => HistoryService()),
         Provider(create: (_) => PlaylistService()),
         ChangeNotifierProvider(
@@ -761,7 +763,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
       (icon: CupertinoIcons.home, label: 'Inicio'),
       (icon: CupertinoIcons.search, label: 'Buscar'),
       (icon: CupertinoIcons.arrow_down_circle, label: 'Descargas'),
-      (icon: CupertinoIcons.person_crop_circle, label: 'Cuenta'),
+      (icon: CupertinoIcons.person_crop_circle, label: 'Perfil'),
     ];
 
     final barContent = Container(

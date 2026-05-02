@@ -60,7 +60,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         settings?.audioQuality,
         dataSaverMode: dataSaverMode,
       );
-      await _manager.playFromUserSelection(context, widget.videoId);
+      await _manager.playFromUserSelection(
+        context,
+        widget.videoId,
+        preferVideoPlayback: true,
+        forceBackendResolver: true,
+      );
       final manifestFuture = _runYoutubeWithRetry(
         () => _ytExplode.videos.streamsClient.getManifest(widget.videoId),
       );
@@ -172,7 +177,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     try {
       await _disposeControllers();
 
-      _videoPlayerController = VideoPlayerController.networkUrl(streamInfo.url);
+      _videoPlayerController = VideoPlayerController.networkUrl(
+        streamInfo.url,
+        videoPlayerOptions: VideoPlayerOptions(
+          allowBackgroundPlayback: true,
+        ),
+      );
       await _videoPlayerController!.initialize();
       await _videoPlayerController!.seekTo(startAt);
 

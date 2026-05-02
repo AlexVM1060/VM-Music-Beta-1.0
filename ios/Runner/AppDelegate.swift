@@ -3,6 +3,7 @@ import UIKit
 import Vision
 import CoreImage
 import MediaPlayer
+import AVFoundation
 import Intents
 import AppIntents
 
@@ -96,6 +97,7 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
   private let songShareChannelName = "com.vm.music.beta/song_share"
   private let siriControlChannelName = "com.vm.music.beta/siri"
   private let powerModeChannelName = "com.vm.music.beta/power_mode"
+  private let systemVolumeChannelName = "com.vm.music.beta/system_volume"
   private let appleMusicMigrationChannelName = "com.vm.music.beta/apple_music_migration"
   private let backgroundTaskChannelName = "com.vm.music.beta/background_task"
   private let sharedSongPendingKey = "com.vm.music.beta.pending_shared_song"
@@ -104,7 +106,15 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
   private var songShareChannel: FlutterMethodChannel?
   private var siriControlChannel: FlutterMethodChannel?
   private var powerModeChannel: FlutterMethodChannel?
+  private var systemVolumeChannel: FlutterMethodChannel?
   private var activeBackgroundTasks: [String: UIBackgroundTaskIdentifier] = [:]
+  private lazy var hiddenVolumeView: MPVolumeView = {
+    let view = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
+    view.showsRouteButton = false
+    view.showsVolumeSlider = true
+    view.isHidden = true
+    return view
+  }()
 
   override func application(
     _ application: UIApplication,
@@ -169,6 +179,17 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
         name: Notification.Name.NSProcessInfoPowerStateDidChange,
         object: nil
       )
+    }
+
+    if let registrar = self.registrar(forPlugin: "SystemVolumeChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: systemVolumeChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      systemVolumeChannel = channel
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleSystemVolume(call: call, result: result)
+      }
     }
 
     if let registrar = self.registrar(forPlugin: "AppleMusicMigrationChannelPlugin") {
@@ -248,6 +269,51 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
         arguments: ["source": source]
       )
     }
+  }
+
+  private func handleSystemVolume(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "getSystemVolume":
+      result(Double(AVAudioSession.sharedInstance().outputVolume))
+    case "setSystemVolume":
+      let args = call.arguments as? [String: Any]
+      let rawValue = (args?["value"] as? NSNumber)?.doubleValue ?? 0.5
+      let clamped = Float(max(0.0, min(1.0, rawValue)))
+      DispatchQueue.main.async { [weak self] in
+        guard let self else {
+          result(FlutterError(code: "unavailable", message: "System volume controller unavailable", details: nil))
+          return
+        }
+        self.ensureHiddenVolumeViewAttached()
+        guard let slider = self.hiddenVolumeSlider() else {
+          result(FlutterError(code: "slider_unavailable", message: "No system volume slider found", details: nil))
+          return
+        }
+        slider.value = clamped
+        slider.sendActions(for: .valueChanged)
+        result(nil)
+      }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func ensureHiddenVolumeViewAttached() {
+    if hiddenVolumeView.superview != nil { return }
+    if let window = UIApplication.shared.connectedScenes
+      .compactMap({ $0 as? UIWindowScene })
+      .flatMap({ $0.windows })
+      .first(where: { $0.isKeyWindow }) {
+      window.addSubview(hiddenVolumeView)
+      return
+    }
+    if let fallbackWindow = self.window ?? UIApplication.shared.windows.first {
+      fallbackWindow.addSubview(hiddenVolumeView)
+    }
+  }
+
+  private func hiddenVolumeSlider() -> UISlider? {
+    hiddenVolumeView.subviews.compactMap { $0 as? UISlider }.first
   }
 
   private func handleLockScreenFavorite(call: FlutterMethodCall, result: @escaping FlutterResult) {

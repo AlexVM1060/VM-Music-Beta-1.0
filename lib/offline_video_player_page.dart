@@ -50,7 +50,12 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
 
       await _disposeControllers();
 
-      _videoPlayerController = VideoPlayerController.file(file);
+      _videoPlayerController = VideoPlayerController.file(
+        file,
+        videoPlayerOptions: VideoPlayerOptions(
+          allowBackgroundPlayback: true,
+        ),
+      );
       await _videoPlayerController!.initialize();
 
       if (mounted) {

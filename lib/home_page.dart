@@ -12,6 +12,8 @@ import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:hive/hive.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
+import 'package:myapp/app_tab_state.dart';
+import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/app_lifecycle_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
@@ -1076,15 +1078,14 @@ class _HomePageState extends State<HomePage> {
       if (!mounted) return;
       final channelId = details.id.value.trim();
       if (channelId.isEmpty) return;
-      await Navigator.of(context).push(
-        CupertinoPageRoute<void>(
-          builder: (_) => ChannelVideosPage(
-            channelId: channelId,
-            channelName: details.title,
-            channelThumbnailUrl: details.logoUrl,
-          ),
+      context.read<SearchViewState>().requestOpenArtistProfile(
+        PendingArtistProfile(
+          channelId: channelId,
+          channelName: details.title,
+          channelThumbnailUrl: details.logoUrl,
         ),
       );
+      context.read<AppTabState?>()?.setIndex(1);
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

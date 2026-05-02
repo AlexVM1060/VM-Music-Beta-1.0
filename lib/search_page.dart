@@ -364,6 +364,8 @@ class _CachedVideoSnapshot {
 
 const String _youtubeiMusicSearchEndpointForAlbums =
     'https://music.youtube.com/youtubei/v1/search?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+const String _youtubeiMusicBrowseEndpointForArtistVideos =
+    'https://music.youtube.com/youtubei/v1/browse?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
 
 // ignore: unused_element
 Future<Map<String, dynamic>?> _fetchYoutubeMusicNextPayloadForAlbum(
@@ -1362,6 +1364,7 @@ class _SearchTabTrackHistoryEntry {
   final String thumbnailUrl;
   final bool isLocal;
   final String? localFilePath;
+  final int touchedAtMs;
 
   const _SearchTabTrackHistoryEntry({
     required this.videoId,
@@ -1370,6 +1373,7 @@ class _SearchTabTrackHistoryEntry {
     required this.thumbnailUrl,
     required this.isLocal,
     this.localFilePath,
+    required this.touchedAtMs,
   });
 
   factory _SearchTabTrackHistoryEntry.fromMap(Map<String, dynamic> map) {
@@ -1382,6 +1386,9 @@ class _SearchTabTrackHistoryEntry {
       localFilePath: (map['localFilePath'] ?? '').toString().trim().isEmpty
           ? null
           : (map['localFilePath'] ?? '').toString().trim(),
+      touchedAtMs:
+          (map['touchedAtMs'] as num?)?.toInt() ??
+          DateTime.now().millisecondsSinceEpoch,
     );
   }
 
@@ -1392,6 +1399,7 @@ class _SearchTabTrackHistoryEntry {
     'thumbnailUrl': thumbnailUrl,
     'isLocal': isLocal,
     'localFilePath': localFilePath ?? '',
+    'touchedAtMs': touchedAtMs,
   };
 }
 
@@ -1399,11 +1407,13 @@ class _SearchTabArtistHistoryEntry {
   final String channelId;
   final String channelName;
   final String channelThumbnailUrl;
+  final int touchedAtMs;
 
   const _SearchTabArtistHistoryEntry({
     required this.channelId,
     required this.channelName,
     required this.channelThumbnailUrl,
+    required this.touchedAtMs,
   });
 
   factory _SearchTabArtistHistoryEntry.fromMap(Map<String, dynamic> map) {
@@ -1411,6 +1421,9 @@ class _SearchTabArtistHistoryEntry {
       channelId: (map['channelId'] ?? '').toString().trim(),
       channelName: (map['channelName'] ?? '').toString().trim(),
       channelThumbnailUrl: (map['channelThumbnailUrl'] ?? '').toString().trim(),
+      touchedAtMs:
+          (map['touchedAtMs'] as num?)?.toInt() ??
+          DateTime.now().millisecondsSinceEpoch,
     );
   }
 
@@ -1418,6 +1431,7 @@ class _SearchTabArtistHistoryEntry {
     'channelId': channelId,
     'channelName': channelName,
     'channelThumbnailUrl': channelThumbnailUrl,
+    'touchedAtMs': touchedAtMs,
   };
 }
 
@@ -2086,6 +2100,7 @@ class _SearchPageState extends State<SearchPage>
   }
 
   void _rememberSearchTrackHistory(_SearchTabTrackHistoryEntry entry) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
     final normalized = _SearchTabTrackHistoryEntry(
       videoId: entry.videoId.trim(),
       title: entry.title.trim().isEmpty ? 'Canción' : entry.title.trim(),
@@ -2093,6 +2108,7 @@ class _SearchPageState extends State<SearchPage>
       thumbnailUrl: entry.thumbnailUrl.trim(),
       isLocal: entry.isLocal,
       localFilePath: entry.localFilePath?.trim(),
+      touchedAtMs: nowMs,
     );
     final updated = <_SearchTabTrackHistoryEntry>[
       normalized,
@@ -2111,10 +2127,17 @@ class _SearchPageState extends State<SearchPage>
   }
 
   void _rememberSearchArtistHistory(_SearchTabArtistHistoryEntry entry) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final normalized = _SearchTabArtistHistoryEntry(
+      channelId: entry.channelId.trim(),
+      channelName: entry.channelName.trim(),
+      channelThumbnailUrl: entry.channelThumbnailUrl.trim(),
+      touchedAtMs: nowMs,
+    );
     final updated = <_SearchTabArtistHistoryEntry>[
-      entry,
+      normalized,
       ..._searchTabArtistHistory.where(
-        (item) => item.channelId != entry.channelId,
+        (item) => item.channelId != normalized.channelId,
       ),
     ];
     _searchTabArtistHistory = updated
@@ -2267,6 +2290,7 @@ class _SearchPageState extends State<SearchPage>
         channelId: channel.id.value,
         channelName: channel.name,
         channelThumbnailUrl: _thumbnailOf(channelData) ?? '',
+        touchedAtMs: DateTime.now().millisecondsSinceEpoch,
       ),
     );
     await _openArtistEmbedded(
@@ -2353,6 +2377,7 @@ class _SearchPageState extends State<SearchPage>
           artist: cleanArtistName(artist),
           thumbnailUrl: (thumbnailUrl ?? '').trim(),
           isLocal: false,
+          touchedAtMs: DateTime.now().millisecondsSinceEpoch,
         ),
       );
     } catch (e, s) {
@@ -2395,6 +2420,7 @@ class _SearchPageState extends State<SearchPage>
           thumbnailUrl: thumb.trim(),
           isLocal: true,
           localFilePath: local.filePath.trim(),
+          touchedAtMs: DateTime.now().millisecondsSinceEpoch,
         ),
       );
       return;
@@ -2444,6 +2470,7 @@ class _SearchPageState extends State<SearchPage>
           channelId: cached.channelId,
           channelName: cached.channelName,
           channelThumbnailUrl: cached.channelThumbnailUrl,
+          touchedAtMs: DateTime.now().millisecondsSinceEpoch,
         ),
       );
       await _openArtistEmbedded(
@@ -2463,6 +2490,7 @@ class _SearchPageState extends State<SearchPage>
           channelId: resolved.channelId,
           channelName: resolved.channelName,
           channelThumbnailUrl: resolved.channelThumbnailUrl,
+          touchedAtMs: DateTime.now().millisecondsSinceEpoch,
         ),
       );
       await _openArtistEmbedded(
@@ -2498,6 +2526,7 @@ class _SearchPageState extends State<SearchPage>
           channelId: resolved.channelId,
           channelName: resolved.channelName,
           channelThumbnailUrl: resolved.channelThumbnailUrl,
+          touchedAtMs: DateTime.now().millisecondsSinceEpoch,
         ),
       );
       await _openArtistEmbedded(
@@ -3987,52 +4016,54 @@ class _SearchPageState extends State<SearchPage>
 
     final mixedItems = _buildMixedSearchHistoryItems();
 
-    return ListView(
-      children: [
-        ...mixedItems.map((item) {
-          if (item.type == _SearchHistoryMixedItemType.artist) {
-            final artist = item.artist!;
-            return _SearchHistoryArtistCard(
-              entry: artist,
-              onTap: () => _openArtistFromSearchHistory(artist),
-            );
-          }
-          final track = item.track!;
-          return _SearchHistoryTrackCard(
-            entry: track,
-            onTap: () => _playFromSearchHistoryTrack(track),
+    return ListView.separated(
+      itemCount: mixedItems.length + 1,
+      itemBuilder: (context, index) {
+        if (index == mixedItems.length) {
+          return SizedBox(height: bottomReserve);
+        }
+        final item = mixedItems[index];
+        if (item.type == _SearchHistoryMixedItemType.artist) {
+          final artist = item.artist!;
+          return _SearchHistoryArtistCard(
+            entry: artist,
+            onTap: () => _openArtistFromSearchHistory(artist),
           );
-        }),
-        SizedBox(height: bottomReserve),
-      ],
+        }
+        final track = item.track!;
+        return _SearchHistoryTrackCard(
+          entry: track,
+          onTap: () => _playFromSearchHistoryTrack(track),
+        );
+      },
+      separatorBuilder: (context, index) {
+        if (index >= mixedItems.length - 1) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(left: 80),
+          child: Container(
+            height: 0.9,
+            color: CupertinoColors.separator
+                .resolveFrom(context)
+                .withValues(alpha: 0.5),
+          ),
+        );
+      },
     );
   }
 
   List<_SearchHistoryMixedItem> _buildMixedSearchHistoryItems() {
-    if (_searchTabTrackHistory.isEmpty) {
-      return _searchTabArtistHistory
-          .map(_SearchHistoryMixedItem.artist)
-          .toList(growable: false);
-    }
-    if (_searchTabArtistHistory.isEmpty) {
-      return _searchTabTrackHistory
-          .map(_SearchHistoryMixedItem.track)
-          .toList(growable: false);
-    }
-
     final out = <_SearchHistoryMixedItem>[];
-    final max = math.max(
-      _searchTabTrackHistory.length,
-      _searchTabArtistHistory.length,
-    );
-    for (var i = 0; i < max; i++) {
-      if (i < _searchTabArtistHistory.length) {
-        out.add(_SearchHistoryMixedItem.artist(_searchTabArtistHistory[i]));
-      }
-      if (i < _searchTabTrackHistory.length) {
-        out.add(_SearchHistoryMixedItem.track(_searchTabTrackHistory[i]));
-      }
-    }
+    out.addAll(_searchTabArtistHistory.map(_SearchHistoryMixedItem.artist));
+    out.addAll(_searchTabTrackHistory.map(_SearchHistoryMixedItem.track));
+    out.sort((a, b) {
+      final aMs = a.type == _SearchHistoryMixedItemType.artist
+          ? (a.artist?.touchedAtMs ?? 0)
+          : (a.track?.touchedAtMs ?? 0);
+      final bMs = b.type == _SearchHistoryMixedItemType.artist
+          ? (b.artist?.touchedAtMs ?? 0)
+          : (b.track?.touchedAtMs ?? 0);
+      return bMs.compareTo(aMs);
+    });
     return out;
   }
 
@@ -4259,63 +4290,51 @@ class _SearchHistoryArtistCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final thumb = entry.channelThumbnailUrl.trim();
-    final avatarCachePx = (40 * MediaQuery.devicePixelRatioOf(context))
+    final artistName = cleanArtistName(entry.channelName);
+    final avatarCachePx = (50 * MediaQuery.devicePixelRatioOf(context))
         .round()
         .clamp(72, 512)
         .toInt();
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 1),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Material(
-          color: Colors.white.withValues(alpha: 0.035),
-          child: InkWell(
-            onTap: onTap,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.14),
-                  width: 0.6,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 25,
+                backgroundColor: CupertinoColors.systemGrey4.resolveFrom(
+                  context,
+                ),
+                foregroundImage: thumb.isNotEmpty
+                    ? ResizeImage(
+                        NetworkImage(thumb),
+                        width: avatarCachePx,
+                        height: avatarCachePx,
+                      )
+                    : null,
+                child: thumb.isEmpty
+                    ? Icon(
+                        CupertinoIcons.person_fill,
+                        color: CupertinoColors.secondaryLabel.resolveFrom(
+                          context,
+                        ),
+                      )
+                    : null,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  artistName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: CupertinoTheme.of(context).textTheme.textStyle
+                      .copyWith(fontSize: 18, fontWeight: FontWeight.w600),
                 ),
               ),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor: CupertinoColors.systemGrey4.resolveFrom(
-                      context,
-                    ),
-                    foregroundImage: thumb.isNotEmpty
-                        ? ResizeImage(
-                            NetworkImage(thumb),
-                            width: avatarCachePx,
-                            height: avatarCachePx,
-                          )
-                        : null,
-                    child: thumb.isEmpty
-                        ? Icon(
-                            CupertinoIcons.person_fill,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(
-                              context,
-                            ),
-                          )
-                        : null,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      entry.channelName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: CupertinoTheme.of(context).textTheme.textStyle
-                          .copyWith(fontSize: 14, fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            ],
           ),
         ),
       ),
@@ -4331,71 +4350,56 @@ class _SearchHistoryTrackCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 1),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: Material(
-          color: Colors.white.withValues(alpha: 0.035),
-          child: InkWell(
-            onTap: onTap,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.14),
-                  width: 0.6,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              entry.thumbnailUrl.startsWith('/')
+                  ? SquareThumbnail.file(
+                      filePath: entry.thumbnailUrl,
+                      size: 54,
+                      borderRadius: 9,
+                      fallback: _buildTrackFallback(context),
+                    )
+                  : SquareThumbnail.network(
+                      imageUrl: entry.thumbnailUrl,
+                      size: 54,
+                      borderRadius: 9,
+                      fallback: _buildTrackFallback(context),
+                    ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      entry.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(fontSize: 17, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      entry.artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: CupertinoTheme.of(context).textTheme.textStyle
+                          .copyWith(
+                            fontSize: 14,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                          ),
+                    ),
+                  ],
                 ),
               ),
-              child: Row(
-                children: [
-                  entry.thumbnailUrl.startsWith('/')
-                      ? SquareThumbnail.file(
-                          filePath: entry.thumbnailUrl,
-                          size: 46,
-                          borderRadius: 10,
-                          fallback: _buildTrackFallback(context),
-                        )
-                      : SquareThumbnail.network(
-                          imageUrl: entry.thumbnailUrl,
-                          size: 46,
-                          borderRadius: 10,
-                          fallback: _buildTrackFallback(context),
-                        ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          entry.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                              ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          entry.artist,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 12,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
-                              ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            ],
           ),
         ),
       ),
@@ -4404,12 +4408,13 @@ class _SearchHistoryTrackCard extends StatelessWidget {
 
   Widget _buildTrackFallback(BuildContext context) {
     return Container(
-      width: 46,
-      height: 46,
+      width: 54,
+      height: 54,
       color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
       alignment: Alignment.center,
       child: Icon(
         CupertinoIcons.music_note_2,
+        size: 24,
         color: CupertinoColors.secondaryLabel.resolveFrom(context),
       ),
     );
@@ -5794,7 +5799,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
   static const Duration _channelFetchTimeout = Duration(seconds: 6);
   static const double _artistSectionHorizontalInset = 16;
   List<Video> _videos = [];
+  List<Video> _artistProfileVideos = const [];
+  bool _artistProfileVideosLoading = false;
   _SelectedAlbumView? _selectedAlbumView;
+  bool _showAllTopSongs = false;
   _SearchAlbumResult? _suggestedAlbum;
   List<_SearchAlbumResult> _artistAlbums = const [];
   bool _suggestedAlbumLoading = false;
@@ -5828,6 +5836,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       if (shouldRefreshAlbums) {
         unawaited(_loadSuggestedAlbumForArtist());
       }
+      unawaited(_loadArtistProfileVideosFromYouTubeMusic());
       return;
     }
     unawaited(_restoreArtistPersistentCacheOrLoad());
@@ -5868,6 +5877,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       if (!restored.albumsResolved) {
         unawaited(_loadSuggestedAlbumForArtist());
       }
+      unawaited(_loadArtistProfileVideosFromYouTubeMusic());
       return;
     }
     await _loadChannelVideos();
@@ -6042,6 +6052,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
         _videos = selected;
         _loading = false;
       });
+      unawaited(_loadArtistProfileVideosFromYouTubeMusic());
       _storeArtistCache(albumsResolved: false);
       unawaited(_loadSuggestedAlbumForArtist());
     } catch (_) {
@@ -6133,6 +6144,307 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       } catch (_) {}
     }
     return collected;
+  }
+
+  Future<void> _loadArtistProfileVideosFromYouTubeMusic() async {
+    final query = _artistDisplayName.trim().isNotEmpty
+        ? _artistDisplayName.trim()
+        : widget.channelName.trim();
+    if (query.isEmpty) return;
+    setState(() {
+      _artistProfileVideosLoading = true;
+    });
+    final resolved = await _fetchArtistProfileVideosFromYouTubeMusic(query);
+    if (!mounted) return;
+    setState(() {
+      _artistProfileVideos = resolved;
+      _artistProfileVideosLoading = false;
+    });
+  }
+
+  Future<Map<String, dynamic>?> _fetchYoutubeMusicBrowsePayloadForArtistVideos(
+    String browseId,
+  ) async {
+    final normalizedBrowseId = browseId.trim();
+    if (normalizedBrowseId.isEmpty) return null;
+    final client = HttpClient();
+    try {
+      final req = await client.postUrl(
+        Uri.parse(_youtubeiMusicBrowseEndpointForArtistVideos),
+      );
+      req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+      req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      req.headers.set(
+        HttpHeaders.userAgentHeader,
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      );
+      req.headers.set('Origin', 'https://music.youtube.com');
+      req.headers.set(
+        'Referer',
+        'https://music.youtube.com/browse/$normalizedBrowseId',
+      );
+      req.headers.set('X-Youtube-Client-Name', '67');
+      req.headers.set('X-Youtube-Client-Version', '1.20240226.01.00');
+      req.add(
+        utf8.encode(
+          jsonEncode(<String, Object?>{
+            'browseId': normalizedBrowseId,
+            'context': {
+              'client': {
+                'clientName': 'WEB_REMIX',
+                'clientVersion': '1.20240226.01.00',
+                'hl': 'es',
+                'gl': 'US',
+              },
+              'request': {'useSsl': true},
+            },
+            'contentCheckOk': true,
+            'racyCheckOk': true,
+          }),
+        ),
+      );
+      final res = await req.close();
+      if (res.statusCode < 200 || res.statusCode >= 300) return null;
+      final body = await utf8.decoder.bind(res).join();
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map) {
+        return Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+      }
+      return null;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  String? _extractFirstArtistBrowseId(dynamic node, {int depth = 0}) {
+    if (depth > 20 || node == null) return null;
+    if (node is Map) {
+      final browseEndpoint = node['browseEndpoint'];
+      if (browseEndpoint is Map) {
+        final browseId = (browseEndpoint['browseId'] ?? '').toString().trim();
+        final pageType = _extractPageTypeFromNode(node);
+        if (browseId.isNotEmpty && pageType.contains('ARTIST')) {
+          return browseId;
+        }
+      }
+      final renderer = node['musicResponsiveListItemRenderer'];
+      if (renderer is Map) {
+        final title = _normalizeAlbumSearchText(
+          _extractYouTubeText(
+            (renderer['flexColumns'] is List &&
+                    (renderer['flexColumns'] as List).isNotEmpty)
+                ? ((renderer['flexColumns'] as List).first
+                          as Map?)?['musicResponsiveListItemFlexColumnRenderer']
+                      ?['text']
+                : null,
+          ),
+        );
+        final browseId =
+            ((((renderer['navigationEndpoint'] as Map?)?['browseEndpoint']
+                            as Map?)?['browseId']) ??
+                    '')
+                .toString()
+                .trim();
+        if (browseId.isNotEmpty &&
+            (title == _normalizeAlbumSearchText(_artistDisplayName) ||
+                title.contains(_normalizeAlbumSearchText(_artistDisplayName)))) {
+          return browseId;
+        }
+      }
+      for (final value in node.values) {
+        final nested = _extractFirstArtistBrowseId(value, depth: depth + 1);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+    } else if (node is List) {
+      for (final value in node) {
+        final nested = _extractFirstArtistBrowseId(value, depth: depth + 1);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+    }
+    return null;
+  }
+
+  List<Map<String, dynamic>> _extractMusicCarouselShelfRenderers(
+    dynamic node, {
+    int depth = 0,
+  }) {
+    if (depth > 20 || node == null) return const <Map<String, dynamic>>[];
+    final out = <Map<String, dynamic>>[];
+    if (node is Map) {
+      final shelf = node['musicCarouselShelfRenderer'];
+      if (shelf is Map) {
+        out.add(Map<String, dynamic>.from(shelf.cast<dynamic, dynamic>()));
+      }
+      for (final value in node.values) {
+        out.addAll(_extractMusicCarouselShelfRenderers(value, depth: depth + 1));
+      }
+      return out;
+    }
+    if (node is List) {
+      for (final value in node) {
+        out.addAll(_extractMusicCarouselShelfRenderers(value, depth: depth + 1));
+      }
+    }
+    return out;
+  }
+
+  void _collectMusicResponsiveListItemRenderersForArtistVideos(
+    dynamic node,
+    List<Map<String, dynamic>> out, {
+    int depth = 0,
+  }) {
+    if (depth > 20 || node == null) return;
+    if (node is Map) {
+      final responsive = node['musicResponsiveListItemRenderer'];
+      if (responsive is Map) {
+        out.add(Map<String, dynamic>.from(responsive.cast<dynamic, dynamic>()));
+      }
+      final twoRow = node['musicTwoRowItemRenderer'];
+      if (twoRow is Map) {
+        out.add(Map<String, dynamic>.from(twoRow.cast<dynamic, dynamic>()));
+      }
+      for (final value in node.values) {
+        _collectMusicResponsiveListItemRenderersForArtistVideos(
+          value,
+          out,
+          depth: depth + 1,
+        );
+      }
+      return;
+    }
+    if (node is List) {
+      for (final value in node) {
+        _collectMusicResponsiveListItemRenderersForArtistVideos(
+          value,
+          out,
+          depth: depth + 1,
+        );
+      }
+    }
+  }
+
+  String? _extractArtistProfileVideoId(dynamic node, {int depth = 0}) {
+    if (depth > 16 || node == null) return null;
+    if (node is Map) {
+      final direct = node['videoId'];
+      if (direct is String && direct.trim().isNotEmpty) return direct.trim();
+      final watchEndpoint = node['watchEndpoint'];
+      if (watchEndpoint is Map) {
+        final nested = watchEndpoint['videoId'];
+        if (nested is String && nested.trim().isNotEmpty) return nested.trim();
+      }
+      for (final value in node.values) {
+        final nested = _extractArtistProfileVideoId(value, depth: depth + 1);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+    } else if (node is List) {
+      for (final value in node) {
+        final nested = _extractArtistProfileVideoId(value, depth: depth + 1);
+        if (nested != null && nested.isNotEmpty) return nested;
+      }
+    }
+    return null;
+  }
+
+  Future<List<Video>> _fetchArtistProfileVideosFromYouTubeMusic(
+    String query,
+  ) async {
+    try {
+      final initialPayload = await _fetchYoutubeMusicSearchInitialDataForAlbums(
+        query,
+      );
+      final searchPayload = await _fetchYoutubeMusicSearchPayloadForAlbums(query);
+      final artistBrowseId =
+          _extractFirstArtistBrowseId(initialPayload) ??
+          _extractFirstArtistBrowseId(searchPayload);
+      if (artistBrowseId == null || artistBrowseId.isEmpty) {
+        return const <Video>[];
+      }
+      final profilePayload = await _fetchYoutubeMusicBrowsePayloadForArtistVideos(
+        artistBrowseId,
+      );
+      if (profilePayload == null) return const <Video>[];
+      final listShelves = _extractMusicShelfRenderers(profilePayload);
+      final carouselShelves = _extractMusicCarouselShelfRenderers(profilePayload);
+      final videosShelves = [...listShelves, ...carouselShelves].where((shelf) {
+        final shelfTitle = _normalizeAlbumSearchText(
+          _extractYouTubeText(shelf['title']),
+        );
+        return shelfTitle == 'videos' ||
+            shelfTitle.contains('videos') ||
+            shelfTitle.contains('music videos') ||
+            shelfTitle.contains('videoclips');
+      }).toList(growable: false);
+      final results = <Video>[];
+      final seenIds = <String>{};
+      for (final shelf in videosShelves) {
+        final renderers = <Map<String, dynamic>>[];
+        _collectMusicResponsiveListItemRenderersForArtistVideos(
+          shelf,
+          renderers,
+        );
+        for (final renderer in renderers) {
+          final videoId = _extractArtistProfileVideoId(renderer);
+          if (videoId == null || videoId.isEmpty || !seenIds.add(videoId)) {
+            continue;
+          }
+          final title = _extractAlbumTitleFromRendererNode(renderer);
+          final artist = _extractAlbumArtistFromRendererNode(renderer).trim();
+          results.add(
+            _CachedVideoSnapshot(
+              videoId: videoId,
+              title: title.isEmpty ? 'Video' : title,
+              author: artist.isEmpty ? _artistDisplayName : artist,
+              channelId: widget.channelId,
+              description: '',
+              durationMs: null,
+              viewCount: 0,
+              uploadDateMs: null,
+              publishDateMs: null,
+              isLive: false,
+            ).toVideo(),
+          );
+        }
+      }
+      if (results.isNotEmpty) return results;
+
+      // Fallback robusto: algunas respuestas no etiquetan bien la shelf de
+      // videos, así que tomamos todos los renderers del perfil y filtramos por
+      // aquellos que sí contienen videoId/watchEndpoint.
+      final fallbackRenderers = <Map<String, dynamic>>[];
+      _collectMusicResponsiveListItemRenderersForArtistVideos(
+        profilePayload,
+        fallbackRenderers,
+      );
+      for (final renderer in fallbackRenderers) {
+        final videoId = _extractArtistProfileVideoId(renderer);
+        if (videoId == null || videoId.isEmpty || !seenIds.add(videoId)) {
+          continue;
+        }
+        final title = _extractAlbumTitleFromRendererNode(renderer);
+        final artist = _extractAlbumArtistFromRendererNode(renderer).trim();
+        results.add(
+          _CachedVideoSnapshot(
+            videoId: videoId,
+            title: title.isEmpty ? 'Video' : title,
+            author: artist.isEmpty ? _artistDisplayName : artist,
+            channelId: widget.channelId,
+            description: '',
+            durationMs: null,
+            viewCount: 0,
+            uploadDateMs: null,
+            publishDateMs: null,
+            isLive: false,
+          ).toVideo(),
+        );
+      }
+      return results;
+    } catch (_) {
+      return const <Video>[];
+    }
   }
 
   List<Video> _prioritizePopularVideos(List<Video> source) {
@@ -6917,6 +7229,178 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     );
   }
 
+  Widget _buildArtistVideosSection(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark
+        ? Colors.black
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final cardBorder = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.12);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: _artistSectionHorizontalInset,
+            ),
+            child: Text(
+              'Videos',
+              style: TextStyle(
+                fontFamily: '.SF Pro Text',
+                fontWeight: FontWeight.w800,
+                fontSize: 24,
+                letterSpacing: -0.2,
+                color: isDark ? Colors.white : Colors.black,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          if (_artistProfileVideosLoading)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 12, 16, 20),
+              child: SizedBox(
+                height: 120,
+                child: Center(child: CupertinoActivityIndicator(radius: 12)),
+              ),
+            )
+          else if (_artistProfileVideos.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: _artistSectionHorizontalInset,
+              ),
+              child: Text(
+                'Sin videos disponibles por ahora.',
+                style: TextStyle(
+                  fontFamily: '.SF Pro Text',
+                  fontSize: 13,
+                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                ),
+              ),
+            )
+          else
+            SizedBox(
+              height: 218,
+              child: ListView.separated(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: _artistSectionHorizontalInset,
+                ),
+                scrollDirection: Axis.horizontal,
+                itemCount: _artistProfileVideos.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 12),
+                itemBuilder: (context, index) {
+                  final video = _artistProfileVideos[index];
+                  final thumbUrl = _bestQualityThumbnail(video);
+                  final thumbCacheWidth = (280 * MediaQuery.devicePixelRatioOf(
+                    context,
+                  ))
+                      .round()
+                      .clamp(360, 1400)
+                      .toInt();
+                  final fallback = Container(
+                    decoration: BoxDecoration(
+                      color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                        context,
+                      ),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    alignment: Alignment.center,
+                    child: Icon(
+                      CupertinoIcons.play_rectangle_fill,
+                      size: 34,
+                      color: CupertinoColors.secondaryLabel.resolveFrom(
+                        context,
+                      ),
+                    ),
+                  );
+
+                  return SizedBox(
+                    width: 280,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: Material(
+                        color: cardColor,
+                        surfaceTintColor: Colors.transparent,
+                        child: InkWell(
+                          onTap: () => _playVideoPreferLocal(video),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: cardBorder,
+                                width: 0.6,
+                              ),
+                            ),
+                            padding: const EdgeInsets.all(10),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                AspectRatio(
+                                  aspectRatio: 16 / 9,
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: thumbUrl.isNotEmpty
+                                        ? Image.network(
+                                            thumbUrl,
+                                            fit: BoxFit.cover,
+                                            cacheWidth: thumbCacheWidth,
+                                            filterQuality: FilterQuality.low,
+                                            errorBuilder:
+                                                (
+                                                  context,
+                                                  error,
+                                                  stackTrace,
+                                                ) => fallback,
+                                          )
+                                        : fallback,
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  video.title,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontFamily: '.SF Pro Text',
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700,
+                                    color: CupertinoColors.label.resolveFrom(
+                                      context,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  cleanArtistName(video.author),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontFamily: '.SF Pro Text',
+                                    fontSize: 12,
+                                    color: CupertinoColors.secondaryLabel
+                                        .resolveFrom(context),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   List<List<Video>> _buildTopSongColumns(List<Video> source) {
     if (source.isEmpty) return const [];
     final columns = <List<Video>>[];
@@ -6933,6 +7417,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
   Widget _buildTopSongsSection(BuildContext context) {
     final columns = _buildTopSongColumns(_videos);
     if (columns.isEmpty) return const SizedBox.shrink();
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Column(
@@ -6942,19 +7427,37 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
             padding: const EdgeInsets.symmetric(
               horizontal: _artistSectionHorizontalInset,
             ),
-            child: Text(
-              'Top canciones',
-              style: const TextStyle(
-                fontFamily: '.SF Pro Text',
-                fontWeight: FontWeight.w800,
-                fontSize: 24,
-                letterSpacing: -0.2,
+            child: CupertinoButton(
+              padding: EdgeInsets.zero,
+              minimumSize: const Size(1, 1),
+              alignment: Alignment.centerLeft,
+              onPressed: _openAllTopSongs,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'Top canciones',
+                    style: TextStyle(
+                      fontFamily: '.SF Pro Text',
+                      fontWeight: FontWeight.w800,
+                      fontSize: 24,
+                      letterSpacing: -0.2,
+                      color: isDark ? Colors.white : Colors.black,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Icon(
+                    CupertinoIcons.forward,
+                    size: 22,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                ],
               ),
             ),
           ),
           const SizedBox(height: 8),
           SizedBox(
-            height: 170,
+            height: 182,
             child: ListView.separated(
               padding: const EdgeInsets.symmetric(
                 horizontal: _artistSectionHorizontalInset,
@@ -6965,7 +7468,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
               itemBuilder: (context, index) {
                 final pair = columns[index];
                 return SizedBox(
-                  width: 286,
+                  width: 332,
                   child: Column(
                     children: [
                       _buildTopSongCompactCard(context, pair.first),
@@ -6985,7 +7488,88 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     );
   }
 
-  Widget _buildTopSongCompactCard(BuildContext context, Video video) {
+  void _openAllTopSongs() {
+    setState(() {
+      _albumTransitionDirection = 1;
+      _showAllTopSongs = true;
+    });
+  }
+
+  void _closeAllTopSongs() {
+    setState(() {
+      _albumTransitionDirection = -1;
+      _showAllTopSongs = false;
+    });
+  }
+
+  Widget _buildAllTopSongsPage(
+    BuildContext context, {
+    required double bottomReserve,
+  }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: IgnorePointer(child: _buildArtistBlurBackground(context)),
+        ),
+        Column(
+          children: [
+            SizedBox(height: MediaQuery.of(context).padding.top + 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 16, 10),
+              child: Row(
+                children: [
+                  CupertinoButton(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(34, 34),
+                    onPressed: _closeAllTopSongs,
+                    child: const Icon(CupertinoIcons.back),
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Top canciones',
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Display',
+                        fontSize: 24,
+                        fontWeight: FontWeight.w700,
+                        color: isDark ? Colors.white : Colors.black,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.separated(
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  0,
+                  16,
+                  bottomReserve,
+                ),
+                itemCount: _videos.length,
+                separatorBuilder: (_, _) => const SizedBox(height: 8),
+                itemBuilder: (context, index) {
+                  return _buildTopSongCompactCard(
+                    context,
+                    _videos[index],
+                    expanded: false,
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTopSongCompactCard(
+    BuildContext context,
+    Video video, {
+    bool expanded = true,
+  }) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final cardColor = isDark
         ? Colors.black
@@ -7012,23 +7596,23 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: cardBorder, width: 0.6),
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
             child: Row(
               children: [
                 SquareThumbnail.network(
                   imageUrl: _bestQualityThumbnail(video),
-                  size: 44,
-                  borderRadius: 10,
+                  size: 56,
+                  borderRadius: 12,
                   fallback: Container(
-                    width: 44,
-                    height: 44,
+                    width: 56,
+                    height: 56,
                     color: CupertinoColors.tertiarySystemFill.resolveFrom(
                       context,
                     ),
                     alignment: Alignment.center,
                     child: Icon(
                       CupertinoIcons.music_note,
-                      size: 22,
+                      size: 26,
                       color: CupertinoColors.secondaryLabel.resolveFrom(
                         context,
                       ),
@@ -7047,7 +7631,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontFamily: '.SF Pro Text',
-                          fontSize: 14,
+                          fontSize: 16,
                           fontWeight: FontWeight.w700,
                         ),
                       ),
@@ -7058,7 +7642,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontFamily: '.SF Pro Text',
-                          fontSize: 12,
+                          fontSize: 13,
                           color: CupertinoColors.secondaryLabel.resolveFrom(
                             context,
                           ),
@@ -7093,7 +7677,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       ),
     );
 
-    return Expanded(child: card);
+    if (expanded) return Expanded(child: card);
+    return card;
   }
 
   Future<T> _runYoutubeWithRetry<T>(
@@ -7648,6 +8233,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
               _buildSuggestedAlbumSection(context),
               _buildTopSongsSection(context),
               _buildArtistAlbumsSection(context),
+              _buildArtistVideosSection(context),
               SizedBox(height: bottomReserve),
             ]),
           );
@@ -7692,15 +8278,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       ),
     );
 
-    final artistContent = widget.embedded
-        ? appleTypographyBody
-        : Scaffold(
-            backgroundColor: Theme.of(context).brightness == Brightness.dark
-                ? Colors.black
-                : Colors.white,
-            extendBodyBehindAppBar: true,
-            body: appleTypographyBody,
-          );
+    final artistContent = appleTypographyBody;
 
     return _IosEdgeSwipeBack(
       enabled: widget.embedded,
@@ -7709,13 +8287,21 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
           _closeEmbeddedAlbumView();
           return;
         }
+        if (_showAllTopSongs) {
+          _closeAllTopSongs();
+          return;
+        }
         widget.onBack?.call();
       },
       child: PopScope(
-        canPop: selectedAlbum == null,
+        canPop: selectedAlbum == null && !_showAllTopSongs,
         onPopInvokedWithResult: (didPop, result) {
           if (!didPop && selectedAlbum != null) {
             _closeEmbeddedAlbumView();
+            return;
+          }
+          if (!didPop && _showAllTopSongs) {
+            _closeAllTopSongs();
             return;
           }
           if (!didPop && selectedAlbum == null && widget.embedded) {
@@ -7768,6 +8354,14 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                     seedThumbnailUrl: selectedAlbum.seedThumbnailUrl,
                     embedded: true,
                     onBack: _closeEmbeddedAlbumView,
+                  ),
+                )
+              : _showAllTopSongs
+              ? KeyedSubtree(
+                  key: ValueKey('artist_top_songs_${widget.channelId}'),
+                  child: _buildAllTopSongsPage(
+                    context,
+                    bottomReserve: bottomReserve,
                   ),
                 )
               : KeyedSubtree(

@@ -13,8 +13,15 @@ import 'package:provider/provider.dart';
 
 class PlaylistsPage extends StatefulWidget {
   final ValueChanged<Playlist>? onOpenPlaylist;
+  final VoidCallback? onBack;
+  final bool useSafeArea;
 
-  const PlaylistsPage({super.key, this.onOpenPlaylist});
+  const PlaylistsPage({
+    super.key,
+    this.onOpenPlaylist,
+    this.onBack,
+    this.useSafeArea = true,
+  });
 
   @override
   State<PlaylistsPage> createState() => _PlaylistsPageState();
@@ -49,7 +56,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
   }
 
   void _createPlaylist() {
-    final TextEditingController controller = TextEditingController();
+    final controller = TextEditingController();
     showCupertinoDialog(
       context: context,
       builder: (context) {
@@ -73,18 +80,14 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
             CupertinoDialogAction(
               isDefaultAction: true,
               onPressed: () async {
-                if (controller.text.isNotEmpty) {
-                  await Provider.of<PlaylistService>(
-                    context,
-                    listen: false,
-                  ).createPlaylist(controller.text);
-
-                  // Comprobación de seguridad
-                  if (!context.mounted) return;
-
-                  Navigator.of(context).pop();
-                  _loadPlaylists();
-                }
+                if (controller.text.isEmpty) return;
+                await Provider.of<PlaylistService>(
+                  context,
+                  listen: false,
+                ).createPlaylist(controller.text);
+                if (!context.mounted) return;
+                Navigator.of(context).pop();
+                _loadPlaylists();
               },
               child: const Text('Crear'),
             ),
@@ -101,6 +104,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
       (playerManager) =>
           playerManager.currentVideoId != null && playerManager.isMinimized,
     );
+
     return FutureBuilder<List<Playlist>>(
       future: _playlistsFuture,
       builder: (context, snapshot) {
@@ -122,10 +126,45 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
             final downloadedById = <String, DownloadedVideo>{
               for (final item in downloadedVideos) item.videoId: item,
             };
-            return Column(
+
+            final content = Column(
               children: [
+                if (widget.onBack != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+                    child: Row(
+                      children: [
+                        CupertinoButton(
+                          padding: EdgeInsets.zero,
+                          minimumSize: const Size(34, 34),
+                          onPressed: widget.onBack,
+                          child: Icon(
+                            CupertinoIcons.chevron_left,
+                            color: CupertinoColors.label.resolveFrom(context),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Tus playlists',
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Display',
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                              color: CupertinoColors.label.resolveFrom(context),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+                  padding: EdgeInsets.fromLTRB(
+                    12,
+                    widget.onBack != null ? 4 : 22,
+                    12,
+                    8,
+                  ),
                   child: Align(
                     alignment: Alignment.centerRight,
                     child: CupertinoButton(
@@ -169,7 +208,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                       : ListView.builder(
                           padding: EdgeInsets.fromLTRB(
                             12,
-                            8,
+                            14,
                             12,
                             _accountBottomOverlayReserve(
                               context,
@@ -203,6 +242,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                     File(cover).existsSync())
                                 ? cover
                                 : null;
+
                             if (cover == null || cover.isEmpty) {
                               for (final video in playlist.videos) {
                                 cover ??= video.thumbnailUrl;
@@ -216,11 +256,47 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                 }
                               }
                             }
-                            final hasLocalCover = localCoverPath != null;
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(
-                                vertical: 2.0,
+
+                            final fallback = Container(
+                              color: CupertinoColors.tertiarySystemFill
+                                  .resolveFrom(context),
+                              alignment: Alignment.center,
+                              child: Icon(
+                                isFavorites
+                                    ? CupertinoIcons.star_fill
+                                    : CupertinoIcons.music_note_list,
                               ),
+                            );
+
+                            Widget artwork;
+                            if ((cover == null || cover.isEmpty) &&
+                                localCoverPath == null) {
+                              artwork = fallback;
+                            } else if (localCoverPath != null) {
+                              artwork = SquareThumbnail.file(
+                                filePath: localCoverPath,
+                                size: 74,
+                                borderRadius: 0,
+                                fallback: cover == null || cover.isEmpty
+                                    ? fallback
+                                    : SquareThumbnail.network(
+                                        imageUrl: cover,
+                                        size: 74,
+                                        borderRadius: 0,
+                                        fallback: fallback,
+                                      ),
+                              );
+                            } else {
+                              artwork = SquareThumbnail.network(
+                                imageUrl: cover!,
+                                size: 74,
+                                borderRadius: 0,
+                                fallback: fallback,
+                              );
+                            }
+
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 2),
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(14),
                                 child: Material(
@@ -246,139 +322,19 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                         ),
                                       ),
                                       padding: const EdgeInsets.symmetric(
-                                        horizontal: 12.0,
-                                        vertical: 5.0,
+                                        horizontal: 12,
+                                        vertical: 5,
                                       ),
                                       child: Row(
                                         children: [
                                           ClipRRect(
                                             borderRadius: BorderRadius.circular(
-                                              10.0,
+                                              10,
                                             ),
                                             child: SizedBox(
                                               width: 64,
                                               height: 64,
-                                              child: Stack(
-                                                fit: StackFit.expand,
-                                                children: [
-                                                  (cover == null ||
-                                                              cover.isEmpty) &&
-                                                          !hasLocalCover
-                                                      ? Container(
-                                                          color: CupertinoColors
-                                                              .tertiarySystemFill
-                                                              .resolveFrom(
-                                                                context,
-                                                              ),
-                                                          alignment:
-                                                              Alignment.center,
-                                                          child: Icon(
-                                                            isFavorites
-                                                                ? CupertinoIcons
-                                                                      .star_fill
-                                                                : CupertinoIcons
-                                                                      .music_note_list,
-                                                          ),
-                                                        )
-                                                      : hasLocalCover
-                                                      ? SquareThumbnail.file(
-                                                          filePath:
-                                                              localCoverPath,
-                                                          size: 74,
-                                                          borderRadius: 0,
-                                                          fallback:
-                                                              cover == null ||
-                                                                  cover.isEmpty
-                                                              ? Container(
-                                                                  color: CupertinoColors
-                                                                      .tertiarySystemFill
-                                                                      .resolveFrom(
-                                                                        context,
-                                                                      ),
-                                                                  alignment:
-                                                                      Alignment
-                                                                          .center,
-                                                                  child: Icon(
-                                                                    isFavorites
-                                                                        ? CupertinoIcons
-                                                                              .star_fill
-                                                                        : CupertinoIcons
-                                                                              .music_note_list,
-                                                                  ),
-                                                                )
-                                                              : SquareThumbnail.network(
-                                                                  imageUrl:
-                                                                      cover,
-                                                                  size: 74,
-                                                                  borderRadius:
-                                                                      0,
-                                                                  fallback: Container(
-                                                                    color: CupertinoColors
-                                                                        .tertiarySystemFill
-                                                                        .resolveFrom(
-                                                                          context,
-                                                                        ),
-                                                                  ),
-                                                                ),
-                                                        )
-                                                      : SquareThumbnail.network(
-                                                          imageUrl: cover!,
-                                                          size: 74,
-                                                          borderRadius: 0,
-                                                          fallback: Container(
-                                                            color: CupertinoColors
-                                                                .tertiarySystemFill
-                                                                .resolveFrom(
-                                                                  context,
-                                                                ),
-                                                            alignment: Alignment
-                                                                .center,
-                                                            child: Icon(
-                                                              isFavorites
-                                                                  ? CupertinoIcons
-                                                                        .star_fill
-                                                                  : CupertinoIcons
-                                                                        .music_note_list,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                  if (isFavorites)
-                                                    Align(
-                                                      alignment:
-                                                          Alignment.topRight,
-                                                      child: Container(
-                                                        margin:
-                                                            const EdgeInsets.all(
-                                                              4,
-                                                            ),
-                                                        width: 16,
-                                                        height: 16,
-                                                        decoration: BoxDecoration(
-                                                          color: CupertinoColors
-                                                              .label
-                                                              .resolveFrom(
-                                                                context,
-                                                              )
-                                                              .withValues(
-                                                                alpha: 0.32,
-                                                              ),
-                                                          shape:
-                                                              BoxShape.circle,
-                                                        ),
-                                                        child: Icon(
-                                                          CupertinoIcons
-                                                              .star_fill,
-                                                          color: CupertinoColors
-                                                              .systemBackground
-                                                              .resolveFrom(
-                                                                context,
-                                                              ),
-                                                          size: 10,
-                                                        ),
-                                                      ),
-                                                    ),
-                                                ],
-                                              ),
+                                              child: artwork,
                                             ),
                                           ),
                                           const SizedBox(width: 16),
@@ -389,15 +345,15 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                               children: [
                                                 Text(
                                                   playlist.name,
+                                                  maxLines: 2,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
                                                   style: const TextStyle(
                                                     fontFamily: '.SF Pro Text',
                                                     fontSize: 16,
                                                     fontWeight: FontWeight.w700,
                                                     letterSpacing: -0.1,
                                                   ),
-                                                  maxLines: 2,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
                                                 ),
                                                 const SizedBox(height: 4),
                                                 Text(
@@ -432,9 +388,87 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                 ),
               ],
             );
+
+            final wrappedContent = widget.onBack == null
+                ? content
+                : _IosEdgeSwipeBack(onBack: widget.onBack!, child: content);
+            if (!widget.useSafeArea) return wrappedContent;
+            return SafeArea(bottom: false, child: wrappedContent);
           },
         );
       },
+    );
+  }
+}
+
+class _IosEdgeSwipeBack extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onBack;
+
+  const _IosEdgeSwipeBack({required this.child, required this.onBack});
+
+  @override
+  State<_IosEdgeSwipeBack> createState() => _IosEdgeSwipeBackState();
+}
+
+class _IosEdgeSwipeBackState extends State<_IosEdgeSwipeBack> {
+  static const double _edgeWidth = 24;
+  static const double _distanceThreshold = 72;
+  static const double _velocityThreshold = 540;
+
+  double _dragDistance = 0;
+  bool _fired = false;
+
+  void _resetGesture() {
+    _dragDistance = 0;
+    _fired = false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        widget.child,
+        Positioned(
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: _edgeWidth,
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: (_) {
+              _dragDistance = 0;
+              _fired = false;
+            },
+            onHorizontalDragUpdate: (details) {
+              if (_fired) return;
+              final delta = details.primaryDelta ?? 0;
+              if (delta > 0) {
+                _dragDistance += delta;
+              } else if (_dragDistance > 0) {
+                _dragDistance = (_dragDistance + delta).clamp(
+                  0,
+                  double.infinity,
+                );
+              }
+            },
+            onHorizontalDragEnd: (details) {
+              if (_fired) return;
+              final velocity = details.primaryVelocity ?? 0;
+              final shouldBack =
+                  _dragDistance >= _distanceThreshold ||
+                  velocity >= _velocityThreshold;
+              if (shouldBack) {
+                _fired = true;
+                widget.onBack();
+              }
+              _resetGesture();
+            },
+            onHorizontalDragCancel: _resetGesture,
+          ),
+        ),
+      ],
     );
   }
 }

@@ -1596,7 +1596,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
     if ((state == AppLifecycleState.paused ||
             state == AppLifecycleState.inactive) &&
-        _usingHiddenVideo) {
+        _usingHiddenVideo &&
+        !_preferForegroundVideoPlayback) {
       _backgroundEngineSwitchTimer?.cancel();
       // Migramos de inmediato a audio-only para evitar cierres al ir a background.
       unawaited(_switchHiddenVideoToAudioEngine());
@@ -1610,6 +1611,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         state == AppLifecycleState.detached) {
       unawaited(_persistPlaybackSession(force: true));
     }
+  }
+
+  VideoPlayerOptions get _iosPipFriendlyVideoOptions {
+    if (!Platform.isIOS) return VideoPlayerOptions();
+    // Necesario para que AVPlayer no se pause al ir a background (base de PiP).
+    return VideoPlayerOptions(allowBackgroundPlayback: true);
   }
 
   // Compatibilidad con pantallas legadas de video.
@@ -1784,6 +1791,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             final controller = VideoPlayerController.networkUrl(
               stream.url,
               httpHeaders: _youtubeHeaders,
+              videoPlayerOptions: _iosPipFriendlyVideoOptions,
             );
             await controller.initialize();
             await controller.play();
@@ -2675,6 +2683,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       final controller = VideoPlayerController.networkUrl(
         uri,
         httpHeaders: headers,
+        videoPlayerOptions: _iosPipFriendlyVideoOptions,
       );
       await controller.initialize();
       await controller.play();
@@ -2772,6 +2781,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       controller = VideoPlayerController.networkUrl(
         url,
         httpHeaders: _youtubeHeaders,
+        videoPlayerOptions: _iosPipFriendlyVideoOptions,
       );
       await controller.initialize();
       return true;
