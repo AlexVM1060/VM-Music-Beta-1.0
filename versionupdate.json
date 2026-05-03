@@ -13,7 +13,7 @@
     },
     {
       "label": "Actualizar - Juan",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/df3ded72eb80.plist",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/7332f0cd6d5d.plist",
       "urlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete.2"
     }
   ]
