@@ -1,10 +1,10 @@
 
 {
-  "latestVersion": "0.4.3",
+  "latestVersion": "0.4.4",
   "minimumSupportedVersion": "0.4.3",
   "force": false,
   "title": "Nueva versión disponible",
-  "message": "Sab 2. de may. 1:50 p.m.\nLa pestaña de Cuenta ha sido rediseñada\nAhora es llamada 'Perfil'\n\nEl reproductor ha sido rediseñado\n\nCorrección de errores y mejoras de rendimiento",
+  "message": "Dom 3. de may. 2:31 a.m.\nLa pestaña de Cuenta ha sido rediseñada\nAhora es llamada 'Perfil'\n\nLa pestaña Descargas ha sido rediseñada\nAhora es llamada 'Biblioteca'\n\nEl reproductor ha sido rediseñado\n\nCorrección de errores y mejoras de rendimiento",
   "actions": [
     {
       "label": "Actualizar - Rene",

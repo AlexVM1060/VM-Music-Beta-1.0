@@ -769,7 +769,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
     const items = <({IconData icon, String label})>[
       (icon: CupertinoIcons.home, label: 'Inicio'),
       (icon: CupertinoIcons.search, label: 'Buscar'),
-      (icon: CupertinoIcons.book, label: 'Biblioteca'),
+      (icon: CupertinoIcons.music_note_list, label: 'Biblioteca'),
       (icon: CupertinoIcons.person_crop_circle, label: 'Perfil'),
     ];
 

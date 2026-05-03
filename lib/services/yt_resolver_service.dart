@@ -29,13 +29,13 @@ class YtResolverService {
 
   static const String _baseUrl = String.fromEnvironment(
     'YT_RESOLVER_BASE_URL',
-    defaultValue: 'http://34.16.97.84:10000',
+    defaultValue: 'http://34.170.69.96:10000',
   );
   static const List<String> _fallbackBaseUrls = <String>[
-    'http://34.41.104.248:10000',
-    'http://34.61.37.31:10000',
-    'http://136.119.120.136:10000',
-    'http://34.170.163.28:10000'
+    'http://34.58.164.68:10000',
+    'http://34.173.78.255:10000',
+    'http://136.111.242.170:10000',
+    'http://34.70.29.254:10000'
   ];
   static const String _apiKey = String.fromEnvironment(
     'YT_RESOLVER_API_KEY',
