@@ -2,7 +2,7 @@
   "name": "vmmusic-yt-resolver",
   "version": "1.0.0",
   "private": true,
-  "description": "YouTube stream resolver fallback for VMMusic",
+  "description": "YouTube stream resolver (youtube_explode_dart) for VMMusic",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -11,7 +11,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@distube/ytdl-core": "^4.16.12",
     "cors": "^2.8.5",
     "express": "^4.21.2"
   }

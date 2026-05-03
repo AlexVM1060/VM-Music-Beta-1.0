@@ -276,6 +276,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String? _preloadedForCurrentVideoId;
   String? _preloadedNextQueueKey;
   String? _preloadedNextStreamUrl;
+  static const int _queueSongCacheBatchSize = 5;
+  static const int _queueSongCachePenultimateOffset = 2;
+  final Set<String> _queueSongCachePrefetchedIds = <String>{};
+  final List<String> _queueSongCachePrefetchedOrder = <String>[];
+  int _queueSongCacheNextTriggerPosition =
+      _queueSongCacheBatchSize - _queueSongCachePenultimateOffset;
   String? _crossfadePreparedQueueKey;
   bool _crossfadePreparedPrimed = false;
   String? _crossfadeFailedForCurrentVideoId;
@@ -829,6 +835,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _queueTitle = 'Siguiente';
     _queueSeedVideoId = null;
     _clearPreloadedNextTrack();
+    _resetQueueSongCachePrefetchState();
   }
 
   Future<bool> _askToClearQueueForNewSong(BuildContext context) async {
@@ -1666,6 +1673,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _crossfadeFailedQueueKey = null;
     _clearPreloadedNextTrack();
     if (!preserveExistingQueue) {
+      _resetQueueSongCachePrefetchState();
+    }
+    if (!preserveExistingQueue) {
       _queueSeedVideoId = null;
     }
     _trackTitle = (preferredTitle != null && preferredTitle.trim().isNotEmpty)
@@ -1720,36 +1730,33 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (!isLocalVideo && !_preferForegroundVideoPlayback) {
         started = await _tryStartPlaybackFromSongCache(videoId);
       }
-      if (preloadedStreamUrl != null && preloadedStreamUrl.trim().isNotEmpty) {
+      if (!started &&
+          preloadedStreamUrl != null &&
+          preloadedStreamUrl.trim().isNotEmpty) {
         try {
-          final preloadedUri = Uri.parse(preloadedStreamUrl.trim());
-          final headers =
-              _headersForStreamUri(preloadedUri) ?? const <String, String>{};
-          await _player.setAudioSource(
-            AudioSource.uri(preloadedUri, headers: headers),
-          );
+          final preloadedRaw = preloadedStreamUrl.trim();
+          final preloadedFile = File(preloadedRaw);
+          if (!kIsWeb && await preloadedFile.exists()) {
+            await _player.setAudioSource(AudioSource.file(preloadedFile.path));
+          } else {
+            final preloadedUri = Uri.parse(preloadedRaw);
+            final headers =
+                _headersForStreamUri(preloadedUri) ?? const <String, String>{};
+            await _player.setAudioSource(
+              AudioSource.uri(preloadedUri, headers: headers),
+            );
+            unawaited(
+              _warmSongCacheFromUri(videoId: videoId, uri: preloadedUri),
+            );
+          }
           await _player.play();
           unawaited(_applyTrackStartFadeInIfEnabled());
           started = true;
           _usingHiddenVideo = false;
-          _currentStreamUrl = preloadedUri.toString();
-          unawaited(_warmSongCacheFromUri(videoId: videoId, uri: preloadedUri));
+          _currentStreamUrl = preloadedRaw;
         } catch (e) {
           lastAudioError = e;
         }
-      }
-
-      if (!started) {
-        started = await _attemptBackendPlaybackWithRetry(
-          videoId,
-          keepVideoEngine: _preferForegroundVideoPlayback,
-        );
-      }
-
-      if (!started && forceBackendResolver && !isLocalVideo) {
-        throw Exception(
-          'No se pudo iniciar reproducción desde backend para videoId=$videoId',
-        );
       }
 
       if (!started &&
@@ -1827,9 +1834,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             'No se pudo iniciar audio ni fallback de video: audio=$lastAudioError muxed=$lastMuxedError',
           );
         }
-      } else if (!started) {
+      }
+
+      if (!started) {
+        started = await _attemptBackendPlaybackWithRetry(
+          videoId,
+          keepVideoEngine: _preferForegroundVideoPlayback,
+        );
+      }
+
+      if (!started) {
+        if (forceBackendResolver && !isLocalVideo) {
+          throw Exception(
+            'No se pudo iniciar reproducción desde backend para videoId=$videoId',
+          );
+        }
         throw Exception(
-          'No se pudo iniciar reproducción desde backend para videoId=$videoId',
+          'No se pudo iniciar reproducción por ninguna ruta para videoId=$videoId',
         );
       }
 
@@ -1843,6 +1864,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       _sessionPlayedVideoIds.add(videoId);
       _warmUpNextTrackPreloadNow();
+      _maybePrefetchQueueSongCacheBatchOnTrackStart();
 
       // Metadata/cola/historial en segundo plano para no bloquear inicio de reproducción.
       unawaited(() async {
@@ -2048,6 +2070,99 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
     } catch (_) {
       // Best effort.
+    }
+  }
+
+  void _resetQueueSongCachePrefetchState() {
+    _queueSongCachePrefetchedIds.clear();
+    _queueSongCachePrefetchedOrder.clear();
+    _queueSongCacheNextTriggerPosition =
+        _queueSongCacheBatchSize - _queueSongCachePenultimateOffset;
+  }
+
+  Uri? _validHttpUri(String? raw) {
+    final value = (raw ?? '').trim();
+    if (value.isEmpty) return null;
+    final uri = Uri.tryParse(value);
+    if (uri == null) return null;
+    if (uri.scheme != 'https' && uri.scheme != 'http') return null;
+    return uri;
+  }
+
+  Future<Uri?> _resolveQueueItemCacheUri(String videoId) async {
+    try {
+      final resolved = await _ytResolverService.resolveVideo(videoId);
+      final resolverCandidates = <String?>[
+        resolved?.audioUrl,
+        resolved?.muxedUrl,
+        resolved?.sourceUrl,
+      ];
+      for (final candidate in resolverCandidates) {
+        final uri = _validHttpUri(candidate);
+        if (uri != null) return uri;
+      }
+    } catch (_) {}
+
+    try {
+      final manifest = await _getManifestWithRetry(videoId);
+      for (final stream in _prioritizeAudioStreams(manifest.audioOnly.toList())) {
+        return stream.url;
+      }
+      for (final stream in _prioritizeMuxedStreams(manifest.muxed.toList())) {
+        return stream.url;
+      }
+    } catch (_) {}
+
+    final backend = await _resolveDownloadSourceViaBackend(videoId);
+    final backendUri = _validHttpUri(backend?.sourceUrl);
+    if (backendUri != null) return backendUri;
+    return null;
+  }
+
+  Future<void> _prefetchQueueItemInSongCache(PlaybackQueueItem item) async {
+    if (item.isLocal) return;
+    final videoId = item.videoId.trim();
+    if (videoId.isEmpty) return;
+    final cached = await SongStreamCacheService.resolveFreshFilePath(videoId);
+    if (cached != null && cached.isNotEmpty) return;
+    final uri = await _resolveQueueItemCacheUri(videoId);
+    if (uri == null) return;
+    await _warmSongCacheFromUri(videoId: videoId, uri: uri);
+  }
+
+  void _prefetchNextQueueSongCacheBatch() {
+    final queueSnapshot = <PlaybackQueueItem>[
+      ..._manualPlaybackQueue,
+      ..._playbackQueue,
+    ];
+    final batch = <PlaybackQueueItem>[];
+    for (final item in queueSnapshot) {
+      if (item.isLocal) continue;
+      final id = item.videoId.trim();
+      if (id.isEmpty || _queueSongCachePrefetchedIds.contains(id)) continue;
+      batch.add(item);
+      if (batch.length >= _queueSongCacheBatchSize) break;
+    }
+    if (batch.isEmpty) return;
+    for (final item in batch) {
+      final id = item.videoId.trim();
+      _queueSongCachePrefetchedIds.add(id);
+      _queueSongCachePrefetchedOrder.add(id);
+      unawaited(_prefetchQueueItemInSongCache(item));
+    }
+  }
+
+  void _maybePrefetchQueueSongCacheBatchOnTrackStart() {
+    final currentId = _currentVideoId?.trim() ?? '';
+    if (currentId.isEmpty || _isLocal) return;
+    if (_queueSongCachePrefetchedOrder.isEmpty) {
+      _prefetchNextQueueSongCacheBatch();
+      return;
+    }
+    final currentPos = _queueSongCachePrefetchedOrder.indexOf(currentId);
+    if (currentPos != -1 && currentPos >= _queueSongCacheNextTriggerPosition) {
+      _queueSongCacheNextTriggerPosition += _queueSongCacheBatchSize;
+      _prefetchNextQueueSongCacheBatch();
     }
   }
 
@@ -5470,6 +5585,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> playQueueItem(
     PlaybackQueueItem item, {
     String? preloadedStreamUrl,
+    bool preferVideoPlayback = false,
   }) async {
     _removeFromQueues(item);
     notifyListeners();
@@ -5496,14 +5612,34 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       );
       return;
     }
+    String? effectivePreloadedStreamUrl = preloadedStreamUrl;
+    try {
+      var cachedPath = await SongStreamCacheService.resolveFreshFilePath(
+        item.videoId,
+      );
+      if ((cachedPath == null || cachedPath.isEmpty) && !kIsWeb) {
+        cachedPath = await SongStreamCacheService.waitForFreshFilePath(
+          item.videoId,
+          maxWait: const Duration(seconds: 2),
+        );
+      }
+      if (cachedPath != null && cachedPath.isNotEmpty && !kIsWeb) {
+        final cachedFile = File(cachedPath);
+        if (await cachedFile.exists()) {
+          effectivePreloadedStreamUrl = cachedPath;
+        }
+      }
+    } catch (_) {
+      // Best effort.
+    }
     await play(
       item.videoId,
       preferredThumbnailUrl: item.thumbnailUrl,
       preferredTitle: item.title,
       preferredArtist: item.artist,
-      preloadedStreamUrl: preloadedStreamUrl,
+      preloadedStreamUrl: effectivePreloadedStreamUrl,
       preserveExistingQueue: true,
-      preferVideoPlayback: _preferForegroundVideoPlayback,
+      preferVideoPlayback: preferVideoPlayback,
     );
   }
 
@@ -5570,6 +5706,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     );
     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());
+    _maybePrefetchQueueSongCacheBatchOnTrackStart();
     notifyListeners();
     return true;
   }
@@ -5579,7 +5716,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) {
       await _hydrateQueueForManualNext();
     }
-    await _playNextFromQueue();
+    await _playNextFromQueue(allowPreparedTransition: false);
   }
 
   Future<void> _hydrateQueueForManualNext() async {
@@ -5612,7 +5749,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
     final previous = _playbackHistory.removeLast();
     _skipHistoryPushOnce = true;
-    await playQueueItem(previous);
+    await playQueueItem(previous, preferVideoPlayback: false);
   }
 
   void shufflePlaybackQueue() {
@@ -5626,6 +5763,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _clearPreloadedNextTrack();
     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());
+    _maybePrefetchQueueSongCacheBatchOnTrackStart();
     notifyListeners();
   }
 
@@ -5639,6 +5777,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _clearPreloadedNextTrack();
     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());
+    _maybePrefetchQueueSongCacheBatchOnTrackStart();
     notifyListeners();
   }
 
@@ -5661,6 +5800,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _clearPreloadedNextTrack();
     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());
+    _maybePrefetchQueueSongCacheBatchOnTrackStart();
     notifyListeners();
   }
 
@@ -7082,6 +7222,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _playbackQueue = persisted;
         _queueSeedVideoId = currentVideoId;
         _rememberRecommendedQueue(_playbackQueue);
+        _maybePrefetchQueueSongCacheBatchOnTrackStart();
         _isQueueLoading = false;
         notifyListeners();
       }
@@ -7098,6 +7239,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _rememberRecommendedQueue(_playbackQueue);
         unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
         unawaited(_maybePreloadUpcomingQueueTrack());
+        _maybePrefetchQueueSongCacheBatchOnTrackStart();
       }
     } catch (e, s) {
       log('Error cargando recomendados', error: e, stackTrace: s);
@@ -7136,6 +7278,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _playbackQueue = persisted;
         _queueSeedVideoId = currentVideoId;
         _rememberRecommendedQueue(_playbackQueue);
+        _maybePrefetchQueueSongCacheBatchOnTrackStart();
         _isQueueLoading = false;
         notifyListeners();
       }
@@ -7163,6 +7306,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         _rememberRecommendedQueue(_playbackQueue);
         unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
         unawaited(_maybePreloadUpcomingQueueTrack());
+        _maybePrefetchQueueSongCacheBatchOnTrackStart();
       }
     } catch (e, s) {
       log(
@@ -7227,6 +7371,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _queueSeedVideoId = currentVideoId;
       unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
       unawaited(_maybePreloadUpcomingQueueTrack());
+      _maybePrefetchQueueSongCacheBatchOnTrackStart();
     } catch (e, s) {
       log('Error cargando cola local', error: e, stackTrace: s);
       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
@@ -7275,7 +7420,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     await _playNextFromQueue();
   }
 
-  Future<void> _playNextFromQueue({bool triggeredByCrossfade = false}) async {
+  Future<void> _playNextFromQueue({
+    bool triggeredByCrossfade = false,
+    bool allowPreparedTransition = true,
+  }) async {
     _setTrackTransitionDirection(1);
     if (_isAdvancingQueue) return;
     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) return;
@@ -7301,7 +7449,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
       final shouldForceVideoEngineForQueueItem =
           _preferForegroundVideoPlayback && !next.isLocal;
-      final transitionedToPrepared = shouldForceVideoEngineForQueueItem
+      final transitionedToPrepared =
+          !allowPreparedTransition || shouldForceVideoEngineForQueueItem
           ? false
           : (triggeredByCrossfade
                 ? await _tryCrossfadeTransitionToPreparedItem(next)
@@ -7323,7 +7472,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       final preloadedUrl = _consumePreloadedStreamForQueueItem(next);
       _crossfadeTriggeredForCurrent = false;
       notifyListeners();
-      await playQueueItem(next, preloadedStreamUrl: preloadedUrl);
+      await playQueueItem(
+        next,
+        preloadedStreamUrl: preloadedUrl,
+        preferVideoPlayback: triggeredByCrossfade,
+      );
     } catch (e, s) {
       log('Error reproduciendo siguiente de la cola', error: e, stackTrace: s);
       if (triggeredByCrossfade) {
@@ -7479,6 +7632,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       unawaited(_addCurrentTrackToHistory(next.videoId));
       _warmUpNextTrackPreloadNow();
+      _maybePrefetchQueueSongCacheBatchOnTrackStart();
       return true;
     } catch (_) {
       _trackTitle = previousTitle;
@@ -8204,6 +8358,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       unawaited(_addCurrentTrackToHistory(next.videoId));
       unawaited(_maybePreloadUpcomingQueueTrack());
+      _maybePrefetchQueueSongCacheBatchOnTrackStart();
       return true;
     } catch (_) {
       _trackTitle = previousTitle;

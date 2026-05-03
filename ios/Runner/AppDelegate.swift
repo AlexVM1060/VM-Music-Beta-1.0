@@ -4,6 +4,7 @@ import Vision
 import CoreImage
 import MediaPlayer
 import AVFoundation
+import AVKit
 import Intents
 import AppIntents
 
@@ -113,6 +114,14 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
     view.showsRouteButton = false
     view.showsVolumeSlider = true
     view.isHidden = true
+    return view
+  }()
+  private lazy var hiddenRoutePickerView: AVRoutePickerView = {
+    let view = AVRoutePickerView(frame: CGRect(x: -1000, y: -1000, width: 44, height: 44))
+    view.alpha = 0.01
+    view.isHidden = false
+    view.tintColor = .clear
+    view.activeTintColor = .clear
     return view
   }()
 
@@ -275,6 +284,23 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
     switch call.method {
     case "getSystemVolume":
       result(Double(AVAudioSession.sharedInstance().outputVolume))
+    case "getCurrentAudioOutputInfo":
+      result(currentAudioOutputInfo())
+    case "showAudioRoutePicker":
+      DispatchQueue.main.async { [weak self] in
+        guard let self else {
+          result(FlutterError(code: "unavailable", message: "Audio route picker unavailable", details: nil))
+          return
+        }
+        self.ensureHiddenRoutePickerAttached()
+        self.hiddenRoutePickerView.layoutIfNeeded()
+        guard let routeButton = self.hiddenRoutePickerButton() else {
+          result(FlutterError(code: "route_button_unavailable", message: "No route picker button found", details: nil))
+          return
+        }
+        routeButton.sendActions(for: .touchUpInside)
+        result(nil)
+      }
     case "setSystemVolume":
       let args = call.arguments as? [String: Any]
       let rawValue = (args?["value"] as? NSNumber)?.doubleValue ?? 0.5
@@ -312,8 +338,67 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
     }
   }
 
+  private func ensureHiddenRoutePickerAttached() {
+    if hiddenRoutePickerView.superview != nil { return }
+    if let window = UIApplication.shared.connectedScenes
+      .compactMap({ $0 as? UIWindowScene })
+      .flatMap({ $0.windows })
+      .first(where: { $0.isKeyWindow }) {
+      window.addSubview(hiddenRoutePickerView)
+      return
+    }
+    if let fallbackWindow = self.window ?? UIApplication.shared.windows.first {
+      fallbackWindow.addSubview(hiddenRoutePickerView)
+    }
+  }
+
   private func hiddenVolumeSlider() -> UISlider? {
     hiddenVolumeView.subviews.compactMap { $0 as? UISlider }.first
+  }
+
+  private func hiddenRoutePickerButton() -> UIControl? {
+    firstControl(in: hiddenRoutePickerView)
+  }
+
+  private func firstControl(in view: UIView) -> UIControl? {
+    if let control = view as? UIControl { return control }
+    for subview in view.subviews {
+      if let control = firstControl(in: subview) {
+        return control
+      }
+    }
+    return nil
+  }
+
+  private func currentAudioOutputInfo() -> [String: Any] {
+    let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+    let bluetoothOutput = outputs.first { output in
+      output.portType == .bluetoothA2DP ||
+      output.portType == .bluetoothHFP ||
+      output.portType == .bluetoothLE
+    }
+    let output = bluetoothOutput ?? outputs.first
+    let portName = output?.portName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let portType = output?.portType
+    let isBluetooth = bluetoothOutput != nil
+    let isAirPlay = portType == .airPlay
+
+    let resolvedName: String
+    if portType == .builtInSpeaker {
+      resolvedName = "iPhone Speaker"
+    } else if portType == .builtInReceiver {
+      resolvedName = "iPhone"
+    } else if !portName.isEmpty {
+      resolvedName = portName
+    } else {
+      resolvedName = "Salida de audio"
+    }
+
+    return [
+      "name": resolvedName,
+      "isBluetooth": isBluetooth,
+      "isAirPlay": isAirPlay
+    ]
   }
 
   private func handleLockScreenFavorite(call: FlutterMethodCall, result: @escaping FlutterResult) {

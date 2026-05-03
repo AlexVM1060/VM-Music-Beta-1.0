@@ -19,6 +19,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/router.dart';
 import 'package:myapp/search_page.dart';
 import 'package:myapp/services/download_service.dart';
+import 'package:myapp/services/library_albums_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/app_lifecycle_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
@@ -71,6 +72,7 @@ void main() async {
         ChangeNotifierProvider(
           create: (_) => DownloadService(appSettingsService),
         ),
+        ChangeNotifierProvider(create: (_) => LibraryAlbumsService()..init()),
       ],
       child: const MyApp(),
     ),
@@ -591,6 +593,9 @@ class _MainTabsState extends State<MainTabs> {
     final isSearchFullscreen = context.select<SearchViewState, bool>(
       (state) => state.isArtistFullscreen,
     );
+    final isLibraryAlbumFullscreen = context.select<SearchViewState, bool>(
+      (state) => state.isLibraryAlbumFullscreen,
+    );
     _pageController ??= PageController(initialPage: _displayedPageIndex);
     final controller = _pageController!;
     final playerState = context
@@ -613,7 +618,9 @@ class _MainTabsState extends State<MainTabs> {
         ? Colors.black
         : CupertinoColors.systemGroupedBackground.resolveFrom(context);
     final hideMainAppBar =
-        selectedIndex == 3 || (selectedIndex == 1 && isSearchFullscreen);
+        selectedIndex == 3 ||
+        (selectedIndex == 1 && isSearchFullscreen) ||
+        (selectedIndex == 2 && isLibraryAlbumFullscreen);
     final pagesWithTickerMode = List<Widget>.generate(
       4,
       (index) => TickerMode(
@@ -762,7 +769,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
     const items = <({IconData icon, String label})>[
       (icon: CupertinoIcons.home, label: 'Inicio'),
       (icon: CupertinoIcons.search, label: 'Buscar'),
-      (icon: CupertinoIcons.arrow_down_circle, label: 'Descargas'),
+      (icon: CupertinoIcons.book, label: 'Biblioteca'),
       (icon: CupertinoIcons.person_crop_circle, label: 'Perfil'),
     ];
 
@@ -779,14 +786,14 @@ class _CupertinoRootTabBar extends StatelessWidget {
                   Colors.white.withValues(alpha: 0.06),
                 ]
               : [
-                  Colors.white.withValues(alpha: 0.70),
-                  Colors.white.withValues(alpha: 0.50),
+                  const Color(0xFFE5E7EB).withValues(alpha: 0.88),
+                  const Color(0xFFD1D5DB).withValues(alpha: 0.70),
                 ],
         ),
         border: Border.all(
           color: isDark
               ? Colors.white.withValues(alpha: 0.16)
-              : Colors.white.withValues(alpha: 0.72),
+              : const Color(0xFFCBD5E1).withValues(alpha: 0.92),
           width: 0.9,
         ),
         boxShadow: [
@@ -816,15 +823,18 @@ class _CupertinoRootTabBar extends StatelessWidget {
 
     return SafeArea(
       top: false,
-      minimum: const EdgeInsets.fromLTRB(14, 0, 14, 10),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(24),
-        child: lightweightEffects
-            ? barContent
-            : BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                child: barContent,
-              ),
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(24),
+          child: lightweightEffects
+              ? barContent
+              : BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                  child: barContent,
+                ),
+        ),
       ),
     );
   }
@@ -852,7 +862,7 @@ class _LiquidTabButton extends StatelessWidget {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final selectedBg = isDark
         ? Colors.white.withValues(alpha: 0.13)
-        : Colors.white.withValues(alpha: 0.58);
+        : const Color(0xFFD1D5DB).withValues(alpha: 0.72);
     return AnimatedContainer(
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOutCubic,
@@ -864,7 +874,7 @@ class _LiquidTabButton extends StatelessWidget {
             ? Border.all(
                 color: isDark
                     ? Colors.white.withValues(alpha: 0.20)
-                    : Colors.white.withValues(alpha: 0.74),
+                    : const Color(0xFFCBD5E1).withValues(alpha: 0.94),
                 width: 0.7,
               )
             : null,

@@ -3,10 +3,57 @@ import 'dart:io';
 
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
+class _CookieYoutubeHttpClient extends YoutubeHttpClient {
+  final String cookieHeader;
+
+  _CookieYoutubeHttpClient(this.cookieHeader);
+
+  @override
+  Map<String, String> get headers => {
+    ...YoutubeHttpClient.defaultHeaders,
+    'cookie': cookieHeader,
+  };
+}
+
 String? _argValue(List<String> args, String key) {
   final idx = args.indexOf(key);
   if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
   return null;
+}
+
+String? _normalizeCookieHeader(String? raw) {
+  final value = (raw ?? '').trim();
+  if (value.isEmpty) return null;
+  final compact = value.replaceAll('\n', '; ').replaceAll('\r', '; ').trim();
+  if (compact.isEmpty) return null;
+  if (!compact.contains('=')) return null;
+
+  final hasConsent = RegExp(r'(^|;\s*)CONSENT=').hasMatch(compact);
+  if (hasConsent) return compact;
+  // Mantiene la cookie de consentimiento por defecto del cliente
+  // para mejorar compatibilidad cuando no viene incluida.
+  return 'CONSENT=YES+cb; $compact';
+}
+
+String? _cookieFromEnvironment() {
+  final direct = _normalizeCookieHeader(
+    Platform.environment['YTEXPLODE_COOKIE'],
+  );
+  if (direct != null) return direct;
+
+  final legacy = _normalizeCookieHeader(
+    Platform.environment['YOUTUBE_COOKIE'],
+  );
+  if (legacy != null) return legacy;
+
+  final b64 = (Platform.environment['YTEXPLODE_COOKIE_B64'] ?? '').trim();
+  if (b64.isEmpty) return null;
+  try {
+    final decoded = utf8.decode(base64Decode(b64));
+    return _normalizeCookieHeader(decoded);
+  } catch (_) {
+    return null;
+  }
 }
 
 Map<String, dynamic>? _audioInfo(StreamManifest manifest) {
@@ -65,7 +112,12 @@ Future<void> main(List<String> args) async {
     exit(2);
   }
 
-  final yt = YoutubeExplode();
+  final cookieHeader = _cookieFromEnvironment();
+  final yt = YoutubeExplode(
+    httpClient: cookieHeader == null
+        ? YoutubeHttpClient()
+        : _CookieYoutubeHttpClient(cookieHeader),
+  );
   try {
     final video = await yt.videos.get(videoId);
     final manifest = await yt.videos.streamsClient.getManifest(videoId);

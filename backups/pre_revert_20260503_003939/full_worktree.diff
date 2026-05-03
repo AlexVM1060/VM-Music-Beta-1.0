@@ -1,0 +1,3962 @@
+diff --git a/ios/Runner/AppDelegate.swift b/ios/Runner/AppDelegate.swift
+index fa926b9..4044f9b 100644
+--- a/ios/Runner/AppDelegate.swift
++++ b/ios/Runner/AppDelegate.swift
+@@ -4,6 +4,7 @@ import Vision
+ import CoreImage
+ import MediaPlayer
+ import AVFoundation
++import AVKit
+ import Intents
+ import AppIntents
+ 
+@@ -115,6 +116,14 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
+     view.isHidden = true
+     return view
+   }()
++  private lazy var hiddenRoutePickerView: AVRoutePickerView = {
++    let view = AVRoutePickerView(frame: CGRect(x: -1000, y: -1000, width: 44, height: 44))
++    view.alpha = 0.01
++    view.isHidden = false
++    view.tintColor = .clear
++    view.activeTintColor = .clear
++    return view
++  }()
+ 
+   override func application(
+     _ application: UIApplication,
+@@ -275,6 +284,23 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
+     switch call.method {
+     case "getSystemVolume":
+       result(Double(AVAudioSession.sharedInstance().outputVolume))
++    case "getCurrentAudioOutputInfo":
++      result(currentAudioOutputInfo())
++    case "showAudioRoutePicker":
++      DispatchQueue.main.async { [weak self] in
++        guard let self else {
++          result(FlutterError(code: "unavailable", message: "Audio route picker unavailable", details: nil))
++          return
++        }
++        self.ensureHiddenRoutePickerAttached()
++        self.hiddenRoutePickerView.layoutIfNeeded()
++        guard let routeButton = self.hiddenRoutePickerButton() else {
++          result(FlutterError(code: "route_button_unavailable", message: "No route picker button found", details: nil))
++          return
++        }
++        routeButton.sendActions(for: .touchUpInside)
++        result(nil)
++      }
+     case "setSystemVolume":
+       let args = call.arguments as? [String: Any]
+       let rawValue = (args?["value"] as? NSNumber)?.doubleValue ?? 0.5
+@@ -312,10 +338,69 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
+     }
+   }
+ 
++  private func ensureHiddenRoutePickerAttached() {
++    if hiddenRoutePickerView.superview != nil { return }
++    if let window = UIApplication.shared.connectedScenes
++      .compactMap({ $0 as? UIWindowScene })
++      .flatMap({ $0.windows })
++      .first(where: { $0.isKeyWindow }) {
++      window.addSubview(hiddenRoutePickerView)
++      return
++    }
++    if let fallbackWindow = self.window ?? UIApplication.shared.windows.first {
++      fallbackWindow.addSubview(hiddenRoutePickerView)
++    }
++  }
++
+   private func hiddenVolumeSlider() -> UISlider? {
+     hiddenVolumeView.subviews.compactMap { $0 as? UISlider }.first
+   }
+ 
++  private func hiddenRoutePickerButton() -> UIControl? {
++    firstControl(in: hiddenRoutePickerView)
++  }
++
++  private func firstControl(in view: UIView) -> UIControl? {
++    if let control = view as? UIControl { return control }
++    for subview in view.subviews {
++      if let control = firstControl(in: subview) {
++        return control
++      }
++    }
++    return nil
++  }
++
++  private func currentAudioOutputInfo() -> [String: Any] {
++    let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
++    let bluetoothOutput = outputs.first { output in
++      output.portType == .bluetoothA2DP ||
++      output.portType == .bluetoothHFP ||
++      output.portType == .bluetoothLE
++    }
++    let output = bluetoothOutput ?? outputs.first
++    let portName = output?.portName.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
++    let portType = output?.portType
++    let isBluetooth = bluetoothOutput != nil
++    let isAirPlay = portType == .airPlay
++
++    let resolvedName: String
++    if portType == .builtInSpeaker {
++      resolvedName = "iPhone Speaker"
++    } else if portType == .builtInReceiver {
++      resolvedName = "iPhone"
++    } else if !portName.isEmpty {
++      resolvedName = portName
++    } else {
++      resolvedName = "Salida de audio"
++    }
++
++    return [
++      "name": resolvedName,
++      "isBluetooth": isBluetooth,
++      "isAirPlay": isAirPlay
++    ]
++  }
++
+   private func handleLockScreenFavorite(call: FlutterMethodCall, result: @escaping FlutterResult) {
+     guard call.method == "setFavoriteState" else {
+       result(FlutterMethodNotImplemented)
+diff --git a/lib/downloads_page.dart b/lib/downloads_page.dart
+index 771b62e..30602e3 100644
+--- a/lib/downloads_page.dart
++++ b/lib/downloads_page.dart
+@@ -1,11 +1,17 @@
+ import 'package:flutter/cupertino.dart';
+ import 'package:flutter/material.dart';
+ import 'package:myapp/models/downloaded_video.dart';
++import 'package:myapp/playlists_page.dart';
++import 'package:myapp/search_page.dart';
++import 'package:myapp/search_view_state.dart';
+ import 'package:myapp/services/download_service.dart';
++import 'package:myapp/services/library_albums_service.dart';
+ import 'package:myapp/video_player_manager.dart';
+ import 'package:myapp/widgets/square_thumbnail.dart';
+ import 'package:provider/provider.dart';
+ 
++enum _LibrarySection { playlist, albumes, videos, descargas }
++
+ class DownloadsPage extends StatefulWidget {
+   const DownloadsPage({super.key});
+ 
+@@ -16,6 +22,9 @@ class DownloadsPage extends StatefulWidget {
+ class _DownloadsPageState extends State<DownloadsPage> {
+   final TextEditingController _searchController = TextEditingController();
+   String _searchQuery = '';
++  _LibrarySection? _selectedSection;
++  LibraryAlbum? _selectedLibraryAlbum;
++  bool _isForwardTransition = true;
+ 
+   @override
+   void initState() {
+@@ -25,6 +34,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
+ 
+   @override
+   void dispose() {
++    _setLibraryAppBarHidden(false);
+     _searchController.removeListener(_handleSearchChanged);
+     _searchController.dispose();
+     super.dispose();
+@@ -51,6 +61,381 @@ class _DownloadsPageState extends State<DownloadsPage> {
+ 
+   @override
+   Widget build(BuildContext context) {
++    return Scaffold(
++      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
++        context,
++      ),
++      body: SafeArea(
++        top: false,
++        bottom: false,
++        child: _buildAnimatedSectionContent(),
++      ),
++    );
++  }
++
++  Widget _buildAnimatedSectionContent() {
++    final current = _buildSectionContent();
++    final beginX = _isForwardTransition ? 0.08 : -0.06;
++    return AnimatedSwitcher(
++      duration: const Duration(milliseconds: 460),
++      reverseDuration: const Duration(milliseconds: 360),
++      switchInCurve: Curves.easeOutCubic,
++      switchOutCurve: Curves.easeInCubic,
++      transitionBuilder: (child, animation) {
++        final curved = CurvedAnimation(
++          parent: animation,
++          curve: Curves.easeOutCubic,
++          reverseCurve: Curves.easeInCubic,
++        );
++        final slide = Tween<Offset>(
++          begin: Offset(beginX, 0),
++          end: Offset.zero,
++        ).animate(curved);
++        final scale = Tween<double>(begin: 0.985, end: 1.0).animate(curved);
++        return FadeTransition(
++          opacity: curved,
++          child: ClipRect(
++            child: SlideTransition(
++              position: slide,
++              child: ScaleTransition(scale: scale, child: child),
++            ),
++          ),
++        );
++      },
++      layoutBuilder: (currentChild, previousChildren) {
++        return Stack(
++          fit: StackFit.expand,
++          children: [
++            ...previousChildren,
++            if (currentChild != null) currentChild,
++          ],
++        );
++      },
++      child: KeyedSubtree(
++        key: ValueKey<String>(
++          'lib_${_selectedSection?.name ?? 'root'}_${_selectedLibraryAlbum?.playlistId ?? 'none'}',
++        ),
++        child: current,
++      ),
++    );
++  }
++
++  Widget _buildSectionContent() {
++    switch (_selectedSection) {
++      case _LibrarySection.playlist:
++        return PlaylistsPage(onBack: _goBackToLibraryList, useSafeArea: false);
++      case _LibrarySection.albumes:
++        if (_selectedLibraryAlbum != null) {
++          final album = _selectedLibraryAlbum!;
++          return _LibraryEdgeSwipeBack(
++            onBack: _closeEmbeddedLibraryAlbum,
++            child: AlbumTracksPage(
++              playlistId: album.playlistId,
++              albumTitle: album.title,
++              artistName: album.artist,
++              seedThumbnailUrl: album.thumbnailUrl,
++              embedded: true,
++              onBack: _closeEmbeddedLibraryAlbum,
++              libraryAlbumsService: context.read<LibraryAlbumsService>(),
++            ),
++          );
++        }
++        return _LibraryEdgeSwipeBack(
++          onBack: _goBackToLibraryList,
++          child: _buildAlbumsSection(),
++        );
++      case _LibrarySection.videos:
++        return _LibraryEdgeSwipeBack(
++          onBack: _goBackToLibraryList,
++          child: _buildPlaceholderSection('Videos'),
++        );
++      case _LibrarySection.descargas:
++        return _LibraryEdgeSwipeBack(
++          onBack: _goBackToLibraryList,
++          child: _buildDownloadsSection(),
++        );
++      case null:
++        return _buildLibraryList();
++    }
++  }
++
++  Widget _buildLibraryList() {
++    final sections = <({IconData icon, String title, _LibrarySection section})>[
++      (
++        icon: CupertinoIcons.music_note_list,
++        title: 'Playlist',
++        section: _LibrarySection.playlist,
++      ),
++      (
++        icon: CupertinoIcons.music_albums,
++        title: 'Albumes',
++        section: _LibrarySection.albumes,
++      ),
++      (
++        icon: CupertinoIcons.videocam,
++        title: 'Videos',
++        section: _LibrarySection.videos,
++      ),
++      (
++        icon: CupertinoIcons.arrow_down_circle,
++        title: 'Descargas',
++        section: _LibrarySection.descargas,
++      ),
++    ];
++
++    final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
++      (playerManager) =>
++          playerManager.currentVideoId != null && playerManager.isMinimized,
++    );
++    final bottomInset = MediaQuery.of(context).padding.bottom;
++    const tabBarReserve = 108.0;
++    const miniPlayerReserve = 64.0;
++    final bottomReserve =
++        tabBarReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
++
++    return ListView.separated(
++      padding: EdgeInsets.fromLTRB(12, 14, 12, 14 + bottomReserve),
++      itemBuilder: (context, index) {
++        final section = sections[index];
++        final isDark = Theme.of(context).brightness == Brightness.dark;
++        final cardColor = isDark
++            ? Colors.black
++            : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
++                context,
++              );
++        final border = isDark
++            ? Colors.white.withValues(alpha: 0.12)
++            : CupertinoColors.separator
++                  .resolveFrom(context)
++                  .withValues(alpha: 0.12);
++
++        return ClipRRect(
++          borderRadius: BorderRadius.circular(14),
++          child: Material(
++            color: cardColor,
++            child: InkWell(
++              borderRadius: BorderRadius.circular(14),
++              onTap: () {
++                _openLibrarySection(section.section);
++              },
++              child: Container(
++                decoration: BoxDecoration(
++                  borderRadius: BorderRadius.circular(14),
++                  border: Border.all(color: border, width: 0.5),
++                ),
++                padding: const EdgeInsets.symmetric(
++                  horizontal: 14,
++                  vertical: 14,
++                ),
++                child: Row(
++                  children: [
++                    Icon(section.icon, size: 22),
++                    const SizedBox(width: 12),
++                    Expanded(
++                      child: Text(
++                        section.title,
++                        style: Theme.of(context).textTheme.titleMedium
++                            ?.copyWith(fontWeight: FontWeight.w700),
++                      ),
++                    ),
++                    Icon(
++                      CupertinoIcons.chevron_forward,
++                      size: 16,
++                      color: CupertinoColors.secondaryLabel.resolveFrom(context),
++                    ),
++                  ],
++                ),
++              ),
++            ),
++          ),
++        );
++      },
++      separatorBuilder: (_, _) => const SizedBox(height: 8),
++      itemCount: sections.length,
++    );
++  }
++
++  Widget _buildPlaceholderSection(String title) {
++    final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
++      (playerManager) =>
++          playerManager.currentVideoId != null && playerManager.isMinimized,
++    );
++    final bottomInset = MediaQuery.of(context).padding.bottom;
++    const tabBarReserve = 108.0;
++    const miniPlayerReserve = 64.0;
++    final bottomReserve =
++        tabBarReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
++
++    return ListView(
++      physics: const AlwaysScrollableScrollPhysics(),
++      children: [
++        _buildSectionHeader(title),
++        const SizedBox(height: 120),
++        const Center(child: Text('Disponible próximamente.')),
++        SizedBox(height: bottomReserve),
++      ],
++    );
++  }
++
++  Widget _buildAlbumsSection() {
++    final libraryAlbums = context.watch<LibraryAlbumsService>().albums;
++    final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
++      (playerManager) =>
++          playerManager.currentVideoId != null && playerManager.isMinimized,
++    );
++    final bottomInset = MediaQuery.of(context).padding.bottom;
++    const tabBarReserve = 108.0;
++    const miniPlayerReserve = 64.0;
++    final bottomReserve =
++        tabBarReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
++
++    if (libraryAlbums.isEmpty) {
++      return ListView(
++        physics: const AlwaysScrollableScrollPhysics(),
++        children: [
++          _buildSectionHeader(
++            'Álbumes',
++            topPadding: _albumsHeaderTopPadding(context),
++          ),
++          const SizedBox(height: 156),
++          const Center(child: Text('Aún no has agregado álbumes en Buscar.')),
++          SizedBox(height: bottomReserve),
++        ],
++      );
++    }
++
++    return Column(
++      children: [
++        _buildSectionHeader(
++          'Álbumes',
++          topPadding: _albumsHeaderTopPadding(context),
++        ),
++        Expanded(
++          child: ListView.separated(
++            padding: EdgeInsets.fromLTRB(12, 26, 12, 14 + bottomReserve),
++            itemCount: libraryAlbums.length,
++            separatorBuilder: (_, _) => const SizedBox(height: 8),
++            itemBuilder: (context, index) {
++              final album = libraryAlbums[index];
++              final isDark = Theme.of(context).brightness == Brightness.dark;
++              final cardColor = isDark
++                  ? Colors.black
++                  : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
++                      context,
++                    );
++              final border = isDark
++                  ? Colors.white.withValues(alpha: 0.12)
++                  : CupertinoColors.separator
++                        .resolveFrom(context)
++                        .withValues(alpha: 0.12);
++              return ClipRRect(
++                borderRadius: BorderRadius.circular(14),
++                child: Material(
++                  color: cardColor,
++                  child: InkWell(
++                    borderRadius: BorderRadius.circular(14),
++                    onTap: () {
++                      setState(() {
++                        _isForwardTransition = true;
++                        _selectedLibraryAlbum = album;
++                      });
++                    },
++                    child: Container(
++                      decoration: BoxDecoration(
++                        color: cardColor,
++                        borderRadius: BorderRadius.circular(14),
++                        border: Border.all(color: border, width: 0.5),
++                      ),
++                      padding: const EdgeInsets.symmetric(
++                        horizontal: 14,
++                        vertical: 14,
++                      ),
++                      child: Row(
++                        children: [
++                          album.thumbnailUrl.isNotEmpty
++                              ? SquareThumbnail.network(
++                                  imageUrl: album.thumbnailUrl,
++                                  size: 56,
++                                  borderRadius: 10,
++                                  fallback: Container(
++                                    width: 56,
++                                    height: 56,
++                                    decoration: BoxDecoration(
++                                      color: CupertinoColors.tertiarySystemFill
++                                          .resolveFrom(context),
++                                      borderRadius: BorderRadius.circular(10),
++                                    ),
++                                    alignment: Alignment.center,
++                                    child: const Icon(
++                                      CupertinoIcons.music_albums,
++                                      size: 20,
++                                    ),
++                                  ),
++                                )
++                              : Container(
++                                width: 56,
++                                height: 56,
++                                decoration: BoxDecoration(
++                                  color: CupertinoColors.tertiarySystemFill
++                                      .resolveFrom(context),
++                                  borderRadius: BorderRadius.circular(10),
++                                ),
++                                alignment: Alignment.center,
++                                child: const Icon(
++                                  CupertinoIcons.music_albums,
++                                  size: 20,
++                                ),
++                              ),
++                          const SizedBox(width: 12),
++                          Expanded(
++                            child: Column(
++                              crossAxisAlignment: CrossAxisAlignment.start,
++                              children: [
++                                Text(
++                                  album.title,
++                                  style: Theme.of(context).textTheme.titleMedium
++                                      ?.copyWith(fontWeight: FontWeight.w700),
++                                  maxLines: 1,
++                                  overflow: TextOverflow.ellipsis,
++                                ),
++                                if (album.artist.isNotEmpty) ...[
++                                  const SizedBox(height: 4),
++                                  Text(
++                                    album.artist,
++                                    style: TextStyle(
++                                      color: CupertinoColors.secondaryLabel
++                                          .resolveFrom(context),
++                                      fontSize: 12,
++                                      fontFamily: '.SF Pro Text',
++                                    ),
++                                    maxLines: 1,
++                                    overflow: TextOverflow.ellipsis,
++                                  ),
++                                ],
++                              ],
++                            ),
++                          ),
++                          Icon(
++                            CupertinoIcons.chevron_forward,
++                            size: 16,
++                            color: CupertinoColors.secondaryLabel.resolveFrom(
++                              context,
++                            ),
++                          ),
++                        ],
++                      ),
++                    ),
++                  ),
++                ),
++              );
++            },
++          ),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildDownloadsSection() {
+     final downloadService = context.watch<DownloadService>();
+     final manager = context.read<VideoPlayerManager>();
+     final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
+@@ -63,48 +448,71 @@ class _DownloadsPageState extends State<DownloadsPage> {
+     final bottomReserve =
+         tabBarReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
+ 
+-    return Scaffold(
+-      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
+-        context,
+-      ),
+-      body: Column(
++    return Column(
++      children: [
++        _buildSectionHeader('Descargas'),
++        Padding(
++          padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
++          child: CupertinoSearchTextField(
++            controller: _searchController,
++            placeholder: 'Buscar por título o artista',
++          ),
++        ),
++        Expanded(
++          child: FutureBuilder<List<DownloadedVideo>>(
++            future: downloadService.getDownloadedVideos(),
++            builder: (context, snapshot) {
++              if (snapshot.connectionState == ConnectionState.waiting) {
++                return const Center(child: CupertinoActivityIndicator(radius: 14));
++              }
++
++              final songs = snapshot.data ?? const <DownloadedVideo>[];
++              final filteredSongs = _filterSongs(songs);
++              final hasSearch = _searchQuery.isNotEmpty;
++
++              return RefreshIndicator(
++                onRefresh: () async {
++                  await downloadService.loadDownloadedVideos();
++                },
++                child: _buildDownloadsList(
++                  context: context,
++                  songs: filteredSongs,
++                  allSongsEmpty: songs.isEmpty,
++                  hasSearch: hasSearch,
++                  manager: manager,
++                  downloadService: downloadService,
++                  bottomReserve: bottomReserve,
++                ),
++              );
++            },
++          ),
++        ),
++      ],
++    );
++  }
++
++  Widget _buildSectionHeader(String title, {double topPadding = 10}) {
++    return Padding(
++      padding: EdgeInsets.fromLTRB(8, topPadding, 8, 0),
++      child: Row(
+         children: [
+-          Padding(
+-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+-            child: CupertinoSearchTextField(
+-              controller: _searchController,
+-              placeholder: 'Buscar por título o artista',
++          CupertinoButton(
++            padding: EdgeInsets.zero,
++            minimumSize: const Size(34, 34),
++            onPressed: _goBackToLibraryList,
++            child: Icon(
++              CupertinoIcons.chevron_left,
++              color: CupertinoColors.label.resolveFrom(context),
+             ),
+           ),
+-          Expanded(
+-            child: FutureBuilder<List<DownloadedVideo>>(
+-              future: downloadService.getDownloadedVideos(),
+-              builder: (context, snapshot) {
+-                if (snapshot.connectionState == ConnectionState.waiting) {
+-                  return const Center(
+-                    child: CupertinoActivityIndicator(radius: 14),
+-                  );
+-                }
+-
+-                final songs = snapshot.data ?? const <DownloadedVideo>[];
+-                final filteredSongs = _filterSongs(songs);
+-                final hasSearch = _searchQuery.isNotEmpty;
+-
+-                return RefreshIndicator(
+-                  onRefresh: () async {
+-                    await downloadService.loadDownloadedVideos();
+-                  },
+-                  child: _buildDownloadsList(
+-                    context: context,
+-                    songs: filteredSongs,
+-                    allSongsEmpty: songs.isEmpty,
+-                    hasSearch: hasSearch,
+-                    manager: manager,
+-                    downloadService: downloadService,
+-                    bottomReserve: bottomReserve,
+-                  ),
+-                );
+-              },
++          const SizedBox(width: 4),
++          Text(
++            title,
++            style: TextStyle(
++              fontFamily: '.SF Pro Display',
++              fontSize: 24,
++              fontWeight: FontWeight.w700,
++              color: CupertinoColors.label.resolveFrom(context),
+             ),
+           ),
+         ],
+@@ -112,6 +520,40 @@ class _DownloadsPageState extends State<DownloadsPage> {
+     );
+   }
+ 
++  void _goBackToLibraryList() {
++    _setLibraryAppBarHidden(false);
++    setState(() {
++      _isForwardTransition = false;
++      _selectedLibraryAlbum = null;
++      _selectedSection = null;
++      _searchController.clear();
++      _searchQuery = '';
++    });
++  }
++
++  void _closeEmbeddedLibraryAlbum() {
++    setState(() {
++      _isForwardTransition = false;
++      _selectedLibraryAlbum = null;
++    });
++  }
++
++  void _openLibrarySection(_LibrarySection section) {
++    _setLibraryAppBarHidden(section == _LibrarySection.albumes);
++    setState(() {
++      _isForwardTransition = true;
++      _selectedSection = section;
++    });
++  }
++
++  void _setLibraryAppBarHidden(bool value) {
++    context.read<SearchViewState>().setLibraryAlbumFullscreen(value);
++  }
++
++  double _albumsHeaderTopPadding(BuildContext context) {
++    return MediaQuery.of(context).padding.top + 10;
++  }
++
+   Widget _buildDownloadsList({
+     required BuildContext context,
+     required List<DownloadedVideo> songs,
+@@ -293,3 +735,75 @@ class _DownloadsPageState extends State<DownloadsPage> {
+     );
+   }
+ }
++
++class _LibraryEdgeSwipeBack extends StatefulWidget {
++  final Widget child;
++  final VoidCallback onBack;
++
++  const _LibraryEdgeSwipeBack({required this.child, required this.onBack});
++
++  @override
++  State<_LibraryEdgeSwipeBack> createState() => _LibraryEdgeSwipeBackState();
++}
++
++class _LibraryEdgeSwipeBackState extends State<_LibraryEdgeSwipeBack> {
++  static const double _edgeWidth = 24;
++  static const double _distanceThreshold = 72;
++  static const double _velocityThreshold = 540;
++
++  double _dragDistance = 0;
++  bool _fired = false;
++
++  void _resetGesture() {
++    _dragDistance = 0;
++    _fired = false;
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Stack(
++      fit: StackFit.expand,
++      children: [
++        widget.child,
++        Positioned(
++          left: 0,
++          top: 0,
++          bottom: 0,
++          width: _edgeWidth,
++          child: GestureDetector(
++            behavior: HitTestBehavior.translucent,
++            onHorizontalDragStart: (_) {
++              _dragDistance = 0;
++              _fired = false;
++            },
++            onHorizontalDragUpdate: (details) {
++              if (_fired) return;
++              final delta = details.primaryDelta ?? 0;
++              if (delta > 0) {
++                _dragDistance += delta;
++              } else if (_dragDistance > 0) {
++                _dragDistance = (_dragDistance + delta).clamp(
++                  0,
++                  double.infinity,
++                );
++              }
++            },
++            onHorizontalDragEnd: (details) {
++              if (_fired) return;
++              final velocity = details.primaryVelocity ?? 0;
++              final shouldBack =
++                  _dragDistance >= _distanceThreshold ||
++                  velocity >= _velocityThreshold;
++              if (shouldBack) {
++                _fired = true;
++                widget.onBack();
++              }
++              _resetGesture();
++            },
++            onHorizontalDragCancel: _resetGesture,
++          ),
++        ),
++      ],
++    );
++  }
++}
+diff --git a/lib/main.dart b/lib/main.dart
+index 3b640d8..b0b2f6b 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -19,6 +19,7 @@ import 'package:myapp/models/video_history.dart';
+ import 'package:myapp/router.dart';
+ import 'package:myapp/search_page.dart';
+ import 'package:myapp/services/download_service.dart';
++import 'package:myapp/services/library_albums_service.dart';
+ import 'package:myapp/services/history_service.dart';
+ import 'package:myapp/services/app_lifecycle_service.dart';
+ import 'package:myapp/services/app_settings_service.dart';
+@@ -71,6 +72,7 @@ void main() async {
+         ChangeNotifierProvider(
+           create: (_) => DownloadService(appSettingsService),
+         ),
++        ChangeNotifierProvider(create: (_) => LibraryAlbumsService()..init()),
+       ],
+       child: const MyApp(),
+     ),
+@@ -591,6 +593,9 @@ class _MainTabsState extends State<MainTabs> {
+     final isSearchFullscreen = context.select<SearchViewState, bool>(
+       (state) => state.isArtistFullscreen,
+     );
++    final isLibraryAlbumFullscreen = context.select<SearchViewState, bool>(
++      (state) => state.isLibraryAlbumFullscreen,
++    );
+     _pageController ??= PageController(initialPage: _displayedPageIndex);
+     final controller = _pageController!;
+     final playerState = context
+@@ -613,7 +618,9 @@ class _MainTabsState extends State<MainTabs> {
+         ? Colors.black
+         : CupertinoColors.systemGroupedBackground.resolveFrom(context);
+     final hideMainAppBar =
+-        selectedIndex == 3 || (selectedIndex == 1 && isSearchFullscreen);
++        selectedIndex == 3 ||
++        (selectedIndex == 1 && isSearchFullscreen) ||
++        (selectedIndex == 2 && isLibraryAlbumFullscreen);
+     final pagesWithTickerMode = List<Widget>.generate(
+       4,
+       (index) => TickerMode(
+@@ -762,7 +769,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
+     const items = <({IconData icon, String label})>[
+       (icon: CupertinoIcons.home, label: 'Inicio'),
+       (icon: CupertinoIcons.search, label: 'Buscar'),
+-      (icon: CupertinoIcons.arrow_down_circle, label: 'Descargas'),
++      (icon: CupertinoIcons.book, label: 'Biblioteca'),
+       (icon: CupertinoIcons.person_crop_circle, label: 'Perfil'),
+     ];
+ 
+@@ -779,14 +786,14 @@ class _CupertinoRootTabBar extends StatelessWidget {
+                   Colors.white.withValues(alpha: 0.06),
+                 ]
+               : [
+-                  Colors.white.withValues(alpha: 0.70),
+-                  Colors.white.withValues(alpha: 0.50),
++                  const Color(0xFFE5E7EB).withValues(alpha: 0.88),
++                  const Color(0xFFD1D5DB).withValues(alpha: 0.70),
+                 ],
+         ),
+         border: Border.all(
+           color: isDark
+               ? Colors.white.withValues(alpha: 0.16)
+-              : Colors.white.withValues(alpha: 0.72),
++              : const Color(0xFFCBD5E1).withValues(alpha: 0.92),
+           width: 0.9,
+         ),
+         boxShadow: [
+@@ -816,15 +823,18 @@ class _CupertinoRootTabBar extends StatelessWidget {
+ 
+     return SafeArea(
+       top: false,
+-      minimum: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+-      child: ClipRRect(
+-        borderRadius: BorderRadius.circular(24),
+-        child: lightweightEffects
+-            ? barContent
+-            : BackdropFilter(
+-                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+-                child: barContent,
+-              ),
++      bottom: false,
++      child: Padding(
++        padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
++        child: ClipRRect(
++          borderRadius: BorderRadius.circular(24),
++          child: lightweightEffects
++              ? barContent
++              : BackdropFilter(
++                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
++                  child: barContent,
++                ),
++        ),
+       ),
+     );
+   }
+@@ -852,7 +862,7 @@ class _LiquidTabButton extends StatelessWidget {
+     final isDark = Theme.of(context).brightness == Brightness.dark;
+     final selectedBg = isDark
+         ? Colors.white.withValues(alpha: 0.13)
+-        : Colors.white.withValues(alpha: 0.58);
++        : const Color(0xFFD1D5DB).withValues(alpha: 0.72);
+     return AnimatedContainer(
+       duration: const Duration(milliseconds: 220),
+       curve: Curves.easeOutCubic,
+@@ -864,7 +874,7 @@ class _LiquidTabButton extends StatelessWidget {
+             ? Border.all(
+                 color: isDark
+                     ? Colors.white.withValues(alpha: 0.20)
+-                    : Colors.white.withValues(alpha: 0.74),
++                    : const Color(0xFFCBD5E1).withValues(alpha: 0.94),
+                 width: 0.7,
+               )
+             : null,
+diff --git a/lib/music_player_page.dart b/lib/music_player_page.dart
+index e32dddd..4a4d028 100644
+--- a/lib/music_player_page.dart
++++ b/lib/music_player_page.dart
+@@ -183,6 +183,8 @@ class _MiniPlayer extends StatefulWidget {
+ class _MiniPlayerState extends State<_MiniPlayer> {
+   double _dragLift = 0.0;
+   double _horizontalDragDx = 0.0;
++  Offset? _videoMiniOffset;
++  bool _isDraggingVideoMini = false;
+   bool _isOpening = false;
+   bool _isSwitchingTrack = false;
+   static const double _maxDragLift = 52.0;
+@@ -241,6 +243,8 @@ class _MiniPlayerState extends State<_MiniPlayer> {
+             String? trackArtist,
+             String? trackThumbnailUrl,
+             bool isPlaying,
++            bool isVideoFallback,
++            VideoPlayerController? foregroundController,
+           })
+         >(
+           (manager) => (
+@@ -248,18 +252,222 @@ class _MiniPlayerState extends State<_MiniPlayer> {
+             trackArtist: manager.trackArtist,
+             trackThumbnailUrl: manager.trackThumbnailUrl,
+             isPlaying: manager.isPlaying,
++            isVideoFallback: manager.isUsingVideoFallback,
++            foregroundController: manager.foregroundVideoController,
+           ),
+         );
+     final bottomInset = MediaQuery.of(context).padding.bottom;
+     final isDark = Theme.of(context).brightness == Brightness.dark;
+     const miniPlayerHeight = 58.0;
+-    const miniPlayerBottomNavReserve = 75.0;
++    const miniPlayerBottomNavReserve = 53.0;
+     final progress = _dragProgress;
+-    final dynamicRadius = 14 - (2 * progress);
++    final dynamicRadius = 24 - (2 * progress);
+     final dynamicShadowOpacity = 0.08 + (0.12 * progress);
+     final dynamicShadowBlur = 22 + (18 * progress);
+     final dynamicShadowYOffset = 8 - (4 * progress);
+ 
++    // If we're playing a video in foreground (video fallback), show a
++    // compact video mini-player in the bottom-right with pause and close.
++    if (miniState.isVideoFallback) {
++      final ctrl = miniState.foregroundController;
++      final thumb = miniState.trackThumbnailUrl;
++      const miniVideoWidth = 240.0;
++      const miniVideoHeight = 140.0;
++      final screenSize = MediaQuery.of(context).size;
++      final defaultLeft = screenSize.width - miniVideoWidth - 12;
++      final defaultTop =
++          screenSize.height -
++          miniPlayerBottomNavReserve -
++          bottomInset -
++          miniVideoHeight;
++      final current = _videoMiniOffset ?? Offset(defaultLeft, defaultTop);
++      final clampedLeft = current.dx.clamp(12.0, defaultLeft);
++      final clampedTop = current.dy.clamp(
++        MediaQuery.of(context).padding.top + 12,
++        defaultTop,
++      );
++
++      return Stack(
++        children: [
++          AnimatedPositioned(
++            duration: _isDraggingVideoMini
++                ? Duration.zero
++                : const Duration(milliseconds: 240),
++            curve: Curves.easeOutCubic,
++            left: clampedLeft,
++            top: clampedTop,
++            child: GestureDetector(
++              behavior: HitTestBehavior.translucent,
++              onPanStart: (_) {
++                _isDraggingVideoMini = true;
++              },
++              onPanUpdate: (details) {
++                final base =
++                    _videoMiniOffset ?? Offset(clampedLeft, clampedTop);
++                final next = base + details.delta;
++                final nextLeft = next.dx.clamp(12.0, defaultLeft);
++                final nextTop = next.dy.clamp(
++                  MediaQuery.of(context).padding.top + 12,
++                  defaultTop,
++                );
++                setState(() {
++                  _videoMiniOffset = Offset(nextLeft, nextTop);
++                });
++              },
++              onPanEnd: (details) {
++                final current =
++                    _videoMiniOffset ?? Offset(clampedLeft, clampedTop);
++                final velocityX = details.velocity.pixelsPerSecond.dx;
++                final velocityY = details.velocity.pixelsPerSecond.dy;
++                final projectedX = current.dx + (velocityX * 0.12);
++                final projectedY = current.dy + (velocityY * 0.12);
++                final topLimit = MediaQuery.of(context).padding.top + 12;
++                final bottomLimit = defaultTop;
++                final targetX = projectedX >= ((12.0 + defaultLeft) / 2)
++                    ? defaultLeft
++                    : 12.0;
++                final targetY = projectedY >= ((topLimit + bottomLimit) / 2)
++                    ? bottomLimit
++                    : topLimit;
++                setState(() {
++                  _isDraggingVideoMini = false;
++                  _videoMiniOffset = Offset(targetX, targetY);
++                });
++              },
++              onPanCancel: () {
++                final current =
++                    _videoMiniOffset ?? Offset(clampedLeft, clampedTop);
++                final topLimit = MediaQuery.of(context).padding.top + 12;
++                final bottomLimit = defaultTop;
++                final targetX = current.dx >= ((12.0 + defaultLeft) / 2)
++                    ? defaultLeft
++                    : 12.0;
++                final targetY = current.dy >= ((topLimit + bottomLimit) / 2)
++                    ? bottomLimit
++                    : topLimit;
++                setState(() {
++                  _isDraggingVideoMini = false;
++                  _videoMiniOffset = Offset(targetX, targetY);
++                });
++              },
++              child: SizedBox(
++                width: miniVideoWidth,
++                height: miniVideoHeight,
++                child: ClipRRect(
++                  borderRadius: BorderRadius.circular(12),
++                  child: Material(
++                    color: Colors.transparent,
++                    child: GestureDetector(
++                      behavior: HitTestBehavior.opaque,
++                      onTap: widget.manager.maximize,
++                      child: Container(
++                        decoration: BoxDecoration(
++                          color: Theme.of(context).brightness == Brightness.dark
++                              ? Colors.black.withValues(alpha: 0.22)
++                              : Colors.white,
++                          boxShadow: [
++                            BoxShadow(
++                              color: Colors.black.withValues(alpha: 0.14),
++                              blurRadius: 10,
++                              offset: const Offset(0, 4),
++                            ),
++                          ],
++                        ),
++                        child: Stack(
++                          fit: StackFit.expand,
++                          children: [
++                            // Video or thumbnail as background
++                            if (ctrl != null)
++                              ValueListenableBuilder<VideoPlayerValue>(
++                                valueListenable: ctrl,
++                                builder: (_, __, ___) {
++                                  if (ctrl.value.isInitialized) {
++                                    return FittedBox(
++                                      fit: BoxFit.cover,
++                                      child: SizedBox(
++                                        width: ctrl.value.size?.width ?? 0,
++                                        height: ctrl.value.size?.height ?? 0,
++                                        child: VideoPlayer(ctrl),
++                                      ),
++                                    );
++                                  }
++                                  return thumb != null && thumb.isNotEmpty
++                                      ? Image.network(thumb, fit: BoxFit.cover)
++                                      : const SizedBox.expand();
++                                },
++                              )
++                            else
++                              (thumb != null && thumb.isNotEmpty
++                                  ? Image.network(thumb, fit: BoxFit.cover)
++                                  : const SizedBox.expand()),
++
++                            // Dark gradient top for better contrast with close button
++                            Positioned(
++                              top: 0,
++                              left: 0,
++                              right: 0,
++                              height: 44,
++                              child: DecoratedBox(
++                                decoration: BoxDecoration(
++                                  gradient: LinearGradient(
++                                    begin: Alignment.topCenter,
++                                    end: Alignment.bottomCenter,
++                                    colors: [
++                                      Colors.black.withValues(alpha: 0.36),
++                                      Colors.transparent,
++                                    ],
++                                  ),
++                                ),
++                              ),
++                            ),
++
++                            // Center play/pause button
++                            Align(
++                              alignment: Alignment.center,
++                              child: CupertinoButton(
++                                padding: EdgeInsets.zero,
++                                onPressed: widget.manager.togglePlayPause,
++                                child: Icon(
++                                  miniState.isPlaying
++                                      ? CupertinoIcons.pause_solid
++                                      : CupertinoIcons.play_arrow_solid,
++                                  size: 30,
++                                  color: isDark
++                                      ? const Color(0xFFF5F5F7)
++                                      : const Color(0xFFFFFFFF),
++                                ),
++                              ),
++                            ),
++
++                            // Close button top-right
++                            Positioned(
++                              top: 2,
++                              right: 2,
++                              child: CupertinoButton(
++                                padding: EdgeInsets.zero,
++                                onPressed: widget.manager.close,
++                                child: Icon(
++                                  CupertinoIcons.xmark,
++                                  size: 18,
++                                  color: isDark
++                                      ? const Color(0xFFF2F2F7)
++                                      : const Color(0xFFFFFFFF),
++                                ),
++                              ),
++                            ),
++                          ],
++                        ),
++                      ),
++                    ),
++                  ),
++                ),
++              ),
++            ),
++          ),
++        ],
++      );
++    }
++
+     return Align(
+       alignment: Alignment.bottomCenter,
+       child: Padding(
+@@ -338,18 +546,18 @@ class _MiniPlayerState extends State<_MiniPlayer> {
+                           end: Alignment.bottomRight,
+                           colors: isDark
+                               ? [
+-                                  Colors.white.withValues(alpha: 0.18),
+-                                  Colors.white.withValues(alpha: 0.10),
++                                  const Color(0xFF9CA3AF).withValues(alpha: 0.30),
++                                  const Color(0xFF6B7280).withValues(alpha: 0.22),
+                                 ]
+                               : [
+-                                  Colors.white.withValues(alpha: 0.80),
+-                                  Colors.white.withValues(alpha: 0.58),
++                                  const Color(0xFFE5E7EB).withValues(alpha: 0.90),
++                                  const Color(0xFFD1D5DB).withValues(alpha: 0.74),
+                                 ],
+                         ),
+                         border: Border.all(
+                           color: isDark
+-                              ? Colors.white.withValues(alpha: 0.22)
+-                              : Colors.white.withValues(alpha: 0.78),
++                              ? const Color(0xFF9CA3AF).withValues(alpha: 0.38)
++                              : const Color(0xFFCBD5E1).withValues(alpha: 0.94),
+                           width: 0.8,
+                         ),
+                         boxShadow: [
+@@ -420,9 +628,9 @@ class _MiniPlayerState extends State<_MiniPlayer> {
+                           const SizedBox(width: 6),
+                           CupertinoButton(
+                             padding: EdgeInsets.zero,
+-                            onPressed: widget.manager.close,
++                            onPressed: widget.manager.playNextInQueue,
+                             child: Icon(
+-                              CupertinoIcons.xmark_circle_fill,
++                              CupertinoIcons.forward_fill,
+                               size: 22,
+                               color: CupertinoColors.secondaryLabel.resolveFrom(
+                                 context,
+@@ -933,6 +1141,13 @@ class _FullPlayerState extends State<_FullPlayer> {
+                           child: Row(
+                             mainAxisAlignment: MainAxisAlignment.end,
+                             children: [
++                              if (canShowEmbeddedVideo)
++                                _TopGlassIconButton(
++                                  icon: CupertinoIcons.rectangle_on_rectangle,
++                                  onPressed: () => unawaited(
++                                    manager.enterPictureInPictureNow(),
++                                  ),
++                                ),
+                               _TopGlassIconButton(
+                                 icon: CupertinoIcons.square_arrow_up,
+                                 onPressed: () =>
+@@ -971,12 +1186,12 @@ class _FullPlayerState extends State<_FullPlayer> {
+                                   ? animatedArtworkSize
+                                   : 310.0;
+                               final collapsedLyricsHeight = math.max(
+-                                230.0,
+-                                math.min(390.0, constraints.maxHeight * 0.48),
++                                300.0,
++                                math.min(339.0, constraints.maxHeight * 0.52),
+                               );
+                               final expandedLyricsHeight = math.max(
+-                                collapsedLyricsHeight + 90,
+-                                constraints.maxHeight * 0.87,
++                                collapsedLyricsHeight + 120,
++                                constraints.maxHeight * 0.90,
+                               );
+                               return NotificationListener<ScrollNotification>(
+                                 onNotification:
+@@ -1233,74 +1448,104 @@ class _FullPlayerState extends State<_FullPlayer> {
+                                                   : 0,
+                                               child: IgnorePointer(
+                                                 ignoring: !showLyricsControls,
+-                                                child: Column(
+-                                                  children: [
+-                                                    const SizedBox(height: 10),
+-                                                    if (manager.isLoading &&
+-                                                        !manager.isPlaying)
+-                                                      const Padding(
+-                                                        padding:
+-                                                            EdgeInsets.symmetric(
+-                                                              vertical: 20,
+-                                                            ),
+-                                                        child:
+-                                                            _IosLoadingControls(),
+-                                                      )
+-                                                    else ...[
+-                                                      const _ProgressSection(),
++                                                child: AnimatedSlide(
++                                                  duration: const Duration(
++                                                    milliseconds: 420,
++                                                  ),
++                                                  curve: Curves
++                                                      .easeInOutCubicEmphasized,
++                                                  offset: Offset.zero,
++                                                  child: Column(
++                                                    children: [
+                                                       const SizedBox(
+                                                         height: 10,
+                                                       ),
+-                                                      Row(
+-                                                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+-                                                        children: [
+-                                                          _NativeControlButton(
+-                                                            icon: CupertinoIcons.backward_fill,
+-                                                            onPressed: manager.playPreviousInQueue,
+-                                                          ),
+-                                                          _NativePrimaryPlayButton(
+-                                                            isPlaying: manager.isPlaying,
+-                                                            onPressed: manager.togglePlayPause,
+-                                                          ),
+-                                                          _NativeControlButton(
+-                                                            icon: CupertinoIcons.forward_fill,
+-                                                            onPressed: manager.playNextInQueue,
+-                                                          ),
+-                                                        ],
+-                                                      ),
+-                                                      const SizedBox(
+-                                                        height: 6,
+-                                                      ),
+-                                                      SizedBox(height: 28),
+-                                                      if (Platform.isIOS) ...[
+-                                                        const _SystemVolumeSlider(),
++                                                      if (manager.isLoading &&
++                                                          !manager.isPlaying)
++                                                        const Padding(
++                                                          padding:
++                                                              EdgeInsets.symmetric(
++                                                                vertical: 20,
++                                                              ),
++                                                          child:
++                                                              _IosLoadingControls(),
++                                                        )
++                                                      else ...[
++                                                        const _ProgressSection(),
+                                                         const SizedBox(
+-                                                          height: 14,
++                                                          height: 10,
+                                                         ),
+-                                                      ],
+-
+-                                                      Row(
+-                                                        children: [
+-                                                          const SizedBox(width: 34),
+-                                                          _InlineLyricsButton(
+-                                                            isActive: manager.isLyricsLayout,
+-                                                            onPressed: manager.toggleLyricsLayout,
+-                                                          ),
+-                                                          const Spacer(),
+-                                                          _InlineAutoplayButton(
+-                                                            isActive: manager.autoplayEnabled,
+-                                                            onPressed: manager.toggleAutoplay,
++                                                        Row(
++                                                          mainAxisAlignment:
++                                                              MainAxisAlignment
++                                                                  .spaceEvenly,
++                                                          children: [
++                                                            _NativeControlButton(
++                                                              icon: CupertinoIcons
++                                                                  .backward_fill,
++                                                              onPressed: manager
++                                                                  .playPreviousInQueue,
++                                                            ),
++                                                            _NativePrimaryPlayButton(
++                                                              isPlaying: manager
++                                                                  .isPlaying,
++                                                              onPressed: manager
++                                                                  .togglePlayPause,
++                                                            ),
++                                                            _NativeControlButton(
++                                                              icon: CupertinoIcons
++                                                                  .forward_fill,
++                                                              onPressed: manager
++                                                                  .playNextInQueue,
++                                                            ),
++                                                          ],
++                                                        ),
++                                                        const SizedBox(
++                                                          height: 6,
++                                                        ),
++                                                        SizedBox(height: 28),
++                                                        if (Platform.isIOS) ...[
++                                                          const _SystemVolumeSlider(),
++                                                          const SizedBox(
++                                                            height: 14,
+                                                           ),
+                                                         ],
+-                                                      ),
+ 
+-                                                      SizedBox(
+-                                                        height: MediaQuery.of(context).padding.bottom + 50,
+-                                                      ),
++                                                        Row(
++                                                          children: [
++                                                            const SizedBox(
++                                                              width: 34,
++                                                            ),
++                                                            _InlineLyricsButton(
++                                                              isActive: manager
++                                                                  .isLyricsLayout,
++                                                              onPressed: manager
++                                                                  .toggleLyricsLayout,
++                                                            ),
++                                                            const Spacer(),
++                                                            const _InlineAudioRouteButton(),
++                                                            const Spacer(),
++                                                            _InlineAutoplayButton(
++                                                              isActive: manager
++                                                                  .autoplayEnabled,
++                                                              onPressed: manager
++                                                                  .toggleAutoplay,
++                                                            ),
++                                                          ],
++                                                        ),
++
++                                                        SizedBox(
++                                                          height:
++                                                              MediaQuery.of(
++                                                                context,
++                                                              ).padding.bottom +
++                                                              50,
++                                                        ),
++                                                      ],
++                                                      // Removed SizedBox(height: 26),
++                                                      const _QueueSection(),
+                                                     ],
+-                                                    // Removed SizedBox(height: 26),
+-                                                    const _QueueSection(),
+-                                                  ],
++                                                  ),
+                                                 ),
+                                               ),
+                                             ),
+@@ -1714,7 +1959,6 @@ class _InlineLyricsButton extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     final borderRadius = BorderRadius.circular(14);
+-    final activeColor = Theme.of(context).colorScheme.primary;
+     return CupertinoButton(
+       padding: EdgeInsets.zero,
+       minimumSize: Size.zero,
+@@ -1723,16 +1967,22 @@ class _InlineLyricsButton extends StatelessWidget {
+         duration: const Duration(milliseconds: 180),
+         curve: Curves.easeOutCubic,
+         height: 40,
+-        padding: EdgeInsets.zero,
++        padding: const EdgeInsets.symmetric(horizontal: 8),
++        decoration: BoxDecoration(
++          color: isActive ? Colors.white : Colors.transparent,
++          borderRadius: borderRadius,
++        ),
+         child: Row(
+           mainAxisSize: MainAxisSize.min,
+           children: [
+             Icon(
+-              isActive ? CupertinoIcons.quote_bubble_fill : CupertinoIcons.quote_bubble,
++              isActive
++                  ? CupertinoIcons.quote_bubble_fill
++                  : CupertinoIcons.quote_bubble,
+               size: 26,
+               color: isActive
+-                  ? activeColor
+-                  : CupertinoColors.label.resolveFrom(context),
++                  ? Colors.black
++                  : CupertinoColors.white,
+             ),
+           ],
+         ),
+@@ -1741,6 +1991,236 @@ class _InlineLyricsButton extends StatelessWidget {
+   }
+ }
+ 
++class _InlineAudioRouteButton extends StatefulWidget {
++  const _InlineAudioRouteButton();
++
++  @override
++  State<_InlineAudioRouteButton> createState() =>
++      _InlineAudioRouteButtonState();
++}
++
++class _InlineAudioRouteButtonState extends State<_InlineAudioRouteButton> {
++  String _routeName = 'iPhone Speaker';
++  bool _isBluetooth = false;
++  Timer? _pollTimer;
++
++  @override
++  void initState() {
++    super.initState();
++    unawaited(_loadRouteInfo());
++    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
++      unawaited(_loadRouteInfo());
++    });
++  }
++
++  @override
++  void dispose() {
++    _pollTimer?.cancel();
++    super.dispose();
++  }
++
++  Future<void> _loadRouteInfo() async {
++    if (!Platform.isIOS) return;
++    try {
++      final raw = await _systemVolumeChannel
++          .invokeMethod<Map<dynamic, dynamic>>('getCurrentAudioOutputInfo');
++      if (!mounted || raw == null) return;
++      final nextName = (raw['name'] as String?)?.trim();
++      final nextIsBluetooth = raw['isBluetooth'] == true;
++      final resolvedName = (nextName == null || nextName.isEmpty)
++          ? 'Salida de audio'
++          : nextName;
++      if (resolvedName == _routeName && nextIsBluetooth == _isBluetooth) {
++        return;
++      }
++      setState(() {
++        _routeName = resolvedName;
++        _isBluetooth = nextIsBluetooth;
++      });
++    } catch (_) {}
++  }
++
++  Future<void> _openRoutePicker() async {
++    if (!Platform.isIOS) return;
++    try {
++      await _systemVolumeChannel.invokeMethod<void>('showAudioRoutePicker');
++    } catch (_) {}
++    unawaited(_loadRouteInfo());
++  }
++
++  _AudioRouteVisual _resolveRouteVisual() {
++    final raw = _routeName.trim().toLowerCase();
++    if (raw.isEmpty) {
++      return _isBluetooth
++          ? _AudioRouteVisual.bluetooth
++          : _AudioRouteVisual.airplay;
++    }
++    if (raw == 'iphone speaker' || raw == 'iphone') {
++      return _AudioRouteVisual.iphone;
++    }
++    if (raw.contains('reniiii')) {
++      return _AudioRouteVisual.airpods;
++    }
++
++    final compact = raw.replaceAll(RegExp(r'[\s\-_]+'), '');
++    final hasAirpodsWord = raw.contains('airpods') || raw.contains('airpod');
++
++    if (hasAirpodsWord) {
++      if (compact.contains('airpodsmax') || compact.contains('airpodmax')) {
++        return _AudioRouteVisual.airpodsMax;
++      }
++      if (compact.contains('airpodspro2') || compact.contains('airpodpro2')) {
++        return _AudioRouteVisual.airpods;
++      }
++      if (compact.contains('airpodspro') || compact.contains('airpodpro')) {
++        return _AudioRouteVisual.airpods;
++      }
++      if (compact.contains('airpods3') || compact.contains('airpod3')) {
++        return _AudioRouteVisual.airpods;
++      }
++      if (compact.contains('airpods2') || compact.contains('airpod2')) {
++        return _AudioRouteVisual.airpods;
++      }
++      return _AudioRouteVisual.airpods;
++    }
++
++    return _isBluetooth
++        ? _AudioRouteVisual.bluetooth
++        : _AudioRouteVisual.airplay;
++  }
++
++  Widget _buildRouteIcon(Color color) {
++    final visual = _resolveRouteVisual();
++    switch (visual) {
++      case _AudioRouteVisual.airpods:
++        return _AirPodsIcon(color: color, size: 21);
++      case _AudioRouteVisual.airpodsMax:
++        return Icon(CupertinoIcons.headphones, size: 21, color: color);
++      case _AudioRouteVisual.bluetooth:
++        return Icon(Icons.bluetooth, size: 21, color: color);
++      case _AudioRouteVisual.iphone:
++        return Icon(
++          CupertinoIcons.device_phone_portrait,
++          size: 21,
++          color: color,
++        );
++      case _AudioRouteVisual.airplay:
++        return Icon(Icons.airplay, size: 21, color: color);
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final labelColor = CupertinoColors.white.withValues(alpha: 0.86);
++    final iconColor = CupertinoColors.white;
++    return CupertinoButton(
++      padding: EdgeInsets.zero,
++      minimumSize: Size.zero,
++      onPressed: _openRoutePicker,
++      child: ConstrainedBox(
++        constraints: const BoxConstraints(minWidth: 94, maxWidth: 146),
++        child: Transform.translate(
++          offset: const Offset(0, 4),
++          child: Column(
++            mainAxisSize: MainAxisSize.min,
++            children: [
++              _buildRouteIcon(iconColor),
++              const SizedBox(height: 2),
++              Text(
++                _routeName,
++                maxLines: 1,
++                overflow: TextOverflow.ellipsis,
++                textAlign: TextAlign.center,
++                style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
++                  fontSize: 11,
++                  fontWeight: FontWeight.w600,
++                  color: labelColor,
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
++
++enum _AudioRouteVisual { airplay, bluetooth, iphone, airpods, airpodsMax }
++
++class _AirPodsIcon extends StatelessWidget {
++  final Color color;
++  final double size;
++
++  const _AirPodsIcon({required this.color, required this.size});
++
++  @override
++  Widget build(BuildContext context) {
++    return SizedBox(
++      width: size,
++      height: size,
++      child: CustomPaint(painter: _AirPodsPainter(color)),
++    );
++  }
++}
++
++class _AirPodsPainter extends CustomPainter {
++  final Color color;
++  const _AirPodsPainter(this.color);
++
++  @override
++  void paint(Canvas canvas, Size size) {
++    final paint = Paint()
++      ..color = color
++      ..style = PaintingStyle.stroke
++      ..strokeCap = StrokeCap.round
++      ..strokeJoin = StrokeJoin.round
++      ..strokeWidth = size.width * 0.11;
++
++    final fill = Paint()
++      ..color = color.withValues(alpha: 0.18)
++      ..style = PaintingStyle.fill;
++
++    final leftBud = RRect.fromRectAndRadius(
++      Rect.fromLTWH(
++        size.width * 0.12,
++        size.height * 0.16,
++        size.width * 0.27,
++        size.height * 0.36,
++      ),
++      Radius.circular(size.width * 0.12),
++    );
++    canvas.drawRRect(leftBud, fill);
++    canvas.drawRRect(leftBud, paint);
++    canvas.drawLine(
++      Offset(size.width * 0.26, size.height * 0.50),
++      Offset(size.width * 0.22, size.height * 0.89),
++      paint,
++    );
++
++    final rightBud = RRect.fromRectAndRadius(
++      Rect.fromLTWH(
++        size.width * 0.61,
++        size.height * 0.16,
++        size.width * 0.27,
++        size.height * 0.36,
++      ),
++      Radius.circular(size.width * 0.12),
++    );
++    canvas.drawRRect(rightBud, fill);
++    canvas.drawRRect(rightBud, paint);
++    canvas.drawLine(
++      Offset(size.width * 0.74, size.height * 0.50),
++      Offset(size.width * 0.78, size.height * 0.89),
++      paint,
++    );
++  }
++
++  @override
++  bool shouldRepaint(covariant _AirPodsPainter oldDelegate) {
++    return oldDelegate.color != color;
++  }
++}
++
+ class _InlineAutoplayButton extends StatelessWidget {
+   final bool isActive;
+   final VoidCallback onPressed;
+@@ -1801,7 +2281,7 @@ class _InlineAutoplayButton extends StatelessWidget {
+               size: 14,
+               color: isActive
+                   ? activeColor
+-                  : CupertinoColors.label.resolveFrom(context),
++                  : CupertinoColors.white,
+             ),
+             const SizedBox(width: 6),
+             Text(
+@@ -1809,7 +2289,7 @@ class _InlineAutoplayButton extends StatelessWidget {
+               style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                 fontSize: 12,
+                 fontWeight: FontWeight.w600,
+-                color: isActive ? activeColor : null,
++                color: isActive ? activeColor : CupertinoColors.white,
+               ),
+             ),
+           ],
+@@ -1974,7 +2454,11 @@ class _DefaultNowPlayingHero extends StatelessWidget {
+             child: _AutoScrollText(
+               text: manager.trackTitle ?? 'Cargando canción...',
+               style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
+-                  .copyWith(fontSize: 28, fontWeight: FontWeight.w700),
++                  .copyWith(
++                    fontSize: 28,
++                    fontWeight: FontWeight.w700,
++                    color: CupertinoColors.white,
++                  ),
+             ),
+           ),
+         ),
+@@ -2017,8 +2501,8 @@ class _DefaultNowPlayingHero extends StatelessWidget {
+                       style: CupertinoTheme.of(context).textTheme.textStyle
+                           .copyWith(
+                             fontSize: 17,
+-                            color: CupertinoColors.secondaryLabel.resolveFrom(
+-                              context,
++                            color: CupertinoColors.white.withValues(
++                              alpha: 0.78,
+                             ),
+                           ),
+                     ),
+@@ -2070,10 +2554,7 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
+   @override
+   Widget build(BuildContext context) {
+     final transitionDx = manager.trackTransitionDirection < 0 ? -0.03 : 0.03;
+-    final value = controller.value;
+-    final ratio = value.isInitialized && value.aspectRatio > 0
+-        ? value.aspectRatio
+-        : (16 / 9);
++    const ratio = 240 / 140;
+     return Column(
+       key: key,
+       crossAxisAlignment: CrossAxisAlignment.start,
+@@ -2092,20 +2573,14 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
+                   ),
+                   SafeArea(
+                     minimum: const EdgeInsets.all(8),
+-                    child: DecoratedBox(
+-                      decoration: BoxDecoration(
+-                        color: CupertinoColors.black.withValues(alpha: 0.55),
+-                        borderRadius: BorderRadius.circular(999),
+-                      ),
+-                      child: CupertinoButton(
+-                        minimumSize: Size.zero,
+-                        padding: const EdgeInsets.all(8),
+-                        onPressed: onToggleFullscreen,
+-                        child: const Icon(
+-                          CupertinoIcons.fullscreen,
+-                          size: 20,
+-                          color: CupertinoColors.white,
+-                        ),
++                    child: CupertinoButton(
++                      minimumSize: Size.zero,
++                      padding: const EdgeInsets.all(8),
++                      onPressed: onToggleFullscreen,
++                      child: const Icon(
++                        CupertinoIcons.fullscreen,
++                        size: 20,
++                        color: CupertinoColors.white,
+                       ),
+                     ),
+                   ),
+@@ -2135,7 +2610,11 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
+             child: _AutoScrollText(
+               text: manager.trackTitle ?? 'Cargando video...',
+               style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
+-                  .copyWith(fontSize: 28, fontWeight: FontWeight.w700),
++                  .copyWith(
++                    fontSize: 28,
++                    fontWeight: FontWeight.w700,
++                    color: CupertinoColors.white,
++                  ),
+             ),
+           ),
+         ),
+@@ -2178,8 +2657,8 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
+                       style: CupertinoTheme.of(context).textTheme.textStyle
+                           .copyWith(
+                             fontSize: 17,
+-                            color: CupertinoColors.secondaryLabel.resolveFrom(
+-                              context,
++                            color: CupertinoColors.white.withValues(
++                              alpha: 0.78,
+                             ),
+                           ),
+                     ),
+@@ -2566,10 +3045,6 @@ class _CompactNowPlayingHeader extends StatelessWidget {
+         decoration: BoxDecoration(
+           color: Colors.transparent,
+           borderRadius: BorderRadius.circular(18),
+-          border: Border.all(
+-            color: CupertinoColors.white.withValues(alpha: 0.2),
+-            width: 0.6,
+-          ),
+         ),
+         child: Row(
+           children: [
+@@ -2621,7 +3096,11 @@ class _CompactNowPlayingHeader extends StatelessWidget {
+                       maxLines: 2,
+                       overflow: TextOverflow.ellipsis,
+                       style: CupertinoTheme.of(context).textTheme.textStyle
+-                          .copyWith(fontSize: 19, fontWeight: FontWeight.w700),
++                          .copyWith(
++                            fontSize: 19,
++                            fontWeight: FontWeight.w700,
++                            color: CupertinoColors.white,
++                          ),
+                     ),
+                     const SizedBox(height: 3),
+                     Row(
+@@ -2639,8 +3118,9 @@ class _CompactNowPlayingHeader extends StatelessWidget {
+                                   .textStyle
+                                   .copyWith(
+                                     fontSize: 14,
+-                                    color: CupertinoColors.secondaryLabel
+-                                        .resolveFrom(context),
++                                    color: CupertinoColors.white.withValues(
++                                      alpha: 0.78,
++                                    ),
+                                   ),
+                             ),
+                           ),
+@@ -2705,7 +3185,7 @@ class _InlineArtistActionButton extends StatelessWidget {
+         child: Icon(
+           icon,
+           size: iconSize,
+-          color: CupertinoColors.label.resolveFrom(context),
++          color: CupertinoColors.white,
+         ),
+       ),
+     );
+@@ -2831,7 +3311,7 @@ class _TopGlassIconButton extends StatelessWidget {
+         child: Icon(
+           icon,
+           size: 18,
+-          color: CupertinoColors.label.resolveFrom(context),
++          color: CupertinoColors.white,
+         ),
+       ),
+     );
+@@ -3047,7 +3527,7 @@ class _QueueSectionState extends State<_QueueSection> {
+               color: subtitleColor.withValues(alpha: 0.88),
+             ),
+           ),
+-          const SizedBox(height: 12),
++          const SizedBox(height: 28),
+           ReorderableListView.builder(
+             shrinkWrap: true,
+             physics: const NeverScrollableScrollPhysics(),
+@@ -3615,7 +4095,7 @@ class _NativeControlButton extends StatelessWidget {
+         child: Icon(
+           icon,
+           size: 44,
+-          color: CupertinoColors.label.resolveFrom(context),
++          color: CupertinoColors.white,
+         ),
+       ),
+     );
+@@ -3753,7 +4233,8 @@ class _ProgressSection extends StatelessWidget {
+ 
+                     return GestureDetector(
+                       behavior: HitTestBehavior.opaque,
+-                      onTapDown: (details) => seekByDx(details.localPosition.dx),
++                      onTapDown: (details) =>
++                          seekByDx(details.localPosition.dx),
+                       onHorizontalDragUpdate: (details) =>
+                           seekByDx(details.localPosition.dx),
+                       child: SizedBox(
+@@ -3809,8 +4290,8 @@ class _ProgressSection extends StatelessWidget {
+                       style: CupertinoTheme.of(context).textTheme.textStyle
+                           .copyWith(
+                             fontSize: 13,
+-                            color: CupertinoColors.secondaryLabel.resolveFrom(
+-                              context,
++                            color: CupertinoColors.white.withValues(
++                              alpha: 0.90,
+                             ),
+                             fontFeatures: const [FontFeature.tabularFigures()],
+                           ),
+@@ -3820,8 +4301,8 @@ class _ProgressSection extends StatelessWidget {
+                       style: CupertinoTheme.of(context).textTheme.textStyle
+                           .copyWith(
+                             fontSize: 13,
+-                            color: CupertinoColors.secondaryLabel.resolveFrom(
+-                              context,
++                            color: CupertinoColors.white.withValues(
++                              alpha: 0.90,
+                             ),
+                             fontFeatures: const [FontFeature.tabularFigures()],
+                           ),
+@@ -3905,7 +4386,7 @@ class _SystemVolumeSliderState extends State<_SystemVolumeSlider> {
+         Icon(
+           CupertinoIcons.speaker_fill,
+           size: 18,
+-          color: CupertinoColors.secondaryLabel.resolveFrom(context),
++          color: CupertinoColors.white.withValues(alpha: 0.90),
+         ),
+         const SizedBox(width: 12),
+         Expanded(
+@@ -3960,7 +4441,7 @@ class _SystemVolumeSliderState extends State<_SystemVolumeSlider> {
+         Icon(
+           CupertinoIcons.speaker_3_fill,
+           size: 18,
+-          color: CupertinoColors.secondaryLabel.resolveFrom(context),
++          color: CupertinoColors.white.withValues(alpha: 0.90),
+         ),
+       ],
+     );
+@@ -4023,6 +4504,22 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+   Color? _lyricsAccentColor;
+   String? _lyricsAccentSource;
+ 
++  Color _normalizedLyricsAccent(Color color) {
++    final luminance = color.computeLuminance();
++    if (luminance >= 0.44) return color;
++
++    final hsl = HSLColor.fromColor(color);
++    final boostedLightness = (hsl.lightness + (0.44 - luminance) * 0.95).clamp(
++      0.56,
++      0.78,
++    );
++    final boostedSaturation = (hsl.saturation * 0.90 + 0.08).clamp(0.20, 0.88);
++    return hsl
++        .withLightness(boostedLightness)
++        .withSaturation(boostedSaturation)
++        .toColor();
++  }
++
+   void _syncLyricsAccentColor(VideoPlayerManager manager) {
+     final raw = manager.trackThumbnailUrl?.trim() ?? '';
+     if (raw.isEmpty || raw == _lyricsAccentSource) return;
+@@ -4030,7 +4527,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+ 
+     final cached = _lyricsAccentCache[raw];
+     if (cached != null) {
+-      _lyricsAccentColor = cached;
++      _lyricsAccentColor = _normalizedLyricsAccent(cached);
+       return;
+     }
+ 
+@@ -4060,12 +4557,13 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+       request
+           .then((color) {
+             if (!mounted || _lyricsAccentSource != raw || color == null) return;
+-            _lyricsAccentCache[raw] = color;
++            final normalized = _normalizedLyricsAccent(color);
++            _lyricsAccentCache[raw] = normalized;
+             while (_lyricsAccentCache.length > _lyricsAccentCacheMaxEntries) {
+               _lyricsAccentCache.remove(_lyricsAccentCache.keys.first);
+             }
+             setState(() {
+-              _lyricsAccentColor = color;
++              _lyricsAccentColor = normalized;
+             });
+           })
+           .whenComplete(() {
+@@ -4241,12 +4739,14 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+     final manager = widget.manager;
+     final settings = context.watch<AppSettingsService?>();
+     final liveLyricsEnabled = settings?.liveLyrics ?? true;
++    const lyricsFontFamily = '.SF Pro Text';
++    const inactiveLyricsColor = Color(0x8CFFFFFF);
+     final isImmersive = widget.immersiveMode;
+-    final baseFontSize = isImmersive ? 19.0 : 17.0;
+-    final activeFontSize = isImmersive ? 24.0 : 22.0;
++    final baseFontSize = isImmersive ? 22.0 : 20.0;
++    final activeFontSize = isImmersive ? 28.0 : 26.0;
+     _syncLyricsAccentColor(manager);
+     final activeLyricsColor =
+-        _lyricsAccentColor ?? Theme.of(context).colorScheme.primary;
++        _lyricsAccentColor ?? CupertinoColors.white;
+     unawaited(
+       _syncIosWordAlignment(
+         manager: manager,
+@@ -4269,12 +4769,16 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+       _visualLyricsWallClock = DateTime.now();
+       _lastVisualClockManagerPosition = manager.position;
+     }
+-    final textStyle = CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+-      fontSize: baseFontSize,
+-      height: 1.45,
+-      color: CupertinoColors.label.resolveFrom(context),
+-      fontWeight: FontWeight.w500,
+-    );
++    final textStyle = CupertinoTheme.of(context)
++        .textTheme
++        .navLargeTitleTextStyle
++        .copyWith(
++          fontFamily: lyricsFontFamily,
++          fontSize: baseFontSize,
++          height: 1.25,
++          color: CupertinoColors.label.resolveFrom(context),
++          fontWeight: FontWeight.w600,
++        );
+ 
+     Widget content;
+     if (manager.isLyricsLoading) {
+@@ -4372,7 +4876,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+                     child: AnimatedOpacity(
+                       duration: const Duration(milliseconds: 300),
+                       curve: Curves.easeInOut,
+-                      opacity: isActive ? 1 : 0.86,
++                      opacity: isActive ? 1.0 : 0.36,
+                       child: AnimatedDefaultTextStyle(
+                         duration: const Duration(milliseconds: 320),
+                         curve: Curves.easeInOutCubic,
+@@ -4380,12 +4884,10 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+                           fontSize: isActive ? activeFontSize : baseFontSize,
+                           fontWeight: isActive
+                               ? FontWeight.w700
+-                              : FontWeight.w500,
++                              : FontWeight.w600,
+                           color: isActive
+                               ? activeLyricsColor
+-                              : CupertinoColors.secondaryLabel.resolveFrom(
+-                                  context,
+-                                ),
++                              : inactiveLyricsColor,
+                         ),
+                         child: isActive && liveLyricsEnabled
+                             ? _LiveLyricSweepText(
+@@ -4397,8 +4899,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+                                 baseStyle: textStyle.copyWith(
+                                   fontSize: activeFontSize,
+                                   fontWeight: FontWeight.w700,
+-                                  color: CupertinoColors.secondaryLabel
+-                                      .resolveFrom(context),
++                                  color: inactiveLyricsColor,
+                                 ),
+                                 activeStyle: textStyle.copyWith(
+                                   fontSize: activeFontSize,
+@@ -4425,61 +4926,66 @@ class _LyricsPanelState extends State<_LyricsPanel> {
+       content = Text(manager.lyricsText ?? '', style: textStyle);
+     }
+ 
+-    const panelRadius = 18.0;
+-
+     return NotificationListener<ScrollNotification>(
+       onNotification: _handleLyricsScrollNotification,
+       child: GestureDetector(
+         behavior: HitTestBehavior.translucent,
+         onTapDown: (_) => widget.onInteraction?.call(),
+-        child: ClipRRect(
+-          borderRadius: BorderRadius.circular(panelRadius),
+-          child: Container(
+-            width: double.infinity,
++        child: SizedBox(
++          width: double.infinity,
++          child: ConstrainedBox(
+             constraints: isImmersive
+                 ? const BoxConstraints(minHeight: 260)
+                 : const BoxConstraints(minHeight: 210, maxHeight: 390),
+-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+-            decoration: BoxDecoration(
+-              color: Colors.transparent,
+-              borderRadius: BorderRadius.circular(panelRadius),
+-              border: Border.all(
+-                color: CupertinoColors.white.withValues(alpha: 0.2),
+-                width: 0.6,
+-              ),
+-            ),
+-            child: Stack(
+-              children: [
+-                Positioned.fill(
+-                  child: Padding(
+-                    padding: EdgeInsets.only(
+-                      bottom: manager.isKaraokeSupported ? 36 : 0,
+-                    ),
+-                    child: AnimatedSwitcher(
+-                      duration: const Duration(milliseconds: 220),
+-                      child: manager.hasSyncedLyrics
+-                          ? content
+-                          : SingleChildScrollView(
+-                              key: ValueKey(
+-                                '${manager.isLyricsLoading}-${manager.lyricsError}-${manager.lyricsText}',
+-                              ),
+-                              physics: const BouncingScrollPhysics(),
+-                              child: content,
+-                            ),
++            child: Padding(
++              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
++              child: Stack(
++                children: [
++                  Positioned.fill(
++                    child: Padding(
++                      padding: EdgeInsets.only(
++                        bottom: manager.isKaraokeSupported ? 36 : 0,
++                      ),
++                      child: AnimatedSwitcher(
++                        duration: const Duration(milliseconds: 220),
++                        child: ShaderMask(
++                          shaderCallback: (rect) => LinearGradient(
++                            begin: Alignment.topCenter,
++                            end: Alignment.bottomCenter,
++                            colors: const [
++                              Colors.transparent,
++                              Colors.black,
++                              Colors.black,
++                              Colors.transparent,
++                            ],
++                            stops: const [0.0, 0.06, 0.94, 1.0],
++                          ).createShader(rect),
++                          blendMode: BlendMode.dstIn,
++                          child: manager.hasSyncedLyrics
++                              ? content
++                              : SingleChildScrollView(
++                                  key: ValueKey(
++                                    '${manager.isLyricsLoading}-${manager.lyricsError}-${manager.lyricsText}',
++                                  ),
++                                  physics: const BouncingScrollPhysics(),
++                                  child: content,
++                                ),
++                        ),
++                      ),
+                     ),
+                   ),
+-                ),
+-                if (manager.isKaraokeSupported)
+-                  Positioned(
+-                    right: 2,
+-                    bottom: 2,
+-                    child: _LyricsKaraokeButton(
+-                      isActive: manager.karaokeModeEnabled,
+-                      isLoading: manager.isAiStemsLoading,
+-                      onPressed: manager.toggleKaraokeMode,
++                  if (manager.isKaraokeSupported)
++                    Positioned(
++                      right: 2,
++                      bottom: 2,
++                      child: _LyricsKaraokeButton(
++                        isActive: manager.karaokeModeEnabled,
++                        isLoading: manager.isAiStemsLoading,
++                        onPressed: manager.toggleKaraokeMode,
++                      ),
+                     ),
+-                  ),
+-              ],
++                ],
++              ),
+             ),
+           ),
+         ),
+@@ -7258,8 +7764,8 @@ class _DownloadButton extends StatelessWidget {
+           child: Icon(
+             CupertinoIcons.arrow_down_circle,
+             color: hasSource
+-                ? CupertinoColors.label.resolveFrom(context)
+-                : CupertinoColors.tertiaryLabel.resolveFrom(context),
++                ? CupertinoColors.white
++                : CupertinoColors.white.withValues(alpha: 0.42),
+             size: 20,
+           ),
+           onPressed: hasSource ? _triggerDownload : null,
+diff --git a/lib/search_page.dart b/lib/search_page.dart
+index 9eeb7a7..571fb19 100644
+--- a/lib/search_page.dart
++++ b/lib/search_page.dart
+@@ -15,6 +15,7 @@ import 'package:myapp/search_view_state.dart';
+ import 'package:myapp/services/download_service.dart';
+ import 'package:myapp/services/app_lifecycle_service.dart';
+ import 'package:myapp/services/playlist_service.dart';
++import 'package:myapp/services/library_albums_service.dart';
+ import 'package:myapp/services/app_settings_service.dart';
+ import 'package:myapp/utils/artist_name_utils.dart';
+ import 'package:myapp/utils/artwork_subject_cutout_service.dart';
+@@ -2357,6 +2358,7 @@ class _SearchPageState extends State<SearchPage>
+     String? thumbnailUrl,
+     String? title,
+     String? artist,
++    bool forceVideoPlayback = false,
+   }) async {
+     try {
+       final manager = Provider.of<VideoPlayerManager>(context, listen: false);
+@@ -2367,8 +2369,8 @@ class _SearchPageState extends State<SearchPage>
+         preferredThumbnailUrl: thumbnailUrl,
+         preferredTitle: title,
+         preferredArtist: artist,
+-        preferVideoPlayback: _isVideosFilterMode || _isPodcastFilterMode,
+-        forceBackendResolver: _isVideosFilterMode,
++        preferVideoPlayback: forceVideoPlayback,
++        forceBackendResolver: forceVideoPlayback,
+       );
+       _rememberSearchTrackHistory(
+         _SearchTabTrackHistoryEntry(
+@@ -2431,6 +2433,7 @@ class _SearchPageState extends State<SearchPage>
+       thumbnailUrl: _bestQualityThumbnail(video),
+       title: video.title,
+       artist: cleanArtistName(video.author),
++      forceVideoPlayback: _isVideosFilterMode,
+     );
+   }
+ 
+@@ -3477,6 +3480,10 @@ class _SearchPageState extends State<SearchPage>
+                     albumTitle: selectedAlbum.albumTitle,
+                     artistName: selectedAlbum.artistName,
+                     seedThumbnailUrl: selectedAlbum.seedThumbnailUrl,
++                    libraryAlbumsService: Provider.of<LibraryAlbumsService?>(
++                      context,
++                      listen: false,
++                    ),
+                     embedded: true,
+                     onBack: _closeAlbumView,
+                   ),
+@@ -4291,7 +4298,7 @@ class _SearchHistoryArtistCard extends StatelessWidget {
+   Widget build(BuildContext context) {
+     final thumb = entry.channelThumbnailUrl.trim();
+     final artistName = cleanArtistName(entry.channelName);
+-    final avatarCachePx = (50 * MediaQuery.devicePixelRatioOf(context))
++    final avatarCachePx = (44 * MediaQuery.devicePixelRatioOf(context))
+         .round()
+         .clamp(72, 512)
+         .toInt();
+@@ -4300,11 +4307,11 @@ class _SearchHistoryArtistCard extends StatelessWidget {
+       child: InkWell(
+         onTap: onTap,
+         child: Padding(
+-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
++          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+           child: Row(
+             children: [
+               CircleAvatar(
+-                radius: 25,
++                radius: 22,
+                 backgroundColor: CupertinoColors.systemGrey4.resolveFrom(
+                   context,
+                 ),
+@@ -4324,14 +4331,14 @@ class _SearchHistoryArtistCard extends StatelessWidget {
+                       )
+                     : null,
+               ),
+-              const SizedBox(width: 12),
++              const SizedBox(width: 10),
+               Expanded(
+                 child: Text(
+                   artistName,
+                   maxLines: 1,
+                   overflow: TextOverflow.ellipsis,
+                   style: CupertinoTheme.of(context).textTheme.textStyle
+-                      .copyWith(fontSize: 18, fontWeight: FontWeight.w600),
++                      .copyWith(fontSize: 16, fontWeight: FontWeight.w600),
+                 ),
+               ),
+             ],
+@@ -4355,23 +4362,23 @@ class _SearchHistoryTrackCard extends StatelessWidget {
+       child: InkWell(
+         onTap: onTap,
+         child: Padding(
+-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
++          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+           child: Row(
+             children: [
+               entry.thumbnailUrl.startsWith('/')
+                   ? SquareThumbnail.file(
+                       filePath: entry.thumbnailUrl,
+-                      size: 54,
+-                      borderRadius: 9,
++                      size: 48,
++                      borderRadius: 8,
+                       fallback: _buildTrackFallback(context),
+                     )
+                   : SquareThumbnail.network(
+                       imageUrl: entry.thumbnailUrl,
+-                      size: 54,
+-                      borderRadius: 9,
++                      size: 48,
++                      borderRadius: 8,
+                       fallback: _buildTrackFallback(context),
+                     ),
+-              const SizedBox(width: 12),
++              const SizedBox(width: 10),
+               Expanded(
+                 child: Column(
+                   crossAxisAlignment: CrossAxisAlignment.start,
+@@ -4381,7 +4388,7 @@ class _SearchHistoryTrackCard extends StatelessWidget {
+                       maxLines: 2,
+                       overflow: TextOverflow.ellipsis,
+                       style: CupertinoTheme.of(context).textTheme.textStyle
+-                          .copyWith(fontSize: 17, fontWeight: FontWeight.w600),
++                          .copyWith(fontSize: 15, fontWeight: FontWeight.w600),
+                     ),
+                     const SizedBox(height: 3),
+                     Text(
+@@ -4390,7 +4397,7 @@ class _SearchHistoryTrackCard extends StatelessWidget {
+                       overflow: TextOverflow.ellipsis,
+                       style: CupertinoTheme.of(context).textTheme.textStyle
+                           .copyWith(
+-                            fontSize: 14,
++                            fontSize: 12.5,
+                             color: CupertinoColors.secondaryLabel.resolveFrom(
+                               context,
+                             ),
+@@ -4408,13 +4415,13 @@ class _SearchHistoryTrackCard extends StatelessWidget {
+ 
+   Widget _buildTrackFallback(BuildContext context) {
+     return Container(
+-      width: 54,
+-      height: 54,
++      width: 48,
++      height: 48,
+       color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+       alignment: Alignment.center,
+       child: Icon(
+         CupertinoIcons.music_note_2,
+-        size: 24,
++        size: 21,
+         color: CupertinoColors.secondaryLabel.resolveFrom(context),
+       ),
+     );
+@@ -6156,8 +6163,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
+     });
+     final resolved = await _fetchArtistProfileVideosFromYouTubeMusic(query);
+     if (!mounted) return;
++    // Ocultar los primeros 5 resultados que provienen de YouTube Music.
++    final filtered = (resolved.length > 5) ? resolved.sublist(5) : <Video>[];
+     setState(() {
+-      _artistProfileVideos = resolved;
++      _artistProfileVideos = filtered;
+       _artistProfileVideosLoading = false;
+     });
+   }
+@@ -7327,7 +7336,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
+                         color: cardColor,
+                         surfaceTintColor: Colors.transparent,
+                         child: InkWell(
+-                          onTap: () => _playVideoPreferLocal(video),
++                          onTap: () => _playVideoPreferLocal(
++                            video,
++                            forceVideoPlayback: true,
++                          ),
+                           child: Container(
+                             decoration: BoxDecoration(
+                               borderRadius: BorderRadius.circular(16),
+@@ -7710,6 +7722,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
+     String? thumbnailUrl,
+     String? title,
+     String? artist,
++    bool forceVideoPlayback = false,
+   }) async {
+     try {
+       final manager = Provider.of<VideoPlayerManager>(context, listen: false);
+@@ -7720,6 +7733,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
+         preferredThumbnailUrl: thumbnailUrl,
+         preferredTitle: title,
+         preferredArtist: artist,
++        preferVideoPlayback: forceVideoPlayback,
++        forceBackendResolver: forceVideoPlayback,
+       );
+     } catch (_) {
+       if (!mounted) return;
+@@ -7729,7 +7744,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
+     }
+   }
+ 
+-  Future<void> _playVideoPreferLocal(Video video) async {
++  Future<void> _playVideoPreferLocal(
++    Video video, {
++    bool forceVideoPlayback = false,
++  }) async {
+     final downloadService = context.read<DownloadService>();
+     final videoManager = context.read<VideoPlayerManager>();
+     final local = await downloadService.getDownloadedVideoById(video.id.value);
+@@ -7760,6 +7778,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
+       thumbnailUrl: _bestQualityThumbnail(video),
+       title: video.title,
+       artist: cleanArtistName(video.author),
++      forceVideoPlayback: forceVideoPlayback,
+     );
+   }
+ 
+@@ -8352,6 +8371,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
+                     albumTitle: selectedAlbum.albumTitle,
+                     artistName: selectedAlbum.artistName,
+                     seedThumbnailUrl: selectedAlbum.seedThumbnailUrl,
++                    libraryAlbumsService: Provider.of<LibraryAlbumsService?>(
++                      context,
++                      listen: false,
++                    ),
+                     embedded: true,
+                     onBack: _closeEmbeddedAlbumView,
+                   ),
+@@ -8379,6 +8402,7 @@ class AlbumTracksPage extends StatefulWidget {
+   final String albumTitle;
+   final String artistName;
+   final String seedThumbnailUrl;
++  final LibraryAlbumsService? libraryAlbumsService;
+   final bool embedded;
+   final VoidCallback? onBack;
+ 
+@@ -8388,6 +8412,7 @@ class AlbumTracksPage extends StatefulWidget {
+     required this.albumTitle,
+     required this.artistName,
+     required this.seedThumbnailUrl,
++    this.libraryAlbumsService,
+     this.embedded = false,
+     this.onBack,
+   });
+@@ -8428,6 +8453,27 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+   String _coverUrl = '';
+   List<Video> _tracks = const [];
+   Color _albumBackgroundColor = const Color(0xFF151821);
++  bool _isQueueingAlbumDownload = false;
++
++  ({bool allDownloaded, bool anyDownloading}) _albumDownloadState(
++    DownloadService downloadService,
++  ) {
++    if (_tracks.isEmpty) {
++      return (allDownloaded: false, anyDownloading: false);
++    }
++    var allDownloaded = true;
++    var anyDownloading = false;
++    for (final track in _tracks) {
++      final status = downloadService.getDownloadStatus(track.id.value);
++      if (status == DownloadStatus.downloading) {
++        anyDownloading = true;
++      }
++      if (status != DownloadStatus.downloaded) {
++        allDownloaded = false;
++      }
++    }
++    return (allDownloaded: allDownloaded, anyDownloading: anyDownloading);
++  }
+ 
+   String get _albumCacheKey {
+     final id = widget.playlistId.trim();
+@@ -8629,6 +8675,138 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+     Navigator.of(context, rootNavigator: false).maybePop();
+   }
+ 
++  Future<void> _addCurrentAlbumToLibrary() async {
++    final library =
++        widget.libraryAlbumsService ??
++        Provider.of<LibraryAlbumsService?>(context, listen: false);
++    if (library == null) {
++      if (!mounted) return;
++      _showIosTopToast(
++        context,
++        message:
++            'No se pudo acceder a Biblioteca. Reinicia la app e inténtalo de nuevo.',
++        icon: CupertinoIcons.exclamationmark_triangle_fill,
++      );
++      return;
++    }
++    final title = _resolvedTitle.isNotEmpty ? _resolvedTitle : widget.albumTitle;
++    final artist = _resolvedArtist.isNotEmpty
++        ? _resolvedArtist
++        : widget.artistName.trim();
++    final cover = _effectiveCoverUrl();
++    final added = await library.addAlbum(
++      playlistId: widget.playlistId,
++      title: title,
++      artist: artist,
++      thumbnailUrl: cover,
++    );
++    if (!mounted) return;
++    _showIosTopToast(
++      context,
++      message: added
++          ? 'Álbum añadido a Biblioteca.'
++          : 'Ese álbum ya está en Biblioteca.',
++      icon: added
++          ? CupertinoIcons.check_mark_circled_solid
++          : CupertinoIcons.info_circle_fill,
++    );
++  }
++
++  Future<void> _downloadAllAlbumTracks() async {
++    if (_isQueueingAlbumDownload || _tracks.isEmpty) return;
++    setState(() => _isQueueingAlbumDownload = true);
++    try {
++      final downloadService = context.read<DownloadService>();
++      final videoManager = context.read<VideoPlayerManager>();
++      final items = _tracks
++          .map(
++            (video) => VideoHistory(
++              videoId: video.id.value,
++              title: video.title,
++              thumbnailUrl: _bestQualityThumbnail(video),
++              channelTitle: cleanArtistName(video.author),
++              watchedAt: DateTime.now(),
++            ),
++          )
++          .toList(growable: false);
++      final summary = await downloadService.downloadPlaylistVideosUsingClone(
++        items,
++        videoManager: videoManager,
++      );
++      if (summary.queued == 0 && summary.alreadyInProgress == 0) {
++        if (mounted) setState(() => _isQueueingAlbumDownload = false);
++      }
++      if (!mounted) return;
++      if (summary.queued > 0) {
++        _showIosTopToast(
++          context,
++          message:
++              'Descarga iniciada: ${summary.queued} canción${summary.queued == 1 ? '' : 'es'}.',
++          icon: CupertinoIcons.check_mark_circled_solid,
++        );
++      } else {
++        _showIosTopToast(
++          context,
++          message: 'Todas las canciones ya estaban descargadas o en proceso.',
++          icon: CupertinoIcons.info_circle_fill,
++        );
++      }
++    } catch (_) {
++      if (mounted) setState(() => _isQueueingAlbumDownload = false);
++      if (!mounted) return;
++      _showIosTopToast(
++        context,
++        message: 'No se pudieron iniciar las descargas del álbum.',
++        icon: CupertinoIcons.exclamationmark_triangle_fill,
++      );
++    }
++  }
++
++  Future<void> _confirmRemoveAlbumDownloads() async {
++    if (_tracks.isEmpty) return;
++    final shouldDelete = await showCupertinoDialog<bool>(
++      context: context,
++      builder: (dialogContext) => CupertinoAlertDialog(
++        title: const Text('Eliminar descargas'),
++        content: const Text(
++          '¿Quieres eliminar todas las canciones descargadas de este álbum?',
++        ),
++        actions: [
++          CupertinoDialogAction(
++            onPressed: () => Navigator.of(dialogContext).pop(false),
++            child: const Text('Cancelar'),
++          ),
++          CupertinoDialogAction(
++            isDestructiveAction: true,
++            onPressed: () => Navigator.of(dialogContext).pop(true),
++            child: const Text('Eliminar'),
++          ),
++        ],
++      ),
++    );
++    if (shouldDelete != true || !mounted) return;
++
++    final downloadService = context.read<DownloadService>();
++    var deletedCount = 0;
++    for (final track in _tracks) {
++      if (downloadService.getDownloadStatus(track.id.value) ==
++          DownloadStatus.downloaded) {
++        await downloadService.deleteVideo(track.id.value);
++        deletedCount++;
++      }
++    }
++    if (!mounted) return;
++    _showIosTopToast(
++      context,
++      message: deletedCount > 0
++          ? 'Se eliminaron $deletedCount descarga${deletedCount == 1 ? '' : 's'} del álbum.'
++          : 'No había descargas para eliminar en este álbum.',
++      icon: deletedCount > 0
++          ? CupertinoIcons.check_mark_circled_solid
++          : CupertinoIcons.info_circle_fill,
++    );
++  }
++
+   Future<T> _runYoutubeWithRetry<T>(
+     Future<T> Function() action, {
+     int maxAttempts = 2,
+@@ -8837,6 +9015,8 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+       preferredThumbnailUrl: _bestQualityThumbnail(video),
+       preferredTitle: video.title,
+       preferredArtist: cleanArtistName(video.author),
++      preferVideoPlayback: false,
++      forceBackendResolver: false,
+     );
+   }
+ 
+@@ -9162,6 +9342,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+   Widget _buildPlaylistStyleAlbumHeader(
+     BuildContext context, {
+     required bool animatedCutoutEnabled,
++    required bool isInLibrary,
+   }) {
+     final cover = _effectiveCoverUrl();
+     final screenWidth = MediaQuery.of(context).size.width;
+@@ -9339,6 +9520,16 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+                               onPressed: _playRandomTrack,
+                             ),
+                           ),
++                          const SizedBox(width: 8),
++                          Expanded(
++                            child: _AlbumHeaderActionButton(
++                              icon: isInLibrary
++                                  ? CupertinoIcons.check_mark
++                                  : CupertinoIcons.add,
++                              label: isInLibrary ? 'Añadido' : 'Biblioteca',
++                              onPressed: _addCurrentAlbumToLibrary,
++                            ),
++                          ),
+                         ],
+                       ),
+                     ],
+@@ -9358,67 +9549,73 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+     final isDownloaded =
+         downloadService.getDownloadStatus(video.id.value) ==
+         DownloadStatus.downloaded;
+-    final card = DecoratedBox(
+-      decoration: BoxDecoration(
+-        color: CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
+-          context,
+-        ),
+-        borderRadius: BorderRadius.circular(12),
+-      ),
+-      child: CupertinoButton(
+-        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+-        onPressed: () => _playVideoPreferLocal(video),
+-        child: Row(
+-          children: [
+-            Expanded(
+-              child: Column(
+-                crossAxisAlignment: CrossAxisAlignment.start,
+-                children: [
+-                  Text(
+-                    video.title,
+-                    maxLines: 1,
+-                    overflow: TextOverflow.ellipsis,
+-                    style: CupertinoTheme.of(context).textTheme.textStyle
+-                        .copyWith(
+-                          fontSize: 16,
+-                          color: CupertinoColors.label.resolveFrom(context),
+-                        ),
++    final card = ClipRRect(
++      borderRadius: BorderRadius.circular(14),
++      child: _AdaptiveBackdropFilter(
++        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
++        child: DecoratedBox(
++          decoration: BoxDecoration(
++            borderRadius: BorderRadius.circular(14),
++            color: Colors.white.withValues(alpha: 0.11),
++            border: Border.all(
++              color: Colors.white.withValues(alpha: 0.18),
++              width: 0.55,
++            ),
++          ),
++          child: CupertinoButton(
++            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
++            onPressed: () => _playVideoPreferLocal(video),
++            child: Row(
++              children: [
++                Expanded(
++                  child: Column(
++                    crossAxisAlignment: CrossAxisAlignment.start,
++                    children: [
++                      Text(
++                        video.title,
++                        maxLines: 1,
++                        overflow: TextOverflow.ellipsis,
++                        style: CupertinoTheme.of(context).textTheme.textStyle
++                            .copyWith(
++                              fontSize: 16,
++                              color: CupertinoColors.white,
++                            ),
++                      ),
++                      const SizedBox(height: 2),
++                      Text(
++                        cleanArtistName(video.author),
++                        maxLines: 1,
++                        overflow: TextOverflow.ellipsis,
++                        style: CupertinoTheme.of(context).textTheme.textStyle
++                            .copyWith(
++                              fontSize: 13,
++                              color: CupertinoColors.systemGrey2,
++                            ),
++                      ),
++                    ],
+                   ),
+-                  const SizedBox(height: 2),
+-                  Text(
+-                    cleanArtistName(video.author),
+-                    maxLines: 1,
+-                    overflow: TextOverflow.ellipsis,
+-                    style: CupertinoTheme.of(context).textTheme.textStyle
+-                        .copyWith(
+-                          fontSize: 13,
+-                          color: CupertinoColors.secondaryLabel.resolveFrom(
+-                            context,
+-                          ),
+-                        ),
++                ),
++                if (isDownloaded) ...[
++                  const SizedBox(width: 8),
++                  const Icon(
++                    CupertinoIcons.arrow_down_circle_fill,
++                    size: 16,
++                    color: CupertinoColors.systemGreen,
+                   ),
+                 ],
+-              ),
+-            ),
+-            if (isDownloaded) ...[
+-              const SizedBox(width: 8),
+-              const Icon(
+-                CupertinoIcons.arrow_down_circle_fill,
+-                size: 16,
+-                color: CupertinoColors.systemGreen,
+-              ),
+-            ],
+-            CupertinoButton(
+-              padding: EdgeInsets.zero,
+-              minimumSize: const Size(30, 30),
+-              onPressed: () => _showTrackOptionsMenu(video),
+-              child: Icon(
+-                CupertinoIcons.ellipsis_circle,
+-                size: 22,
+-                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+-              ),
++                CupertinoButton(
++                  padding: EdgeInsets.zero,
++                  minimumSize: const Size(30, 30),
++                  onPressed: () => _showTrackOptionsMenu(video),
++                  child: Icon(
++                    CupertinoIcons.ellipsis_circle,
++                    size: 22,
++                    color: CupertinoColors.systemGrey2,
++                  ),
++                ),
++              ],
+             ),
+-          ],
++          ),
+         ),
+       ),
+     );
+@@ -9464,6 +9661,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+ 
+   @override
+   Widget build(BuildContext context) {
++    final downloadService = context.watch<DownloadService>();
+     final animatedCutoutEnabled =
+         context.watch<AppSettingsService?>()?.animatedCutoutCovers ?? true;
+     final hasMiniPlayer = context.select<VideoPlayerManager, bool>(
+@@ -9474,12 +9672,25 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+       context,
+       hasMiniPlayer: hasMiniPlayer,
+     );
++    final libraryAlbums =
++        context.watch<LibraryAlbumsService?>()?.albums ??
++        const <LibraryAlbum>[];
++    final currentPlaylistId = widget.playlistId.trim();
++    final isCurrentAlbumInLibrary =
++        currentPlaylistId.isNotEmpty &&
++        libraryAlbums.any((album) => album.playlistId.trim() == currentPlaylistId);
++    final albumDownloadState = _albumDownloadState(downloadService);
++    final allAlbumTracksDownloaded = albumDownloadState.allDownloaded;
++    final isAlbumDownloadInProgress =
++        albumDownloadState.anyDownloading ||
++        (_isQueueingAlbumDownload && !allAlbumTracksDownloaded);
+     final content = _loading
+         ? SliverList(
+             delegate: SliverChildListDelegate([
+               _buildPlaylistStyleAlbumHeader(
+                 context,
+                 animatedCutoutEnabled: animatedCutoutEnabled,
++                isInLibrary: isCurrentAlbumInLibrary,
+               ),
+               const Padding(
+                 padding: EdgeInsets.symmetric(vertical: 18),
+@@ -9534,6 +9745,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+                 return _buildPlaylistStyleAlbumHeader(
+                   context,
+                   animatedCutoutEnabled: animatedCutoutEnabled,
++                  isInLibrary: isCurrentAlbumInLibrary,
+                 );
+               }
+               if (index == _tracks.length + 1) {
+@@ -9569,6 +9781,29 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
+                 child: const Icon(CupertinoIcons.back),
+               ),
+             ),
++          Positioned(
++            top: MediaQuery.of(context).padding.top + 2,
++            right: 6,
++            child: CupertinoButton(
++              padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
++              minimumSize: const Size(32, 32),
++              onPressed: _tracks.isEmpty || isAlbumDownloadInProgress
++                  ? null
++                  : (allAlbumTracksDownloaded
++                        ? _confirmRemoveAlbumDownloads
++                        : _downloadAllAlbumTracks),
++              child: isAlbumDownloadInProgress
++                  ? const CupertinoActivityIndicator(radius: 10)
++                  : Icon(
++                      allAlbumTracksDownloaded
++                          ? CupertinoIcons.check_mark_circled_solid
++                          : CupertinoIcons.arrow_down_circle,
++                      color: allAlbumTracksDownloaded
++                          ? CupertinoColors.systemGreen
++                          : CupertinoColors.white,
++                    ),
++            ),
++          ),
+         ],
+       ),
+     );
+diff --git a/lib/search_view_state.dart b/lib/search_view_state.dart
+index 3d1930b..1563da9 100644
+--- a/lib/search_view_state.dart
++++ b/lib/search_view_state.dart
+@@ -14,9 +14,11 @@ class PendingArtistProfile {
+ 
+ class SearchViewState extends ChangeNotifier {
+   bool _isArtistFullscreen = false;
++  bool _isLibraryAlbumFullscreen = false;
+   PendingArtistProfile? _pendingArtistProfile;
+ 
+   bool get isArtistFullscreen => _isArtistFullscreen;
++  bool get isLibraryAlbumFullscreen => _isLibraryAlbumFullscreen;
+ 
+   void setArtistFullscreen(bool value) {
+     if (_isArtistFullscreen == value) return;
+@@ -24,6 +26,12 @@ class SearchViewState extends ChangeNotifier {
+     notifyListeners();
+   }
+ 
++  void setLibraryAlbumFullscreen(bool value) {
++    if (_isLibraryAlbumFullscreen == value) return;
++    _isLibraryAlbumFullscreen = value;
++    notifyListeners();
++  }
++
+   void requestOpenArtistProfile(PendingArtistProfile request) {
+     _pendingArtistProfile = request;
+     notifyListeners();
+diff --git a/lib/services/download_service.dart b/lib/services/download_service.dart
+index 9217f60..4488702 100644
+--- a/lib/services/download_service.dart
++++ b/lib/services/download_service.dart
+@@ -58,9 +58,11 @@ class DownloadService with ChangeNotifier {
+     'Referer': 'https://www.youtube.com/',
+   };
+   static const Set<String> _backendHosts = <String>{
+-    '136.119.120.136',
++    '34.16.97.84',
+     '34.41.104.248',
+-    '34.171.28.30',
++    '34.61.37.31',
++    '136.119.120.136',
++    '34.170.163.28'
+   };
+ 
+   final Map<String, double> _downloadProgress = {};
+diff --git a/lib/services/song_stream_cache_service.dart b/lib/services/song_stream_cache_service.dart
+index a9136e3..5e38486 100644
+--- a/lib/services/song_stream_cache_service.dart
++++ b/lib/services/song_stream_cache_service.dart
+@@ -46,7 +46,6 @@ class SongStreamCacheService {
+     final normalized = videoId.trim();
+     if (normalized.isEmpty) return;
+     if (!(streamUri.scheme == 'https' || streamUri.scheme == 'http')) return;
+-    if (!streamUri.host.toLowerCase().contains('googlevideo.com')) return;
+     await _ensureLoaded();
+     final fresh = await resolveFreshFilePath(normalized);
+     if (fresh != null) return;
+@@ -221,6 +220,31 @@ class SongStreamCacheService {
+       // Best effort.
+     }
+   }
++
++  static Future<void> clearAllCache() async {
++    try {
++      await _ensureLoaded();
++      final files = List<_SongStreamCacheEntry>.from(_entries);
++      _entries = <_SongStreamCacheEntry>[];
++      for (final entry in files) {
++        try {
++          final file = File(entry.filePath);
++          if (await file.exists()) {
++            await file.delete();
++          }
++        } catch (_) {}
++      }
++      try {
++        final dir = await _cacheDirectory();
++        if (await dir.exists()) {
++          await dir.delete(recursive: true);
++        }
++      } catch (_) {}
++      await _persistEntries();
++    } catch (_) {
++      // Best effort.
++    }
++  }
+ }
+ 
+ class _SongStreamCacheEntry {
+diff --git a/lib/services/yt_resolver_service.dart b/lib/services/yt_resolver_service.dart
+index 938fc63..56d5be7 100644
+--- a/lib/services/yt_resolver_service.dart
++++ b/lib/services/yt_resolver_service.dart
+@@ -29,12 +29,13 @@ class YtResolverService {
+ 
+   static const String _baseUrl = String.fromEnvironment(
+     'YT_RESOLVER_BASE_URL',
+-    defaultValue: 'http://34.44.177.184:10000',
++    defaultValue: 'http://34.16.97.84:10000',
+   );
+   static const List<String> _fallbackBaseUrls = <String>[
+     'http://34.41.104.248:10000',
+-    'http://34.170.163.28:10000',
+-    'http://136.119.120.136:10000'
++    'http://34.61.37.31:10000',
++    'http://136.119.120.136:10000',
++    'http://34.170.163.28:10000'
+   ];
+   static const String _apiKey = String.fromEnvironment(
+     'YT_RESOLVER_API_KEY',
+diff --git a/lib/video_player_manager.dart b/lib/video_player_manager.dart
+index 89493b9..2fd14a2 100644
+--- a/lib/video_player_manager.dart
++++ b/lib/video_player_manager.dart
+@@ -170,6 +170,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+   static const MethodChannel _iosPowerModeChannel = MethodChannel(
+     'com.vm.music.beta/power_mode',
+   );
++  static const MethodChannel _androidPipChannel = MethodChannel(
++    'com.vm.music.beta/pip',
++  );
+   final HistoryService _historyService = HistoryService();
+   final PlaylistService _playlistService = PlaylistService();
+   final AudioHandler _audioHandler;
+@@ -225,6 +228,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+   bool _isResettingEngines = false;
+   Completer<void>? _resetEnginesCompleter;
+   bool _isSwitchingEngine = false;
++  bool _isRetiringHiddenVideoController = false;
+   bool _isTogglingPlayPause = false;
+   String? _currentStreamUrl;
+   List<PlaybackQueueItem> _manualPlaybackQueue = const [];
+@@ -276,6 +280,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+   String? _preloadedForCurrentVideoId;
+   String? _preloadedNextQueueKey;
+   String? _preloadedNextStreamUrl;
++  static const int _queueSongCacheBatchSize = 5;
++  static const int _queueSongCachePenultimateOffset = 2;
++  final Set<String> _queueSongCachePrefetchedIds = <String>{};
++  final List<String> _queueSongCachePrefetchedOrder = <String>[];
++  int _queueSongCacheNextTriggerPosition =
++      _queueSongCacheBatchSize - _queueSongCachePenultimateOffset;
+   String? _crossfadePreparedQueueKey;
+   bool _crossfadePreparedPrimed = false;
+   String? _crossfadeFailedForCurrentVideoId;
+@@ -290,7 +300,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+   bool _siriChannelBound = false;
+   bool _isDisposed = false;
+   Completer<void>? _hiddenSeekCompleter;
++  DateTime? _lastHiddenSeekCompletedAt;
+   Timer? _backgroundEngineSwitchTimer;
++  Timer? _backgroundPlaybackRecoveryTimer;
++  bool _restoreForegroundVideoOnResume = false;
++  bool _iosPipPreparedForCurrentVideoController = false;
++  bool _pauseInAppVideoWhenPipDidStart = false;
+   Timer? _resumeSharedSongTimer;
+   Timer? _resumeSiriPlayTimer;
+   bool _isConsumingPendingSharedSong = false;
+@@ -398,6 +413,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     _bindSharedSongChannel();
+     _bindSiriChannel();
+     _bindIosPowerModeChannel();
++    _bindPipEventsChannel();
+     WidgetsBinding.instance.addObserver(this);
+     _attachActivePlayerSubscriptions();
+     unawaited(_refreshLowPowerModeStatus());
+@@ -829,6 +845,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     _queueTitle = 'Siguiente';
+     _queueSeedVideoId = null;
+     _clearPreloadedNextTrack();
++    _resetQueueSongCachePrefetchState();
+   }
+ 
+   Future<bool> _askToClearQueueForNewSong(BuildContext context) async {
+@@ -1574,8 +1591,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       notifyListeners();
+     }
+     if (state == AppLifecycleState.resumed) {
+-      unawaited(_refreshLowPowerModeStatus());
++      unawaited(_stopNativePiPIfNeeded());
+       _backgroundEngineSwitchTimer?.cancel();
++      _backgroundPlaybackRecoveryTimer?.cancel();
++      _backgroundEngineSwitchTimer = Timer(
++        const Duration(milliseconds: 280),
++        () => unawaited(_stopNativePiPIfNeeded()),
++      );
++      _iosPipPreparedForCurrentVideoController = false;
++      unawaited(_refreshLowPowerModeStatus());
+       _resumeSharedSongTimer?.cancel();
+       _resumeSiriPlayTimer?.cancel();
+       _resumeSharedSongTimer = Timer(const Duration(milliseconds: 380), () {
+@@ -1584,27 +1608,62 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       _resumeSiriPlayTimer = Timer(const Duration(milliseconds: 430), () {
+         unawaited(_consumePendingSiriPlayRequest());
+       });
+-      if (_preferForegroundVideoPlayback &&
++      if (_restoreForegroundVideoOnResume &&
+           !_isLocal &&
+           !_usingHiddenVideo &&
+           (_currentVideoId?.trim().isNotEmpty ?? false)) {
++        _restoreForegroundVideoOnResume = false;
++        _preferForegroundVideoPlayback = true;
+         _backgroundEngineSwitchTimer = Timer(
+-          const Duration(milliseconds: 240),
++          const Duration(milliseconds: 320),
+           () => unawaited(switchToForegroundVideo()),
+         );
+       }
+     }
++    // Igual que el reproductor de música: al salir no levantamos PiP automático.
++    // Así evitamos tener dos motores sonando (PiP nativo + audio engine).
+     if ((state == AppLifecycleState.paused ||
+             state == AppLifecycleState.inactive) &&
+-        _usingHiddenVideo &&
+-        !_preferForegroundVideoPlayback) {
++        _usingHiddenVideo) {
++      final shouldKeepPlayingInBackground = _isPlaying;
++      final shouldRestoreVideoOnResume =
++          _preferForegroundVideoPlayback && !_isLocal;
+       _backgroundEngineSwitchTimer?.cancel();
+-      // Migramos de inmediato a audio-only para evitar cierres al ir a background.
+-      unawaited(_switchHiddenVideoToAudioEngine());
+-      _backgroundEngineSwitchTimer = Timer(
+-        const Duration(milliseconds: 650),
+-        () => unawaited(_switchHiddenVideoToAudioEngine()),
+-      );
++      _backgroundPlaybackRecoveryTimer?.cancel();
++      if (Platform.isIOS) {
++        // En iOS mantenemos el motor de video para que al regresar el video
++        // siga exactamente como estaba, sin cambio de engine.
++        _restoreForegroundVideoOnResume = false;
++        if (shouldKeepPlayingInBackground) {
++          _backgroundPlaybackRecoveryTimer = Timer(
++            const Duration(milliseconds: 240),
++            () => unawaited(_ensureHiddenVideoPlaybackIsRunning()),
++          );
++          _backgroundEngineSwitchTimer = Timer(
++            const Duration(milliseconds: 980),
++            () => unawaited(_ensureHiddenVideoPlaybackIsRunning()),
++          );
++        }
++      } else {
++        // En Android mantenemos migración a audio-only por estabilidad.
++        _preferForegroundVideoPlayback = false;
++        _restoreForegroundVideoOnResume = shouldRestoreVideoOnResume;
++        unawaited(_switchHiddenVideoToAudioEngine());
++        _backgroundEngineSwitchTimer = Timer(
++          const Duration(milliseconds: 650),
++          () => unawaited(_switchHiddenVideoToAudioEngine()),
++        );
++        if (shouldKeepPlayingInBackground) {
++          _backgroundPlaybackRecoveryTimer = Timer(
++            const Duration(milliseconds: 500),
++            () => unawaited(_ensureBackgroundPlaybackIsRunning()),
++          );
++          _backgroundEngineSwitchTimer = Timer(
++            const Duration(milliseconds: 1300),
++            () => unawaited(_ensureBackgroundPlaybackIsRunning()),
++          );
++        }
++      }
+     }
+     if (state == AppLifecycleState.paused ||
+         state == AppLifecycleState.inactive ||
+@@ -1619,6 +1678,58 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     return VideoPlayerOptions(allowBackgroundPlayback: true);
+   }
+ 
++  Future<void> _prepareIosPipIfNeeded({bool force = false}) async {
++    if (kIsWeb || !Platform.isIOS) return;
++    if (!force && _iosPipPreparedForCurrentVideoController) return;
++    final controller = _hiddenVideoController;
++    if (controller == null || !controller.value.isInitialized) return;
++    try {
++      final prepared = await _androidPipChannel
++          .invokeMethod<bool>('preparePictureInPictureIfPossible');
++      debugPrint('PiP prepare result: $prepared');
++      if (prepared == true) {
++        _iosPipPreparedForCurrentVideoController = true;
++      }
++    } catch (e, s) {
++      debugPrint('PiP prepare exception: $e');
++      debugPrint('$s');
++    }
++  }
++
++  void _bindPipEventsChannel() {
++    _androidPipChannel.setMethodCallHandler((call) async {
++      if (call.method != 'onPiPEvent') return;
++      final args = call.arguments;
++      final map = args is Map ? args.cast<Object?, Object?>() : const {};
++      final event = (map['event'] ?? '').toString();
++      final error = (map['error'] ?? '').toString();
++      final message = error.isEmpty
++          ? 'PiP iOS event: $event'
++          : 'PiP iOS event: $event error=$error';
++      debugPrint(message);
++      print(message);
++      if (event == 'didStart' && _pauseInAppVideoWhenPipDidStart) {
++        _pauseInAppVideoWhenPipDidStart = false;
++        unawaited(_pauseInAppVideoAfterPipStart());
++      }
++      if (event == 'failedToStart' || event == 'didStop') {
++        _pauseInAppVideoWhenPipDidStart = false;
++      }
++    });
++  }
++
++  Future<void> _pauseInAppVideoAfterPipStart() async {
++    final controller = _hiddenVideoController;
++    if (controller == null) return;
++    try {
++      await controller.pause();
++    } catch (_) {}
++    _isPlaying = false;
++    _isBuffering = false;
++    _syncSystemPlaybackState(force: true);
++    notifyListeners();
++  }
++
+   // Compatibilidad con pantallas legadas de video.
+   void setPlayerData({
+     required String videoId,
+@@ -1656,7 +1767,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     _currentVideoId = videoId;
+     _isLocal = isLocalVideo;
+     _preferForegroundVideoPlayback = preferVideoPlayback && !isLocalVideo;
+-    _isFullScreen = false;
++    _updateFullScreenState(false, notify: false);
+     _position = Duration.zero;
+     _bufferedPosition = Duration.zero;
+     _completionHandledForCurrent = false;
+@@ -1717,41 +1828,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+ 
+       Object? lastAudioError;
+       var started = false;
+-      if (!isLocalVideo && !_preferForegroundVideoPlayback) {
++      if (!isLocalVideo) {
+         started = await _tryStartPlaybackFromSongCache(videoId);
+       }
+-      if (preloadedStreamUrl != null && preloadedStreamUrl.trim().isNotEmpty) {
++      if (!started &&
++          preloadedStreamUrl != null &&
++          preloadedStreamUrl.trim().isNotEmpty) {
+         try {
+-          final preloadedUri = Uri.parse(preloadedStreamUrl.trim());
+-          final headers =
+-              _headersForStreamUri(preloadedUri) ?? const <String, String>{};
+-          await _player.setAudioSource(
+-            AudioSource.uri(preloadedUri, headers: headers),
+-          );
++          final preloadedRaw = preloadedStreamUrl.trim();
++          final preloadedFile = File(preloadedRaw);
++          if (!kIsWeb && await preloadedFile.exists()) {
++            await _player.setAudioSource(AudioSource.file(preloadedFile.path));
++          } else {
++            final preloadedUri = Uri.parse(preloadedRaw);
++            final headers =
++                _headersForStreamUri(preloadedUri) ?? const <String, String>{};
++            await _player.setAudioSource(
++              AudioSource.uri(preloadedUri, headers: headers),
++            );
++            unawaited(
++              _warmSongCacheFromUri(videoId: videoId, uri: preloadedUri),
++            );
++          }
+           await _player.play();
+           unawaited(_applyTrackStartFadeInIfEnabled());
+           started = true;
+           _usingHiddenVideo = false;
+-          _currentStreamUrl = preloadedUri.toString();
+-          unawaited(_warmSongCacheFromUri(videoId: videoId, uri: preloadedUri));
++          _currentStreamUrl = preloadedRaw;
+         } catch (e) {
+           lastAudioError = e;
+         }
+       }
+ 
+-      if (!started) {
+-        started = await _attemptBackendPlaybackWithRetry(
+-          videoId,
+-          keepVideoEngine: _preferForegroundVideoPlayback,
+-        );
+-      }
+-
+-      if (!started && forceBackendResolver && !isLocalVideo) {
+-        throw Exception(
+-          'No se pudo iniciar reproducción desde backend para videoId=$videoId',
+-        );
+-      }
+-
+       if (!started &&
+           !forceBackendResolver &&
+           !_preferForegroundVideoPlayback &&
+@@ -1797,13 +1905,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+             await controller.play();
+             _hiddenVideoController = controller;
+             _usingHiddenVideo = true;
++            _iosPipPreparedForCurrentVideoController = false;
+             _currentStreamUrl = stream.url.toString();
+             _isPlaying = true;
+             _isBuffering = false;
+             _trackDuration = controller.value.duration;
+             controller.addListener(_syncFromHiddenVideo);
+             started = true;
+-            if (!_preferForegroundVideoPlayback) {
++            if (Platform.isIOS && !kIsWeb) {
++              // En iOS mantenemos el motor de video para que PiP pueda tomar la sesión
++              // cuando la app pasa a segundo plano (comportamiento tipo YouTube).
++              _preferForegroundVideoPlayback = true;
++              unawaited(_prepareIosPipIfNeeded(force: true));
++            } else if (!_preferForegroundVideoPlayback) {
+               unawaited(_switchHiddenVideoToAudioEngine());
+             }
+             break;
+@@ -1827,15 +1941,37 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+             'No se pudo iniciar audio ni fallback de video: audio=$lastAudioError muxed=$lastMuxedError',
+           );
+         }
+-      } else if (!started) {
++      }
++
++      if (!started && !forceBackendResolver) {
++        started = await _attemptBackendPlaybackWithRetry(
++          videoId,
++          keepVideoEngine: _preferForegroundVideoPlayback,
++        );
++      }
++
++      if (!started && forceBackendResolver && !isLocalVideo) {
++        started = await _attemptBackendPlaybackWithRetry(
++          videoId,
++          keepVideoEngine: _preferForegroundVideoPlayback,
++        );
++      }
++
++      if (!started) {
++        if (forceBackendResolver) {
++          throw Exception(
++            'No se pudo iniciar reproducción desde backend para videoId=$videoId',
++          );
++        }
+         throw Exception(
+-          'No se pudo iniciar reproducción desde backend para videoId=$videoId',
++          'No se pudo iniciar reproducción por ninguna ruta para videoId=$videoId',
+         );
+       }
+ 
+       if (!_autoplayEnabled && !preserveExistingQueue) {
+         _clearQueueForAutoplayDisabled();
+       }
++      await _enforceSingleAudibleSource();
+       unawaited(_applyAudioEffects());
+       if (_autoplayEnabled && !isLocalVideo && !preserveExistingQueue) {
+         unawaited(_warmUpAutoplayQueue(videoId));
+@@ -2051,6 +2187,99 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     }
+   }
+ 
++  void _resetQueueSongCachePrefetchState() {
++    _queueSongCachePrefetchedIds.clear();
++    _queueSongCachePrefetchedOrder.clear();
++    _queueSongCacheNextTriggerPosition =
++        _queueSongCacheBatchSize - _queueSongCachePenultimateOffset;
++  }
++
++  Uri? _validHttpUri(String? raw) {
++    final value = (raw ?? '').trim();
++    if (value.isEmpty) return null;
++    final uri = Uri.tryParse(value);
++    if (uri == null) return null;
++    if (uri.scheme != 'https' && uri.scheme != 'http') return null;
++    return uri;
++  }
++
++  Future<Uri?> _resolveQueueItemCacheUri(String videoId) async {
++    try {
++      final resolved = await _ytResolverService.resolveVideo(videoId);
++      final resolverCandidates = <String?>[
++        resolved?.audioUrl,
++        resolved?.muxedUrl,
++        resolved?.sourceUrl,
++      ];
++      for (final candidate in resolverCandidates) {
++        final uri = _validHttpUri(candidate);
++        if (uri != null) return uri;
++      }
++    } catch (_) {}
++
++    try {
++      final manifest = await _getManifestWithRetry(videoId);
++      for (final stream in _prioritizeAudioStreams(manifest.audioOnly.toList())) {
++        return stream.url;
++      }
++      for (final stream in _prioritizeMuxedStreams(manifest.muxed.toList())) {
++        return stream.url;
++      }
++    } catch (_) {}
++
++    final backend = await _resolveDownloadSourceViaBackend(videoId);
++    final backendUri = _validHttpUri(backend?.sourceUrl);
++    if (backendUri != null) return backendUri;
++    return null;
++  }
++
++  Future<void> _prefetchQueueItemInSongCache(PlaybackQueueItem item) async {
++    if (item.isLocal) return;
++    final videoId = item.videoId.trim();
++    if (videoId.isEmpty) return;
++    final cached = await SongStreamCacheService.resolveFreshFilePath(videoId);
++    if (cached != null && cached.isNotEmpty) return;
++    final uri = await _resolveQueueItemCacheUri(videoId);
++    if (uri == null) return;
++    await _warmSongCacheFromUri(videoId: videoId, uri: uri);
++  }
++
++  void _prefetchNextQueueSongCacheBatch() {
++    final queueSnapshot = <PlaybackQueueItem>[
++      ..._manualPlaybackQueue,
++      ..._playbackQueue,
++    ];
++    final batch = <PlaybackQueueItem>[];
++    for (final item in queueSnapshot) {
++      if (item.isLocal) continue;
++      final id = item.videoId.trim();
++      if (id.isEmpty || _queueSongCachePrefetchedIds.contains(id)) continue;
++      batch.add(item);
++      if (batch.length >= _queueSongCacheBatchSize) break;
++    }
++    if (batch.isEmpty) return;
++    for (final item in batch) {
++      final id = item.videoId.trim();
++      _queueSongCachePrefetchedIds.add(id);
++      _queueSongCachePrefetchedOrder.add(id);
++      unawaited(_prefetchQueueItemInSongCache(item));
++    }
++  }
++
++  void _maybePrefetchQueueSongCacheBatchOnTrackStart() {
++    final currentId = _currentVideoId?.trim() ?? '';
++    if (currentId.isEmpty || _isLocal) return;
++    if (_queueSongCachePrefetchedOrder.isEmpty) {
++      _prefetchNextQueueSongCacheBatch();
++      return;
++    }
++    final currentPos = _queueSongCachePrefetchedOrder.indexOf(currentId);
++    if (currentPos != -1 && currentPos >= _queueSongCacheNextTriggerPosition) {
++      _queueSongCacheNextTriggerPosition += _queueSongCacheBatchSize;
++      _prefetchNextQueueSongCacheBatch();
++    }
++  }
++
+   Future<void> _addCurrentTrackToHistory(String videoId) async {
+     final title = _trackTitle;
+     final thumbnail = _trackThumbnailUrl;
+@@ -2621,6 +2850,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     final uri = Uri.parse(source.sourceUrl);
+     final headers = _headersForStreamUri(uri) ?? const <String, String>{};
+     final streamKind = (uri.queryParameters['kind'] ?? '').trim().toLowerCase();
++    final shouldPreferAudioEngineForVideoSource =
++        source.isVideoSource && !keepVideoEngine;
+     final shouldTryAudioFirstForBackendMuxed =
+         source.isVideoSource &&
+         _isBackendProxyStreamUri(uri) &&
+@@ -2630,7 +2861,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       '[playback-source] attempt uriHost=${uri.host} isVideo=${source.isVideoSource}',
+     );
+ 
+-    if (!source.isVideoSource || shouldTryAudioFirstForBackendMuxed) {
++    if (!source.isVideoSource ||
++        shouldTryAudioFirstForBackendMuxed ||
++        shouldPreferAudioEngineForVideoSource) {
+       try {
+         await _player.setAudioSource(AudioSource.uri(uri, headers: headers));
+         unawaited(_applyAudioEffects());
+@@ -2670,7 +2903,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+         final shouldSkipVideoFallback =
+             shouldTryAudioFirstForBackendMuxed &&
+             _looksLikeConnectionFailure(e);
+-        if (shouldSkipVideoFallback) {
++        if (shouldSkipVideoFallback || shouldPreferAudioEngineForVideoSource) {
+           log(
+             '[playback-source] backend connection-like failure; skipping video engine fallback uriHost=${uri.host}',
+           );
+@@ -2679,6 +2912,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       }
+     }
+ 
++    if (!keepVideoEngine) {
++      return false;
++    }
++
+     try {
+       final controller = VideoPlayerController.networkUrl(
+         uri,
+@@ -5368,7 +5605,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     _currentVideoId = id;
+     _isLocal = true;
+     _preferForegroundVideoPlayback = false;
+-    _isFullScreen = false;
++    _updateFullScreenState(false, notify: false);
+     _trackTitle = title;
+     _trackThumbnailUrl = thumbnailUrl;
+     _trackArtist = cleanArtistName(artist);
+@@ -5430,6 +5667,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       _sessionPlayedVideoIds.add(id);
+       _warmUpNextTrackPreloadNow();
+       _usingHiddenVideo = false;
++      await _enforceSingleAudibleSource();
+       if (_autoplayEnabled) {
+         if (_shouldRefreshQueueForVideo(
+           id,
+@@ -5470,6 +5708,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+   Future<void> playQueueItem(
+     PlaybackQueueItem item, {
+     String? preloadedStreamUrl,
++    bool preferVideoPlayback = false,
+   }) async {
+     _removeFromQueues(item);
+     notifyListeners();
+@@ -5496,14 +5735,28 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       );
+       return;
+     }
++    String? effectivePreloaded = preloadedStreamUrl;
++    try {
++      final cachedPath = await SongStreamCacheService.resolveFreshFilePath(
++        item.videoId,
++      );
++      if (cachedPath != null && cachedPath.isNotEmpty && !kIsWeb) {
++        final cachedFile = File(cachedPath);
++        if (await cachedFile.exists()) {
++          effectivePreloaded = cachedPath;
++        }
++      }
++    } catch (_) {
++      // Best effort: si falla la consulta de cache, seguimos con preload actual.
++    }
+     await play(
+       item.videoId,
+       preferredThumbnailUrl: item.thumbnailUrl,
+       preferredTitle: item.title,
+       preferredArtist: item.artist,
+-      preloadedStreamUrl: preloadedStreamUrl,
++      preloadedStreamUrl: effectivePreloaded,
+       preserveExistingQueue: true,
+-      preferVideoPlayback: _preferForegroundVideoPlayback,
++      preferVideoPlayback: preferVideoPlayback,
+     );
+   }
+ 
+@@ -5570,6 +5823,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     );
+     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+     unawaited(_maybePreloadUpcomingQueueTrack());
++    _maybePrefetchQueueSongCacheBatchOnTrackStart();
+     notifyListeners();
+     return true;
+   }
+@@ -5579,7 +5833,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) {
+       await _hydrateQueueForManualNext();
+     }
+-    await _playNextFromQueue();
++    await _playNextFromQueue(allowPreparedTransition: false);
+   }
+ 
+   Future<void> _hydrateQueueForManualNext() async {
+@@ -5612,7 +5866,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     }
+     final previous = _playbackHistory.removeLast();
+     _skipHistoryPushOnce = true;
+-    await playQueueItem(previous);
++    await playQueueItem(previous, preferVideoPlayback: false);
+   }
+ 
+   void shufflePlaybackQueue() {
+@@ -5626,6 +5880,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     _clearPreloadedNextTrack();
+     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+     unawaited(_maybePreloadUpcomingQueueTrack());
++    _maybePrefetchQueueSongCacheBatchOnTrackStart();
+     notifyListeners();
+   }
+ 
+@@ -5639,6 +5894,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     _clearPreloadedNextTrack();
+     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+     unawaited(_maybePreloadUpcomingQueueTrack());
++    _maybePrefetchQueueSongCacheBatchOnTrackStart();
+     notifyListeners();
+   }
+ 
+@@ -5661,6 +5917,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     _clearPreloadedNextTrack();
+     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+     unawaited(_maybePreloadUpcomingQueueTrack());
++    _maybePrefetchQueueSongCacheBatchOnTrackStart();
+     notifyListeners();
+   }
+ 
+@@ -5944,6 +6201,38 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     }
+   }
+ 
++  Future<void> _enforceSingleAudibleSource() async {
++    final allowDualForMix = _isCrossfadeTransitioning && _isMixingEnabled;
++    if (allowDualForMix) return;
++    try {
++      if (_usingHiddenVideo) {
++        try {
++          await _player.pause();
++        } catch (_) {}
++      } else {
++        final hidden = _hiddenVideoController;
++        if (hidden != null && hidden.value.isInitialized && hidden.value.isPlaying) {
++          try {
++            await hidden.pause();
++          } catch (_) {}
++        }
++      }
++      if (_crossfadePlayer.playing) {
++        try {
++          await _crossfadePlayer.pause();
++        } catch (_) {}
++        try {
++          await _crossfadePlayer.seek(Duration.zero);
++        } catch (_) {}
++        try {
++          await _crossfadePlayer.setVolume(0.0);
++        } catch (_) {}
++      }
++    } catch (_) {
++      // Best effort.
++    }
++  }
++
+   bool get _isMixingEnabled =>
+       _settingsService.crossfade || _settingsService.djMode;
+ 
+@@ -6284,6 +6573,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+           final value = controller.value;
+           _isPlaying = value.isPlaying;
+           _isBuffering = value.isBuffering;
++          if (_isPlaying) {
++            await _enforceSingleAudibleSource();
++          }
+           unawaited(_persistPlaybackSession(force: true));
+           notifyListeners();
+         }
+@@ -6318,6 +6610,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+         }
+         _isPlaying = _player.playing;
+         _isBuffering = false;
++        if (_isPlaying) {
++          await _enforceSingleAudibleSource();
++        }
+         unawaited(_persistPlaybackSession(force: true));
+         notifyListeners();
+       }
+@@ -6327,7 +6622,12 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+   }
+ 
+   Future<void> seekTo(Duration newPosition) async {
+-    if (_isResettingEngines) return;
++    if (_isResettingEngines ||
++        _isSwitchingEngine ||
++        _isAdvancingQueue ||
++        _isRetiringHiddenVideoController) {
++      return;
++    }
+     final max = _trackDuration;
+     final clamped = newPosition < Duration.zero
+         ? Duration.zero
+@@ -6339,7 +6639,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       try {
+         if (!identical(hidden, _hiddenVideoController) ||
+             !_usingHiddenVideo ||
+-            _isResettingEngines) {
++            _isResettingEngines ||
++            _isSwitchingEngine ||
++            _isAdvancingQueue ||
++            _isRetiringHiddenVideoController) {
+           return;
+         }
+         await hidden.seekTo(clamped);
+@@ -6348,6 +6651,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       } catch (e, s) {
+         log('seekTo en hidden video falló', error: e, stackTrace: s);
+       } finally {
++        if (identical(hidden, _hiddenVideoController) || _hiddenVideoController == null) {
++          _lastHiddenSeekCompletedAt = DateTime.now();
++        }
+         if (identical(_hiddenSeekCompleter, seekCompleter) &&
+             !seekCompleter.isCompleted) {
+           seekCompleter.complete();
+@@ -6379,6 +6685,16 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     }
+   }
+ 
++  Future<void> _waitForHiddenSeekCooldown({
++    Duration minimumGap = const Duration(milliseconds: 120),
++  }) async {
++    final last = _lastHiddenSeekCompletedAt;
++    if (last == null) return;
++    final elapsed = DateTime.now().difference(last);
++    if (elapsed >= minimumGap) return;
++    await Future<void>.delayed(minimumGap - elapsed);
++  }
++
+   void minimize() {
+     if (!_isMinimized) {
+       _isMinimized = true;
+@@ -6399,7 +6715,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+ 
+     _currentVideoId = null;
+     _isMinimized = false;
+-    _isFullScreen = false;
++    _updateFullScreenState(false, notify: false);
+     _trackTitle = null;
+     _trackThumbnailUrl = null;
+     _trackArtist = null;
+@@ -6433,12 +6749,43 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+   }
+ 
+   void setFullScreen(bool isFullScreen) {
+-    if (_isFullScreen != isFullScreen) {
+-      _isFullScreen = isFullScreen;
++    _updateFullScreenState(isFullScreen, notify: true);
++  }
++
++  void _updateFullScreenState(bool isFullScreen, {required bool notify}) {
++    if (_isFullScreen == isFullScreen) return;
++    _isFullScreen = isFullScreen;
++    unawaited(_syncFullscreenSystemUi(isFullScreen));
++    if (notify) {
+       notifyListeners();
+     }
+   }
+ 
++  Future<void> _syncFullscreenSystemUi(bool isFullScreen) async {
++    if (kIsWeb ||
++        (defaultTargetPlatform != TargetPlatform.android &&
++            defaultTargetPlatform != TargetPlatform.iOS)) {
++      return;
++    }
++    try {
++      if (isFullScreen) {
++        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
++        await SystemChrome.setPreferredOrientations(<DeviceOrientation>[
++          DeviceOrientation.landscapeLeft,
++          DeviceOrientation.landscapeRight,
++        ]);
++      } else {
++        await SystemChrome.setPreferredOrientations(<DeviceOrientation>[
++          DeviceOrientation.portraitUp,
++          DeviceOrientation.portraitDown,
++        ]);
++        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
++      }
++    } catch (_) {
++      // Best effort: evitamos romper reproducción si la plataforma rechaza rotación/UI.
++    }
++  }
++
+   Future<void> switchToBackgroundAudio() async {
+     _preferForegroundVideoPlayback = false;
+     await _switchHiddenVideoToAudioEngine();
+@@ -6484,10 +6831,49 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     }
+   }
+ 
++  Future<void> enterPictureInPictureNow() async {
++    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return;
++    final controller = _hiddenVideoController;
++    if (controller == null || !controller.value.isInitialized) return;
++    try {
++      if (Platform.isIOS) {
++        final nativeUrl = _currentStreamUrl?.trim() ?? '';
++        if (nativeUrl.isNotEmpty) {
++          final nativeStarted = await _androidPipChannel.invokeMethod<bool>(
++            'startNativePiPFromUrl',
++            <String, dynamic>{
++              'url': nativeUrl,
++              'positionMs': controller.value.position.inMilliseconds,
++              'shouldPlay': _isPlaying,
++              'headers': const <String, String>{
++                'User-Agent':
++                    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
++                'Accept': '*/*',
++              },
++            },
++          );
++          if (nativeStarted == true) {
++            _pauseInAppVideoWhenPipDidStart = true;
++            return;
++          }
++        }
++        await _androidPipChannel.invokeMethod<bool>(
++          'preparePictureInPictureIfPossible',
++        );
++      }
++      await _androidPipChannel.invokeMethod<bool>(
++        'enterPictureInPictureIfPossible',
++      );
++    } catch (e, s) {
++      log('No se pudo iniciar PiP manualmente', error: e, stackTrace: s);
++    }
++  }
++
+   @override
+   void dispose() {
+     _isDisposed = true;
+     _backgroundEngineSwitchTimer?.cancel();
++    _backgroundPlaybackRecoveryTimer?.cancel();
+     _resumeSharedSongTimer?.cancel();
+     _resumeSiriPlayTimer?.cancel();
+     unawaited(_persistPlaybackSession(force: true));
+@@ -6706,7 +7092,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       _currentVideoId = videoId;
+       _isLocal = isLocal;
+       _isMinimized = true;
+-      _isFullScreen = false;
++      _updateFullScreenState(false, notify: false);
+       _trackTitle = title.isNotEmpty ? title : null;
+       _trackThumbnailUrl = thumbnailUrl.isNotEmpty ? thumbnailUrl : null;
+       _trackArtist = artist.isNotEmpty ? artist : null;
+@@ -6921,6 +7307,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     _resetEnginesCompleter = completer;
+     _isResettingEngines = true;
+     try {
++      await _stopNativePiPIfNeeded();
+       try {
+         await _player.stop();
+       } catch (e, s) {
+@@ -6937,9 +7324,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       await _waitForPendingHiddenSeek(
+         timeout: const Duration(milliseconds: 350),
+       );
++      await _waitForHiddenSeekCooldown();
+       final controller = _hiddenVideoController;
+       _hiddenVideoController = null;
+       _usingHiddenVideo = false;
++      _isRetiringHiddenVideoController = controller != null;
++      // Desacoplamos de UI antes del dispose para evitar que widgets usen
++      // un controller ya destruido durante transiciones rápidas.
++      notifyListeners();
+       if (controller != null) {
+         controller.removeListener(_syncFromHiddenVideo);
+         try {
+@@ -6949,6 +7341,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+           await controller.dispose();
+         } catch (_) {}
+       }
++      _isRetiringHiddenVideoController = false;
+     } finally {
+       _isResettingEngines = false;
+       _resetEnginesCompleter = null;
+@@ -6958,6 +7351,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     }
+   }
+ 
++  Future<void> _stopNativePiPIfNeeded() async {
++    if (kIsWeb || !Platform.isIOS) return;
++    try {
++      await _androidPipChannel.invokeMethod<bool>('stopNativePiPIfNeeded');
++    } catch (_) {
++      // Best effort: si el método no existe o falla, no bloqueamos reproducción.
++    }
++  }
++
+   void _syncFromHiddenVideo() {
+     if (_isDisposed) return;
+     final controller = _hiddenVideoController;
+@@ -7015,6 +7417,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       // Desacoplamos el motor de video antes de iniciar audio para evitar audio doble.
+       _hiddenVideoController = null;
+       _usingHiddenVideo = false;
++      _isRetiringHiddenVideoController = true;
++      // Publicamos null de inmediato para que la UI deje de usar este controller
++      // antes de que potencialmente se haga dispose más abajo.
++      notifyListeners();
+ 
+       try {
+         await _player.setAudioSource(
+@@ -7026,6 +7432,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+         unawaited(_applyTrackStartFadeInIfEnabled());
+         _isPlaying = true;
+         _isBuffering = false;
++        await _enforceSingleAudibleSource();
+         _syncSystemPlaybackState(force: true);
+       } catch (e, s) {
+         // Si falla el motor de audio, recuperamos fallback de video.
+@@ -7036,16 +7443,21 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+         );
+         _hiddenVideoController = hidden;
+         _usingHiddenVideo = true;
++        _isRetiringHiddenVideoController = false;
+         hidden.addListener(_syncFromHiddenVideo);
+         try {
+           await hidden.play();
+         } catch (_) {}
+       } finally {
+         if (_hiddenVideoController == null) {
++          await _waitForHiddenSeekCooldown();
+           try {
+             await hidden.dispose();
+           } catch (_) {}
+         }
++        if (_hiddenVideoController == null) {
++          _isRetiringHiddenVideoController = false;
++        }
+       }
+       notifyListeners();
+     } catch (e, s) {
+@@ -7059,6 +7471,47 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     }
+   }
+ 
++  Future<void> _ensureBackgroundPlaybackIsRunning() async {
++    if (_appInForeground) return;
++    if (_currentVideoId == null) return;
++    if (_usingHiddenVideo || _isResettingEngines || _isSwitchingEngine) return;
++    try {
++      if (!_player.playing) {
++        await _player.play();
++      }
++      _isPlaying = _player.playing;
++      _isBuffering = false;
++      _syncSystemPlaybackState(force: true);
++      notifyListeners();
++    } catch (_) {
++      // Best effort.
++    }
++  }
++
++  Future<void> _ensureHiddenVideoPlaybackIsRunning() async {
++    if (_appInForeground) return;
++    if (!_usingHiddenVideo || _hiddenVideoController == null) return;
++    if (_isResettingEngines || _isSwitchingEngine) return;
++    for (var attempt = 0; attempt < 3; attempt++) {
++      final hidden = _hiddenVideoController;
++      if (_appInForeground || hidden == null || !_usingHiddenVideo) return;
++      try {
++        if (!hidden.value.isInitialized) return;
++        if (!hidden.value.isPlaying) {
++          await hidden.play();
++        }
++        _isPlaying = hidden.value.isPlaying;
++        _isBuffering = hidden.value.isBuffering;
++        _syncSystemPlaybackState(force: true);
++        notifyListeners();
++        if (_isPlaying) return;
++      } catch (_) {
++        // Best effort.
++      }
++      await Future<void>.delayed(const Duration(milliseconds: 260));
++    }
++  }
++
+   Future<void> _loadOnlineQueue(
+     Video currentVideo, {
+     required String currentVideoId,
+@@ -7082,6 +7535,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+         _playbackQueue = persisted;
+         _queueSeedVideoId = currentVideoId;
+         _rememberRecommendedQueue(_playbackQueue);
++        _maybePrefetchQueueSongCacheBatchOnTrackStart();
+         _isQueueLoading = false;
+         notifyListeners();
+       }
+@@ -7098,6 +7552,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+         _rememberRecommendedQueue(_playbackQueue);
+         unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+         unawaited(_maybePreloadUpcomingQueueTrack());
++        _maybePrefetchQueueSongCacheBatchOnTrackStart();
+       }
+     } catch (e, s) {
+       log('Error cargando recomendados', error: e, stackTrace: s);
+@@ -7136,6 +7591,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+         _playbackQueue = persisted;
+         _queueSeedVideoId = currentVideoId;
+         _rememberRecommendedQueue(_playbackQueue);
++        _maybePrefetchQueueSongCacheBatchOnTrackStart();
+         _isQueueLoading = false;
+         notifyListeners();
+       }
+@@ -7163,6 +7619,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+         _rememberRecommendedQueue(_playbackQueue);
+         unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+         unawaited(_maybePreloadUpcomingQueueTrack());
++        _maybePrefetchQueueSongCacheBatchOnTrackStart();
+       }
+     } catch (e, s) {
+       log(
+@@ -7227,6 +7684,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       _queueSeedVideoId = currentVideoId;
+       unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+       unawaited(_maybePreloadUpcomingQueueTrack());
++      _maybePrefetchQueueSongCacheBatchOnTrackStart();
+     } catch (e, s) {
+       log('Error cargando cola local', error: e, stackTrace: s);
+       if (queueRequestId != _queueEpoch || _currentVideoId != currentVideoId) {
+@@ -7275,7 +7733,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+     await _playNextFromQueue();
+   }
+ 
+-  Future<void> _playNextFromQueue({bool triggeredByCrossfade = false}) async {
++  Future<void> _playNextFromQueue({
++    bool triggeredByCrossfade = false,
++    bool allowPreparedTransition = true,
++  }) async {
+     _setTrackTransitionDirection(1);
+     if (_isAdvancingQueue) return;
+     if (_manualPlaybackQueue.isEmpty && _playbackQueue.isEmpty) return;
+@@ -7301,7 +7762,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       }
+       final shouldForceVideoEngineForQueueItem =
+           _preferForegroundVideoPlayback && !next.isLocal;
+-      final transitionedToPrepared = shouldForceVideoEngineForQueueItem
++      final transitionedToPrepared =
++          !allowPreparedTransition || shouldForceVideoEngineForQueueItem
+           ? false
+           : (triggeredByCrossfade
+                 ? await _tryCrossfadeTransitionToPreparedItem(next)
+@@ -7323,7 +7785,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       final preloadedUrl = _consumePreloadedStreamForQueueItem(next);
+       _crossfadeTriggeredForCurrent = false;
+       notifyListeners();
+-      await playQueueItem(next, preloadedStreamUrl: preloadedUrl);
++      await playQueueItem(
++        next,
++        preloadedStreamUrl: preloadedUrl,
++        preferVideoPlayback: false,
++      );
+     } catch (e, s) {
+       log('Error reproduciendo siguiente de la cola', error: e, stackTrace: s);
+       if (triggeredByCrossfade) {
+@@ -7394,7 +7860,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+ 
+       _currentVideoId = next.videoId;
+       _isLocal = next.isLocal;
+-      _isFullScreen = false;
++      _updateFullScreenState(false, notify: false);
+       _trackTitle = next.title;
+       _trackArtist = cleanArtistName(next.artist);
+       _trackThumbnailUrl = next.thumbnailUrl;
+@@ -8124,7 +8590,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+ 
+       _currentVideoId = next.videoId;
+       _isLocal = next.isLocal;
+-      _isFullScreen = false;
++      _updateFullScreenState(false, notify: false);
+       _position = Duration.zero;
+       _bufferedPosition = Duration.zero;
+       _completionHandledForCurrent = false;
+@@ -8323,6 +8789,33 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
+       }
+     }
+ 
++    final cachedPath = await SongStreamCacheService.resolveFreshFilePath(
++      next.videoId,
++    );
++    if (cachedPath != null && cachedPath.isNotEmpty && !kIsWeb) {
++      final cachedFile = File(cachedPath);
++      if (await cachedFile.exists()) {
++        try {
++          await _crossfadePlayer.stop();
++          await _crossfadePlayer.setVolume(0.0);
++          await _crossfadePlayer.setAudioSource(AudioSource.file(cachedPath));
++          final primed = await _primeCrossfadePlayerBuffer();
++          if (primed) {
++            _preloadedForCurrentVideoId = currentVideoId;
++            _preloadedNextQueueKey = queueKey;
++            _preloadedNextStreamUrl = cachedPath;
++            _crossfadePreparedQueueKey = queueKey;
++            _crossfadePreparedPrimed = true;
++            _crossfadeFailedForCurrentVideoId = null;
++            _crossfadeFailedQueueKey = null;
++            return true;
++          }
++        } catch (_) {
++          // Best effort: si falla cache local, seguimos con fuentes remotas.
++        }
++      }
++    }
++
+     final candidateUris = <Uri>[];
+     final seenCandidateUrls = <String>{};
+     void addCandidateUrl(String? raw) {
+diff --git a/pubspec.yaml b/pubspec.yaml
+index 4cf1d33..1c13a17 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -1,7 +1,7 @@
+ name: myapp
+ description: "A Music project..."
+ publish_to: 'none'
+-version: 0.4.2+1
++version: 0.4.3+1
+ 
+ environment:
+   sdk: ^3.9.0

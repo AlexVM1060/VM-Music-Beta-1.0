@@ -14,13 +14,21 @@ class PendingArtistProfile {
 
 class SearchViewState extends ChangeNotifier {
   bool _isArtistFullscreen = false;
+  bool _isLibraryAlbumFullscreen = false;
   PendingArtistProfile? _pendingArtistProfile;
 
   bool get isArtistFullscreen => _isArtistFullscreen;
+  bool get isLibraryAlbumFullscreen => _isLibraryAlbumFullscreen;
 
   void setArtistFullscreen(bool value) {
     if (_isArtistFullscreen == value) return;
     _isArtistFullscreen = value;
+    notifyListeners();
+  }
+
+  void setLibraryAlbumFullscreen(bool value) {
+    if (_isLibraryAlbumFullscreen == value) return;
+    _isLibraryAlbumFullscreen = value;
     notifyListeners();
   }
 

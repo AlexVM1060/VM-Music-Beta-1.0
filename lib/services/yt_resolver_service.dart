@@ -29,12 +29,13 @@ class YtResolverService {
 
   static const String _baseUrl = String.fromEnvironment(
     'YT_RESOLVER_BASE_URL',
-    defaultValue: 'http://34.44.177.184:10000',
+    defaultValue: 'http://34.16.97.84:10000',
   );
   static const List<String> _fallbackBaseUrls = <String>[
     'http://34.41.104.248:10000',
-    'http://34.170.163.28:10000',
-    'http://136.119.120.136:10000'
+    'http://34.61.37.31:10000',
+    'http://136.119.120.136:10000',
+    'http://34.170.163.28:10000'
   ];
   static const String _apiKey = String.fromEnvironment(
     'YT_RESOLVER_API_KEY',
@@ -59,27 +60,43 @@ class YtResolverService {
 
   bool get isConfigured => _baseUrl.trim().isNotEmpty;
 
-  Future<YtResolverResult?> resolveVideo(String videoId) async {
+  Future<YtResolverResult?> resolveVideo(
+    String videoId, {
+    int? preferredBackendIndex,
+  }) async {
     if (!isConfigured) return null;
     final cleanVideoId = videoId.trim();
     if (cleanVideoId.isEmpty) return null;
-    final inFlight = _inFlightByVideoId[cleanVideoId];
+    final cacheKey = preferredBackendIndex == null
+        ? cleanVideoId
+        : '$cleanVideoId#$preferredBackendIndex';
+    final inFlight = _inFlightByVideoId[cacheKey];
     if (inFlight != null) {
-      _trace('[yt-resolver-service] join in-flight resolve videoId=$cleanVideoId');
+      _trace(
+        '[yt-resolver-service] join in-flight resolve videoId=$cleanVideoId key=$cacheKey',
+      );
       return inFlight;
     }
 
-    final future = _resolveVideoInternal(cleanVideoId);
-    _inFlightByVideoId[cleanVideoId] = future;
+    final future = _resolveVideoInternal(
+      cleanVideoId,
+      preferredBackendIndex: preferredBackendIndex,
+    );
+    _inFlightByVideoId[cacheKey] = future;
     try {
       return await future;
     } finally {
-      _inFlightByVideoId.remove(cleanVideoId);
+      _inFlightByVideoId.remove(cacheKey);
     }
   }
 
-  Future<YtResolverResult?> _resolveVideoInternal(String cleanVideoId) async {
-    final candidateBases = _orderedCandidateBases();
+  Future<YtResolverResult?> _resolveVideoInternal(
+    String cleanVideoId, {
+    int? preferredBackendIndex,
+  }) async {
+    final candidateBases = _orderedCandidateBases(
+      preferredBackendIndex: preferredBackendIndex,
+    );
     final headers = <String, String>{};
     if (_apiKey.trim().isNotEmpty) {
       headers['x-api-key'] = _apiKey.trim();
@@ -314,7 +331,7 @@ class YtResolverService {
     return uri.toString();
   }
 
-  List<String> _orderedCandidateBases() {
+  List<String> _orderedCandidateBases({int? preferredBackendIndex}) {
     final unique = <String>[];
     final seen = <String>{};
     for (final raw in <String>[_baseUrl.trim(), ..._fallbackBaseUrls]) {
@@ -336,21 +353,34 @@ class YtResolverService {
     final ordered = List<String>.from(pool);
     ordered.shuffle(_random);
 
-    final primary = _normalizeBaseUrl(_baseUrl.trim());
-    if (primary != null && unique.contains(primary)) {
-      ordered.remove(primary);
-      ordered.insert(0, primary);
+    final preferredByIndex = (preferredBackendIndex != null && unique.isNotEmpty)
+        ? unique[preferredBackendIndex % unique.length]
+        : null;
+    if (preferredByIndex != null && ordered.contains(preferredByIndex)) {
+      ordered.remove(preferredByIndex);
+      ordered.insert(0, preferredByIndex);
+    } else {
+      final primary = _normalizeBaseUrl(_baseUrl.trim());
+      if (primary != null && unique.contains(primary)) {
+        ordered.remove(primary);
+        ordered.insert(0, primary);
+      }
     }
 
+    final primary = _normalizeBaseUrl(_baseUrl.trim());
     final preferred = _lastHealthyBaseUrl;
-    if (preferred != null && preferred != primary) {
+    if (preferred != null && preferred != primary && preferred != preferredByIndex) {
       final idx = ordered.indexOf(preferred);
       if (idx > 0) {
         final base = ordered.removeAt(idx);
-        final insertAt = primary == null ? 0 : 1;
+        final insertAt = preferredByIndex != null
+            ? 1
+            : (primary == null ? 0 : 1);
         ordered.insert(insertAt, base);
       } else if (idx < 0 && pool.contains(preferred)) {
-        final insertAt = primary == null ? 0 : 1;
+        final insertAt = preferredByIndex != null
+            ? 1
+            : (primary == null ? 0 : 1);
         ordered.insert(insertAt, preferred);
       }
     }

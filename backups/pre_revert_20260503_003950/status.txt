@@ -1,0 +1,13 @@
+ M ios/Runner/AppDelegate.swift
+ M lib/downloads_page.dart
+ M lib/main.dart
+ M lib/music_player_page.dart
+ M lib/search_page.dart
+ M lib/search_view_state.dart
+ M lib/services/download_service.dart
+ M lib/services/song_stream_cache_service.dart
+ M lib/services/yt_resolver_service.dart
+ M lib/video_player_manager.dart
+ M pubspec.yaml
+?? backups/
+?? lib/services/library_albums_service.dart

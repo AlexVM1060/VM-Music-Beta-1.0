@@ -183,6 +183,8 @@ class _MiniPlayer extends StatefulWidget {
 class _MiniPlayerState extends State<_MiniPlayer> {
   double _dragLift = 0.0;
   double _horizontalDragDx = 0.0;
+  Offset? _videoMiniOffset;
+  bool _isDraggingVideoMini = false;
   bool _isOpening = false;
   bool _isSwitchingTrack = false;
   static const double _maxDragLift = 52.0;
@@ -241,6 +243,8 @@ class _MiniPlayerState extends State<_MiniPlayer> {
             String? trackArtist,
             String? trackThumbnailUrl,
             bool isPlaying,
+            bool isVideoFallback,
+            VideoPlayerController? foregroundController,
           })
         >(
           (manager) => (
@@ -248,17 +252,221 @@ class _MiniPlayerState extends State<_MiniPlayer> {
             trackArtist: manager.trackArtist,
             trackThumbnailUrl: manager.trackThumbnailUrl,
             isPlaying: manager.isPlaying,
+            isVideoFallback: manager.isUsingVideoFallback,
+            foregroundController: manager.foregroundVideoController,
           ),
         );
     final bottomInset = MediaQuery.of(context).padding.bottom;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     const miniPlayerHeight = 58.0;
-    const miniPlayerBottomNavReserve = 75.0;
+    const miniPlayerBottomNavReserve = 53.0;
     final progress = _dragProgress;
-    final dynamicRadius = 14 - (2 * progress);
+    final dynamicRadius = 24 - (2 * progress);
     final dynamicShadowOpacity = 0.08 + (0.12 * progress);
     final dynamicShadowBlur = 22 + (18 * progress);
     final dynamicShadowYOffset = 8 - (4 * progress);
+
+    // If we're playing a video in foreground (video fallback), show a
+    // compact video mini-player in the bottom-right with pause and close.
+    if (miniState.isVideoFallback) {
+      final ctrl = miniState.foregroundController;
+      final thumb = miniState.trackThumbnailUrl;
+      const miniVideoWidth = 240.0;
+      const miniVideoHeight = 140.0;
+      final screenSize = MediaQuery.of(context).size;
+      final defaultLeft = screenSize.width - miniVideoWidth - 12;
+      final defaultTop =
+          screenSize.height -
+          miniPlayerBottomNavReserve -
+          bottomInset -
+          miniVideoHeight;
+      final current = _videoMiniOffset ?? Offset(defaultLeft, defaultTop);
+      final clampedLeft = current.dx.clamp(12.0, defaultLeft);
+      final clampedTop = current.dy.clamp(
+        MediaQuery.of(context).padding.top + 12,
+        defaultTop,
+      );
+
+      return Stack(
+        children: [
+          AnimatedPositioned(
+            duration: _isDraggingVideoMini
+                ? Duration.zero
+                : const Duration(milliseconds: 240),
+            curve: Curves.easeOutCubic,
+            left: clampedLeft,
+            top: clampedTop,
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onPanStart: (_) {
+                _isDraggingVideoMini = true;
+              },
+              onPanUpdate: (details) {
+                final base =
+                    _videoMiniOffset ?? Offset(clampedLeft, clampedTop);
+                final next = base + details.delta;
+                final nextLeft = next.dx.clamp(12.0, defaultLeft);
+                final nextTop = next.dy.clamp(
+                  MediaQuery.of(context).padding.top + 12,
+                  defaultTop,
+                );
+                setState(() {
+                  _videoMiniOffset = Offset(nextLeft, nextTop);
+                });
+              },
+              onPanEnd: (details) {
+                final current =
+                    _videoMiniOffset ?? Offset(clampedLeft, clampedTop);
+                final velocityX = details.velocity.pixelsPerSecond.dx;
+                final velocityY = details.velocity.pixelsPerSecond.dy;
+                final projectedX = current.dx + (velocityX * 0.12);
+                final projectedY = current.dy + (velocityY * 0.12);
+                final topLimit = MediaQuery.of(context).padding.top + 12;
+                final bottomLimit = defaultTop;
+                final targetX = projectedX >= ((12.0 + defaultLeft) / 2)
+                    ? defaultLeft
+                    : 12.0;
+                final targetY = projectedY >= ((topLimit + bottomLimit) / 2)
+                    ? bottomLimit
+                    : topLimit;
+                setState(() {
+                  _isDraggingVideoMini = false;
+                  _videoMiniOffset = Offset(targetX, targetY);
+                });
+              },
+              onPanCancel: () {
+                final current =
+                    _videoMiniOffset ?? Offset(clampedLeft, clampedTop);
+                final topLimit = MediaQuery.of(context).padding.top + 12;
+                final bottomLimit = defaultTop;
+                final targetX = current.dx >= ((12.0 + defaultLeft) / 2)
+                    ? defaultLeft
+                    : 12.0;
+                final targetY = current.dy >= ((topLimit + bottomLimit) / 2)
+                    ? bottomLimit
+                    : topLimit;
+                setState(() {
+                  _isDraggingVideoMini = false;
+                  _videoMiniOffset = Offset(targetX, targetY);
+                });
+              },
+              child: SizedBox(
+                width: miniVideoWidth,
+                height: miniVideoHeight,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: widget.manager.maximize,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? Colors.black.withValues(alpha: 0.22)
+                              : Colors.white,
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.14),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            // Video or thumbnail as background
+                            if (ctrl != null)
+                              ValueListenableBuilder<VideoPlayerValue>(
+                                valueListenable: ctrl,
+                                builder: (_, __, ___) {
+                                  if (ctrl.value.isInitialized) {
+                                    return FittedBox(
+                                      fit: BoxFit.cover,
+                                      child: SizedBox(
+                                        width: ctrl.value.size?.width ?? 0,
+                                        height: ctrl.value.size?.height ?? 0,
+                                        child: VideoPlayer(ctrl),
+                                      ),
+                                    );
+                                  }
+                                  return thumb != null && thumb.isNotEmpty
+                                      ? Image.network(thumb, fit: BoxFit.cover)
+                                      : const SizedBox.expand();
+                                },
+                              )
+                            else
+                              (thumb != null && thumb.isNotEmpty
+                                  ? Image.network(thumb, fit: BoxFit.cover)
+                                  : const SizedBox.expand()),
+
+                            // Dark gradient top for better contrast with close button
+                            Positioned(
+                              top: 0,
+                              left: 0,
+                              right: 0,
+                              height: 44,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.black.withValues(alpha: 0.36),
+                                      Colors.transparent,
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+
+                            // Center play/pause button
+                            Align(
+                              alignment: Alignment.center,
+                              child: CupertinoButton(
+                                padding: EdgeInsets.zero,
+                                onPressed: widget.manager.togglePlayPause,
+                                child: Icon(
+                                  miniState.isPlaying
+                                      ? CupertinoIcons.pause_solid
+                                      : CupertinoIcons.play_arrow_solid,
+                                  size: 30,
+                                  color: isDark
+                                      ? const Color(0xFFF5F5F7)
+                                      : const Color(0xFFFFFFFF),
+                                ),
+                              ),
+                            ),
+
+                            // Close button top-right
+                            Positioned(
+                              top: 2,
+                              right: 2,
+                              child: CupertinoButton(
+                                padding: EdgeInsets.zero,
+                                onPressed: widget.manager.close,
+                                child: Icon(
+                                  CupertinoIcons.xmark,
+                                  size: 18,
+                                  color: isDark
+                                      ? const Color(0xFFF2F2F7)
+                                      : const Color(0xFFFFFFFF),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
 
     return Align(
       alignment: Alignment.bottomCenter,
@@ -338,18 +546,18 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                           end: Alignment.bottomRight,
                           colors: isDark
                               ? [
-                                  Colors.white.withValues(alpha: 0.18),
-                                  Colors.white.withValues(alpha: 0.10),
+                                  const Color(0xFF9CA3AF).withValues(alpha: 0.30),
+                                  const Color(0xFF6B7280).withValues(alpha: 0.22),
                                 ]
                               : [
-                                  Colors.white.withValues(alpha: 0.80),
-                                  Colors.white.withValues(alpha: 0.58),
+                                  const Color(0xFFE5E7EB).withValues(alpha: 0.90),
+                                  const Color(0xFFD1D5DB).withValues(alpha: 0.74),
                                 ],
                         ),
                         border: Border.all(
                           color: isDark
-                              ? Colors.white.withValues(alpha: 0.22)
-                              : Colors.white.withValues(alpha: 0.78),
+                              ? const Color(0xFF9CA3AF).withValues(alpha: 0.38)
+                              : const Color(0xFFCBD5E1).withValues(alpha: 0.94),
                           width: 0.8,
                         ),
                         boxShadow: [
@@ -420,9 +628,9 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                           const SizedBox(width: 6),
                           CupertinoButton(
                             padding: EdgeInsets.zero,
-                            onPressed: widget.manager.close,
+                            onPressed: widget.manager.playNextInQueue,
                             child: Icon(
-                              CupertinoIcons.xmark_circle_fill,
+                              CupertinoIcons.forward_fill,
                               size: 22,
                               color: CupertinoColors.secondaryLabel.resolveFrom(
                                 context,
@@ -971,12 +1179,12 @@ class _FullPlayerState extends State<_FullPlayer> {
                                   ? animatedArtworkSize
                                   : 310.0;
                               final collapsedLyricsHeight = math.max(
-                                230.0,
-                                math.min(390.0, constraints.maxHeight * 0.48),
+                                300.0,
+                                math.min(339.0, constraints.maxHeight * 0.52),
                               );
                               final expandedLyricsHeight = math.max(
-                                collapsedLyricsHeight + 90,
-                                constraints.maxHeight * 0.87,
+                                collapsedLyricsHeight + 120,
+                                constraints.maxHeight * 0.90,
                               );
                               return NotificationListener<ScrollNotification>(
                                 onNotification:
@@ -1233,74 +1441,104 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                   : 0,
                                               child: IgnorePointer(
                                                 ignoring: !showLyricsControls,
-                                                child: Column(
-                                                  children: [
-                                                    const SizedBox(height: 10),
-                                                    if (manager.isLoading &&
-                                                        !manager.isPlaying)
-                                                      const Padding(
-                                                        padding:
-                                                            EdgeInsets.symmetric(
-                                                              vertical: 20,
-                                                            ),
-                                                        child:
-                                                            _IosLoadingControls(),
-                                                      )
-                                                    else ...[
-                                                      const _ProgressSection(),
+                                                child: AnimatedSlide(
+                                                  duration: const Duration(
+                                                    milliseconds: 420,
+                                                  ),
+                                                  curve: Curves
+                                                      .easeInOutCubicEmphasized,
+                                                  offset: Offset.zero,
+                                                  child: Column(
+                                                    children: [
                                                       const SizedBox(
                                                         height: 10,
                                                       ),
-                                                      Row(
-                                                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                                                        children: [
-                                                          _NativeControlButton(
-                                                            icon: CupertinoIcons.backward_fill,
-                                                            onPressed: manager.playPreviousInQueue,
-                                                          ),
-                                                          _NativePrimaryPlayButton(
-                                                            isPlaying: manager.isPlaying,
-                                                            onPressed: manager.togglePlayPause,
-                                                          ),
-                                                          _NativeControlButton(
-                                                            icon: CupertinoIcons.forward_fill,
-                                                            onPressed: manager.playNextInQueue,
+                                                      if (manager.isLoading &&
+                                                          !manager.isPlaying)
+                                                        const Padding(
+                                                          padding:
+                                                              EdgeInsets.symmetric(
+                                                                vertical: 20,
+                                                              ),
+                                                          child:
+                                                              _IosLoadingControls(),
+                                                        )
+                                                      else ...[
+                                                        const _ProgressSection(),
+                                                        const SizedBox(
+                                                          height: 10,
+                                                        ),
+                                                        Row(
+                                                          mainAxisAlignment:
+                                                              MainAxisAlignment
+                                                                  .spaceEvenly,
+                                                          children: [
+                                                            _NativeControlButton(
+                                                              icon: CupertinoIcons
+                                                                  .backward_fill,
+                                                              onPressed: manager
+                                                                  .playPreviousInQueue,
+                                                            ),
+                                                            _NativePrimaryPlayButton(
+                                                              isPlaying: manager
+                                                                  .isPlaying,
+                                                              onPressed: manager
+                                                                  .togglePlayPause,
+                                                            ),
+                                                            _NativeControlButton(
+                                                              icon: CupertinoIcons
+                                                                  .forward_fill,
+                                                              onPressed: manager
+                                                                  .playNextInQueue,
+                                                            ),
+                                                          ],
+                                                        ),
+                                                        const SizedBox(
+                                                          height: 6,
+                                                        ),
+                                                        SizedBox(height: 28),
+                                                        if (Platform.isIOS) ...[
+                                                          const _SystemVolumeSlider(),
+                                                          const SizedBox(
+                                                            height: 14,
                                                           ),
                                                         ],
-                                                      ),
-                                                      const SizedBox(
-                                                        height: 6,
-                                                      ),
-                                                      SizedBox(height: 28),
-                                                      if (Platform.isIOS) ...[
-                                                        const _SystemVolumeSlider(),
-                                                        const SizedBox(
-                                                          height: 14,
+
+                                                        Row(
+                                                          children: [
+                                                            const SizedBox(
+                                                              width: 34,
+                                                            ),
+                                                            _InlineLyricsButton(
+                                                              isActive: manager
+                                                                  .isLyricsLayout,
+                                                              onPressed: manager
+                                                                  .toggleLyricsLayout,
+                                                            ),
+                                                            const Spacer(),
+                                                            const _InlineAudioRouteButton(),
+                                                            const Spacer(),
+                                                            _InlineAutoplayButton(
+                                                              isActive: manager
+                                                                  .autoplayEnabled,
+                                                              onPressed: manager
+                                                                  .toggleAutoplay,
+                                                            ),
+                                                          ],
+                                                        ),
+
+                                                        SizedBox(
+                                                          height:
+                                                              MediaQuery.of(
+                                                                context,
+                                                              ).padding.bottom +
+                                                              50,
                                                         ),
                                                       ],
-
-                                                      Row(
-                                                        children: [
-                                                          const SizedBox(width: 34),
-                                                          _InlineLyricsButton(
-                                                            isActive: manager.isLyricsLayout,
-                                                            onPressed: manager.toggleLyricsLayout,
-                                                          ),
-                                                          const Spacer(),
-                                                          _InlineAutoplayButton(
-                                                            isActive: manager.autoplayEnabled,
-                                                            onPressed: manager.toggleAutoplay,
-                                                          ),
-                                                        ],
-                                                      ),
-
-                                                      SizedBox(
-                                                        height: MediaQuery.of(context).padding.bottom + 50,
-                                                      ),
+                                                      // Removed SizedBox(height: 26),
+                                                      const _QueueSection(),
                                                     ],
-                                                    // Removed SizedBox(height: 26),
-                                                    const _QueueSection(),
-                                                  ],
+                                                  ),
                                                 ),
                                               ),
                                             ),
@@ -1714,7 +1952,6 @@ class _InlineLyricsButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final borderRadius = BorderRadius.circular(14);
-    final activeColor = Theme.of(context).colorScheme.primary;
     return CupertinoButton(
       padding: EdgeInsets.zero,
       minimumSize: Size.zero,
@@ -1723,21 +1960,257 @@ class _InlineLyricsButton extends StatelessWidget {
         duration: const Duration(milliseconds: 180),
         curve: Curves.easeOutCubic,
         height: 40,
-        padding: EdgeInsets.zero,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        decoration: BoxDecoration(
+          color: isActive ? Colors.white : Colors.transparent,
+          borderRadius: borderRadius,
+        ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              isActive ? CupertinoIcons.quote_bubble_fill : CupertinoIcons.quote_bubble,
+              isActive
+                  ? CupertinoIcons.quote_bubble_fill
+                  : CupertinoIcons.quote_bubble,
               size: 26,
               color: isActive
-                  ? activeColor
-                  : CupertinoColors.label.resolveFrom(context),
+                  ? Colors.black
+                  : CupertinoColors.white,
             ),
           ],
         ),
       ),
     );
+  }
+}
+
+class _InlineAudioRouteButton extends StatefulWidget {
+  const _InlineAudioRouteButton();
+
+  @override
+  State<_InlineAudioRouteButton> createState() =>
+      _InlineAudioRouteButtonState();
+}
+
+class _InlineAudioRouteButtonState extends State<_InlineAudioRouteButton> {
+  String _routeName = 'iPhone Speaker';
+  bool _isBluetooth = false;
+  Timer? _pollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadRouteInfo());
+    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      unawaited(_loadRouteInfo());
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadRouteInfo() async {
+    if (!Platform.isIOS) return;
+    try {
+      final raw = await _systemVolumeChannel
+          .invokeMethod<Map<dynamic, dynamic>>('getCurrentAudioOutputInfo');
+      if (!mounted || raw == null) return;
+      final nextName = (raw['name'] as String?)?.trim();
+      final nextIsBluetooth = raw['isBluetooth'] == true;
+      final resolvedName = (nextName == null || nextName.isEmpty)
+          ? 'Salida de audio'
+          : nextName;
+      if (resolvedName == _routeName && nextIsBluetooth == _isBluetooth) {
+        return;
+      }
+      setState(() {
+        _routeName = resolvedName;
+        _isBluetooth = nextIsBluetooth;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _openRoutePicker() async {
+    if (!Platform.isIOS) return;
+    try {
+      await _systemVolumeChannel.invokeMethod<void>('showAudioRoutePicker');
+    } catch (_) {}
+    unawaited(_loadRouteInfo());
+  }
+
+  _AudioRouteVisual _resolveRouteVisual() {
+    final raw = _routeName.trim().toLowerCase();
+    if (raw.isEmpty) {
+      return _isBluetooth
+          ? _AudioRouteVisual.bluetooth
+          : _AudioRouteVisual.airplay;
+    }
+    if (raw == 'iphone speaker' || raw == 'iphone') {
+      return _AudioRouteVisual.iphone;
+    }
+    if (raw.contains('reniiii')) {
+      return _AudioRouteVisual.airpods;
+    }
+
+    final compact = raw.replaceAll(RegExp(r'[\s\-_]+'), '');
+    final hasAirpodsWord = raw.contains('airpods') || raw.contains('airpod');
+
+    if (hasAirpodsWord) {
+      if (compact.contains('airpodsmax') || compact.contains('airpodmax')) {
+        return _AudioRouteVisual.airpodsMax;
+      }
+      if (compact.contains('airpodspro2') || compact.contains('airpodpro2')) {
+        return _AudioRouteVisual.airpods;
+      }
+      if (compact.contains('airpodspro') || compact.contains('airpodpro')) {
+        return _AudioRouteVisual.airpods;
+      }
+      if (compact.contains('airpods3') || compact.contains('airpod3')) {
+        return _AudioRouteVisual.airpods;
+      }
+      if (compact.contains('airpods2') || compact.contains('airpod2')) {
+        return _AudioRouteVisual.airpods;
+      }
+      return _AudioRouteVisual.airpods;
+    }
+
+    return _isBluetooth
+        ? _AudioRouteVisual.bluetooth
+        : _AudioRouteVisual.airplay;
+  }
+
+  Widget _buildRouteIcon(Color color) {
+    final visual = _resolveRouteVisual();
+    switch (visual) {
+      case _AudioRouteVisual.airpods:
+        return _AirPodsIcon(color: color, size: 21);
+      case _AudioRouteVisual.airpodsMax:
+        return Icon(CupertinoIcons.headphones, size: 21, color: color);
+      case _AudioRouteVisual.bluetooth:
+        return Icon(Icons.bluetooth, size: 21, color: color);
+      case _AudioRouteVisual.iphone:
+        return Icon(
+          CupertinoIcons.device_phone_portrait,
+          size: 21,
+          color: color,
+        );
+      case _AudioRouteVisual.airplay:
+        return Icon(Icons.airplay, size: 21, color: color);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final labelColor = CupertinoColors.white.withValues(alpha: 0.86);
+    final iconColor = CupertinoColors.white;
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      minimumSize: Size.zero,
+      onPressed: _openRoutePicker,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 94, maxWidth: 146),
+        child: Transform.translate(
+          offset: const Offset(0, 4),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildRouteIcon(iconColor),
+              const SizedBox(height: 2),
+              Text(
+                _routeName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: labelColor,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _AudioRouteVisual { airplay, bluetooth, iphone, airpods, airpodsMax }
+
+class _AirPodsIcon extends StatelessWidget {
+  final Color color;
+  final double size;
+
+  const _AirPodsIcon({required this.color, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(painter: _AirPodsPainter(color)),
+    );
+  }
+}
+
+class _AirPodsPainter extends CustomPainter {
+  final Color color;
+  const _AirPodsPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..strokeWidth = size.width * 0.11;
+
+    final fill = Paint()
+      ..color = color.withValues(alpha: 0.18)
+      ..style = PaintingStyle.fill;
+
+    final leftBud = RRect.fromRectAndRadius(
+      Rect.fromLTWH(
+        size.width * 0.12,
+        size.height * 0.16,
+        size.width * 0.27,
+        size.height * 0.36,
+      ),
+      Radius.circular(size.width * 0.12),
+    );
+    canvas.drawRRect(leftBud, fill);
+    canvas.drawRRect(leftBud, paint);
+    canvas.drawLine(
+      Offset(size.width * 0.26, size.height * 0.50),
+      Offset(size.width * 0.22, size.height * 0.89),
+      paint,
+    );
+
+    final rightBud = RRect.fromRectAndRadius(
+      Rect.fromLTWH(
+        size.width * 0.61,
+        size.height * 0.16,
+        size.width * 0.27,
+        size.height * 0.36,
+      ),
+      Radius.circular(size.width * 0.12),
+    );
+    canvas.drawRRect(rightBud, fill);
+    canvas.drawRRect(rightBud, paint);
+    canvas.drawLine(
+      Offset(size.width * 0.74, size.height * 0.50),
+      Offset(size.width * 0.78, size.height * 0.89),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _AirPodsPainter oldDelegate) {
+    return oldDelegate.color != color;
   }
 }
 
@@ -1801,7 +2274,7 @@ class _InlineAutoplayButton extends StatelessWidget {
               size: 14,
               color: isActive
                   ? activeColor
-                  : CupertinoColors.label.resolveFrom(context),
+                  : CupertinoColors.white,
             ),
             const SizedBox(width: 6),
             Text(
@@ -1809,7 +2282,7 @@ class _InlineAutoplayButton extends StatelessWidget {
               style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
                 fontSize: 12,
                 fontWeight: FontWeight.w600,
-                color: isActive ? activeColor : null,
+                color: isActive ? activeColor : CupertinoColors.white,
               ),
             ),
           ],
@@ -1974,7 +2447,11 @@ class _DefaultNowPlayingHero extends StatelessWidget {
             child: _AutoScrollText(
               text: manager.trackTitle ?? 'Cargando canción...',
               style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
-                  .copyWith(fontSize: 28, fontWeight: FontWeight.w700),
+                  .copyWith(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w700,
+                    color: CupertinoColors.white,
+                  ),
             ),
           ),
         ),
@@ -2017,8 +2494,8 @@ class _DefaultNowPlayingHero extends StatelessWidget {
                       style: CupertinoTheme.of(context).textTheme.textStyle
                           .copyWith(
                             fontSize: 17,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(
-                              context,
+                            color: CupertinoColors.white.withValues(
+                              alpha: 0.78,
                             ),
                           ),
                     ),
@@ -2070,10 +2547,7 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final transitionDx = manager.trackTransitionDirection < 0 ? -0.03 : 0.03;
-    final value = controller.value;
-    final ratio = value.isInitialized && value.aspectRatio > 0
-        ? value.aspectRatio
-        : (16 / 9);
+    const ratio = 240 / 140;
     return Column(
       key: key,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2092,20 +2566,14 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
                   ),
                   SafeArea(
                     minimum: const EdgeInsets.all(8),
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: CupertinoColors.black.withValues(alpha: 0.55),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: CupertinoButton(
-                        minimumSize: Size.zero,
-                        padding: const EdgeInsets.all(8),
-                        onPressed: onToggleFullscreen,
-                        child: const Icon(
-                          CupertinoIcons.fullscreen,
-                          size: 20,
-                          color: CupertinoColors.white,
-                        ),
+                    child: CupertinoButton(
+                      minimumSize: Size.zero,
+                      padding: const EdgeInsets.all(8),
+                      onPressed: onToggleFullscreen,
+                      child: const Icon(
+                        CupertinoIcons.fullscreen,
+                        size: 20,
+                        color: CupertinoColors.white,
                       ),
                     ),
                   ),
@@ -2135,7 +2603,11 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
             child: _AutoScrollText(
               text: manager.trackTitle ?? 'Cargando video...',
               style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
-                  .copyWith(fontSize: 28, fontWeight: FontWeight.w700),
+                  .copyWith(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w700,
+                    color: CupertinoColors.white,
+                  ),
             ),
           ),
         ),
@@ -2178,8 +2650,8 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
                       style: CupertinoTheme.of(context).textTheme.textStyle
                           .copyWith(
                             fontSize: 17,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(
-                              context,
+                            color: CupertinoColors.white.withValues(
+                              alpha: 0.78,
                             ),
                           ),
                     ),
@@ -2566,10 +3038,6 @@ class _CompactNowPlayingHeader extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.transparent,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: CupertinoColors.white.withValues(alpha: 0.2),
-            width: 0.6,
-          ),
         ),
         child: Row(
           children: [
@@ -2621,7 +3089,11 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: CupertinoTheme.of(context).textTheme.textStyle
-                          .copyWith(fontSize: 19, fontWeight: FontWeight.w700),
+                          .copyWith(
+                            fontSize: 19,
+                            fontWeight: FontWeight.w700,
+                            color: CupertinoColors.white,
+                          ),
                     ),
                     const SizedBox(height: 3),
                     Row(
@@ -2639,8 +3111,9 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                                   .textStyle
                                   .copyWith(
                                     fontSize: 14,
-                                    color: CupertinoColors.secondaryLabel
-                                        .resolveFrom(context),
+                                    color: CupertinoColors.white.withValues(
+                                      alpha: 0.78,
+                                    ),
                                   ),
                             ),
                           ),
@@ -2705,7 +3178,7 @@ class _InlineArtistActionButton extends StatelessWidget {
         child: Icon(
           icon,
           size: iconSize,
-          color: CupertinoColors.label.resolveFrom(context),
+          color: CupertinoColors.white,
         ),
       ),
     );
@@ -2831,7 +3304,7 @@ class _TopGlassIconButton extends StatelessWidget {
         child: Icon(
           icon,
           size: 18,
-          color: CupertinoColors.label.resolveFrom(context),
+          color: CupertinoColors.white,
         ),
       ),
     );
@@ -3047,7 +3520,7 @@ class _QueueSectionState extends State<_QueueSection> {
               color: subtitleColor.withValues(alpha: 0.88),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 28),
           ReorderableListView.builder(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
@@ -3615,7 +4088,7 @@ class _NativeControlButton extends StatelessWidget {
         child: Icon(
           icon,
           size: 44,
-          color: CupertinoColors.label.resolveFrom(context),
+          color: CupertinoColors.white,
         ),
       ),
     );
@@ -3753,7 +4226,8 @@ class _ProgressSection extends StatelessWidget {
 
                     return GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onTapDown: (details) => seekByDx(details.localPosition.dx),
+                      onTapDown: (details) =>
+                          seekByDx(details.localPosition.dx),
                       onHorizontalDragUpdate: (details) =>
                           seekByDx(details.localPosition.dx),
                       child: SizedBox(
@@ -3809,8 +4283,8 @@ class _ProgressSection extends StatelessWidget {
                       style: CupertinoTheme.of(context).textTheme.textStyle
                           .copyWith(
                             fontSize: 13,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(
-                              context,
+                            color: CupertinoColors.white.withValues(
+                              alpha: 0.90,
                             ),
                             fontFeatures: const [FontFeature.tabularFigures()],
                           ),
@@ -3820,8 +4294,8 @@ class _ProgressSection extends StatelessWidget {
                       style: CupertinoTheme.of(context).textTheme.textStyle
                           .copyWith(
                             fontSize: 13,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(
-                              context,
+                            color: CupertinoColors.white.withValues(
+                              alpha: 0.90,
                             ),
                             fontFeatures: const [FontFeature.tabularFigures()],
                           ),
@@ -3905,7 +4379,7 @@ class _SystemVolumeSliderState extends State<_SystemVolumeSlider> {
         Icon(
           CupertinoIcons.speaker_fill,
           size: 18,
-          color: CupertinoColors.secondaryLabel.resolveFrom(context),
+          color: CupertinoColors.white.withValues(alpha: 0.90),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -3960,7 +4434,7 @@ class _SystemVolumeSliderState extends State<_SystemVolumeSlider> {
         Icon(
           CupertinoIcons.speaker_3_fill,
           size: 18,
-          color: CupertinoColors.secondaryLabel.resolveFrom(context),
+          color: CupertinoColors.white.withValues(alpha: 0.90),
         ),
       ],
     );
@@ -4023,6 +4497,22 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   Color? _lyricsAccentColor;
   String? _lyricsAccentSource;
 
+  Color _normalizedLyricsAccent(Color color) {
+    final luminance = color.computeLuminance();
+    if (luminance >= 0.44) return color;
+
+    final hsl = HSLColor.fromColor(color);
+    final boostedLightness = (hsl.lightness + (0.44 - luminance) * 0.95).clamp(
+      0.56,
+      0.78,
+    );
+    final boostedSaturation = (hsl.saturation * 0.90 + 0.08).clamp(0.20, 0.88);
+    return hsl
+        .withLightness(boostedLightness)
+        .withSaturation(boostedSaturation)
+        .toColor();
+  }
+
   void _syncLyricsAccentColor(VideoPlayerManager manager) {
     final raw = manager.trackThumbnailUrl?.trim() ?? '';
     if (raw.isEmpty || raw == _lyricsAccentSource) return;
@@ -4030,7 +4520,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
 
     final cached = _lyricsAccentCache[raw];
     if (cached != null) {
-      _lyricsAccentColor = cached;
+      _lyricsAccentColor = _normalizedLyricsAccent(cached);
       return;
     }
 
@@ -4060,12 +4550,13 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       request
           .then((color) {
             if (!mounted || _lyricsAccentSource != raw || color == null) return;
-            _lyricsAccentCache[raw] = color;
+            final normalized = _normalizedLyricsAccent(color);
+            _lyricsAccentCache[raw] = normalized;
             while (_lyricsAccentCache.length > _lyricsAccentCacheMaxEntries) {
               _lyricsAccentCache.remove(_lyricsAccentCache.keys.first);
             }
             setState(() {
-              _lyricsAccentColor = color;
+              _lyricsAccentColor = normalized;
             });
           })
           .whenComplete(() {
@@ -4241,12 +4732,14 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     final manager = widget.manager;
     final settings = context.watch<AppSettingsService?>();
     final liveLyricsEnabled = settings?.liveLyrics ?? true;
+    const lyricsFontFamily = '.SF Pro Text';
+    const inactiveLyricsColor = Color(0x8CFFFFFF);
     final isImmersive = widget.immersiveMode;
-    final baseFontSize = isImmersive ? 19.0 : 17.0;
-    final activeFontSize = isImmersive ? 24.0 : 22.0;
+    final baseFontSize = isImmersive ? 22.0 : 20.0;
+    final activeFontSize = isImmersive ? 28.0 : 26.0;
     _syncLyricsAccentColor(manager);
     final activeLyricsColor =
-        _lyricsAccentColor ?? Theme.of(context).colorScheme.primary;
+        _lyricsAccentColor ?? CupertinoColors.white;
     unawaited(
       _syncIosWordAlignment(
         manager: manager,
@@ -4269,12 +4762,16 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       _visualLyricsWallClock = DateTime.now();
       _lastVisualClockManagerPosition = manager.position;
     }
-    final textStyle = CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-      fontSize: baseFontSize,
-      height: 1.45,
-      color: CupertinoColors.label.resolveFrom(context),
-      fontWeight: FontWeight.w500,
-    );
+    final textStyle = CupertinoTheme.of(context)
+        .textTheme
+        .navLargeTitleTextStyle
+        .copyWith(
+          fontFamily: lyricsFontFamily,
+          fontSize: baseFontSize,
+          height: 1.25,
+          color: CupertinoColors.label.resolveFrom(context),
+          fontWeight: FontWeight.w600,
+        );
 
     Widget content;
     if (manager.isLyricsLoading) {
@@ -4372,7 +4869,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                     child: AnimatedOpacity(
                       duration: const Duration(milliseconds: 300),
                       curve: Curves.easeInOut,
-                      opacity: isActive ? 1 : 0.86,
+                      opacity: isActive ? 1.0 : 0.36,
                       child: AnimatedDefaultTextStyle(
                         duration: const Duration(milliseconds: 320),
                         curve: Curves.easeInOutCubic,
@@ -4380,12 +4877,10 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                           fontSize: isActive ? activeFontSize : baseFontSize,
                           fontWeight: isActive
                               ? FontWeight.w700
-                              : FontWeight.w500,
+                              : FontWeight.w600,
                           color: isActive
                               ? activeLyricsColor
-                              : CupertinoColors.secondaryLabel.resolveFrom(
-                                  context,
-                                ),
+                              : inactiveLyricsColor,
                         ),
                         child: isActive && liveLyricsEnabled
                             ? _LiveLyricSweepText(
@@ -4397,8 +4892,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                                 baseStyle: textStyle.copyWith(
                                   fontSize: activeFontSize,
                                   fontWeight: FontWeight.w700,
-                                  color: CupertinoColors.secondaryLabel
-                                      .resolveFrom(context),
+                                  color: inactiveLyricsColor,
                                 ),
                                 activeStyle: textStyle.copyWith(
                                   fontSize: activeFontSize,
@@ -4425,61 +4919,66 @@ class _LyricsPanelState extends State<_LyricsPanel> {
       content = Text(manager.lyricsText ?? '', style: textStyle);
     }
 
-    const panelRadius = 18.0;
-
     return NotificationListener<ScrollNotification>(
       onNotification: _handleLyricsScrollNotification,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onTapDown: (_) => widget.onInteraction?.call(),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(panelRadius),
-          child: Container(
-            width: double.infinity,
+        child: SizedBox(
+          width: double.infinity,
+          child: ConstrainedBox(
             constraints: isImmersive
                 ? const BoxConstraints(minHeight: 260)
                 : const BoxConstraints(minHeight: 210, maxHeight: 390),
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-            decoration: BoxDecoration(
-              color: Colors.transparent,
-              borderRadius: BorderRadius.circular(panelRadius),
-              border: Border.all(
-                color: CupertinoColors.white.withValues(alpha: 0.2),
-                width: 0.6,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: Padding(
+                      padding: EdgeInsets.only(
+                        bottom: manager.isKaraokeSupported ? 36 : 0,
+                      ),
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 220),
+                        child: ShaderMask(
+                          shaderCallback: (rect) => LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: const [
+                              Colors.transparent,
+                              Colors.black,
+                              Colors.black,
+                              Colors.transparent,
+                            ],
+                            stops: const [0.0, 0.06, 0.94, 1.0],
+                          ).createShader(rect),
+                          blendMode: BlendMode.dstIn,
+                          child: manager.hasSyncedLyrics
+                              ? content
+                              : SingleChildScrollView(
+                                  key: ValueKey(
+                                    '${manager.isLyricsLoading}-${manager.lyricsError}-${manager.lyricsText}',
+                                  ),
+                                  physics: const BouncingScrollPhysics(),
+                                  child: content,
+                                ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (manager.isKaraokeSupported)
+                    Positioned(
+                      right: 2,
+                      bottom: 2,
+                      child: _LyricsKaraokeButton(
+                        isActive: manager.karaokeModeEnabled,
+                        isLoading: manager.isAiStemsLoading,
+                        onPressed: manager.toggleKaraokeMode,
+                      ),
+                    ),
+                ],
               ),
-            ),
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: Padding(
-                    padding: EdgeInsets.only(
-                      bottom: manager.isKaraokeSupported ? 36 : 0,
-                    ),
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 220),
-                      child: manager.hasSyncedLyrics
-                          ? content
-                          : SingleChildScrollView(
-                              key: ValueKey(
-                                '${manager.isLyricsLoading}-${manager.lyricsError}-${manager.lyricsText}',
-                              ),
-                              physics: const BouncingScrollPhysics(),
-                              child: content,
-                            ),
-                    ),
-                  ),
-                ),
-                if (manager.isKaraokeSupported)
-                  Positioned(
-                    right: 2,
-                    bottom: 2,
-                    child: _LyricsKaraokeButton(
-                      isActive: manager.karaokeModeEnabled,
-                      isLoading: manager.isAiStemsLoading,
-                      onPressed: manager.toggleKaraokeMode,
-                    ),
-                  ),
-              ],
             ),
           ),
         ),
@@ -7258,8 +7757,8 @@ class _DownloadButton extends StatelessWidget {
           child: Icon(
             CupertinoIcons.arrow_down_circle,
             color: hasSource
-                ? CupertinoColors.label.resolveFrom(context)
-                : CupertinoColors.tertiaryLabel.resolveFrom(context),
+                ? CupertinoColors.white
+                : CupertinoColors.white.withValues(alpha: 0.42),
             size: 20,
           ),
           onPressed: hasSource ? _triggerDownload : null,

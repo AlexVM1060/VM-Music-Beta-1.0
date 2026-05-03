@@ -46,7 +46,6 @@ class SongStreamCacheService {
     final normalized = videoId.trim();
     if (normalized.isEmpty) return;
     if (!(streamUri.scheme == 'https' || streamUri.scheme == 'http')) return;
-    if (!streamUri.host.toLowerCase().contains('googlevideo.com')) return;
     await _ensureLoaded();
     final fresh = await resolveFreshFilePath(normalized);
     if (fresh != null) return;
@@ -64,6 +63,24 @@ class SongStreamCacheService {
     } finally {
       _inFlightWrites.remove(normalized);
     }
+  }
+
+  static Future<String?> waitForFreshFilePath(
+    String videoId, {
+    Duration maxWait = const Duration(seconds: 2),
+  }) async {
+    final normalized = videoId.trim();
+    if (normalized.isEmpty) return null;
+    await _ensureLoaded();
+    final inFlight = _inFlightWrites[normalized];
+    if (inFlight != null) {
+      try {
+        await inFlight.timeout(maxWait);
+      } catch (_) {
+        // Best effort.
+      }
+    }
+    return resolveFreshFilePath(normalized);
   }
 
   static bool _isEntryFresh(_SongStreamCacheEntry entry) {

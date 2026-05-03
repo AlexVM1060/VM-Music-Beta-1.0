@@ -58,9 +58,11 @@ class DownloadService with ChangeNotifier {
     'Referer': 'https://www.youtube.com/',
   };
   static const Set<String> _backendHosts = <String>{
-    '136.119.120.136',
+    '34.16.97.84',
     '34.41.104.248',
-    '34.171.28.30',
+    '34.61.37.31',
+    '136.119.120.136',
+    '34.170.163.28'
   };
 
   final Map<String, double> _downloadProgress = {};
@@ -146,9 +148,11 @@ class DownloadService with ChangeNotifier {
   Future<bool> downloadVideoUsingClone({
     required VideoHistory video,
     required VideoPlayerManager videoManager,
+    int? preferredBackendIndex,
   }) async {
     final backendSources = await _resolvePlaybackDownloadSourcesViaBackend(
       video.videoId,
+      preferredBackendIndex: preferredBackendIndex,
     );
     if (backendSources.isNotEmpty) {
       log(
@@ -261,8 +265,13 @@ class DownloadService with ChangeNotifier {
         continue;
       }
 
+      final backendSlot = queuedCount;
       unawaited(
-        downloadVideoUsingClone(video: video, videoManager: videoManager),
+        downloadVideoUsingClone(
+          video: video,
+          videoManager: videoManager,
+          preferredBackendIndex: backendSlot,
+        ),
       );
       queuedCount++;
     }
@@ -765,13 +774,19 @@ class DownloadService with ChangeNotifier {
   }
 
   Future<List<_PlaybackDownloadSource>>
-  _resolvePlaybackDownloadSourcesViaBackend(String videoId) async {
+  _resolvePlaybackDownloadSourcesViaBackend(
+    String videoId, {
+    int? preferredBackendIndex,
+  }) async {
     if (!_ytResolverService.isConfigured) {
       log('[download] backend resolver not configured for videoId=$videoId');
       return const <_PlaybackDownloadSource>[];
     }
     log('[download] resolving backend sources for videoId=$videoId');
-    final resolved = await _ytResolverService.resolveVideo(videoId);
+    final resolved = await _ytResolverService.resolveVideo(
+      videoId,
+      preferredBackendIndex: preferredBackendIndex,
+    );
     if (resolved == null) {
       log('[download] backend resolver returned null for videoId=$videoId');
       return const <_PlaybackDownloadSource>[];

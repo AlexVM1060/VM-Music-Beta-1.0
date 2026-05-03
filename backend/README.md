@@ -42,18 +42,8 @@ Copia `backend/.env.example` como referencia para configurar:
 - `CORS_ALLOW_ORIGINS`
 - `DART_BINARY`
 - `YTEXPLODE_DART_TIMEOUT_MS`
-- `YTDLP_BINARY`
-- `YTDLP_TIMEOUT_MS`
-- `YTDLP_CLIENT_PROFILES`
-- `YTDLP_PO_TOKEN` (opcional, recomendado para casos de bot-check de YouTube)
-- `YTDLP_PO_TOKEN_CLIENT` (cliente para el token, por defecto `mweb`)
-- `YTDLP_VISITOR_DATA` (opcional, útil junto con PO Token en algunos casos)
-- `YTDLP_PROXY_URL` (opcional, proxy único para yt-dlp)
-- `YTDLP_PROXY_POOL` (opcional, proxies separados por coma para rotación)
-- `YTDLP_MAX_ATTEMPTS` (máximo intentos por video combinando perfil+proxy)
-- `YOUTUBE_COOKIE` (opcional, recomendado si YouTube responde bot-check)
-- `YOUTUBE_COOKIES_FILE` (ruta a `cookies.txt` exportado del navegador en formato Netscape)
-- `YOUTUBE_COOKIES_B64` (contenido base64 de `cookies.txt`; útil para plataformas sin filesystem persistente)
+- `YTEXPLODE_COOKIE` (opcional, recomendado para reducir rate-limit de YouTube)
+- `YTEXPLODE_COOKIE_B64` (opcional, alternativa en base64 del cookie header)
 - `RESOLVE_CACHE_TTL_MS`
 - `RESOLVE_BATCH_LIMIT`
 - `STEMS_ROOT`
@@ -108,7 +98,8 @@ flutter run \
 ## Notas
 
 - El endpoint `/resolve` se mantiene compatible con tu app actual.
-- El backend ahora intenta resolver primero con `youtube_explode_dart` (script Dart `backend/dart_resolver/bin/yt_resolve.dart`) y deja `yt-dlp`/`ytdl-core` como respaldo.
+- El backend resuelve usando `youtube_explode_dart` (script Dart `backend/dart_resolver/bin/yt_resolve.dart`).
+- Puedes inyectar cookies de sesión (`YTEXPLODE_COOKIE`) para disminuir errores `RequestLimitExceededException`.
 - Para ese resolver principal necesitas tener `dart` disponible en el servidor (o configurar `DART_BINARY`).
 - `/resolve/batch` te ayuda para precargar colas o playlists.
 - Para stems necesitas Python + `demucs` + `ffmpeg` en el servidor.
