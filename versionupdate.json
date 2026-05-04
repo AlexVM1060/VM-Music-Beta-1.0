@@ -1,10 +1,10 @@
 
 {
-  "latestVersion": "0.4.7",
-  "minimumSupportedVersion": "0.4.5",
+  "latestVersion": "0.4.8",
+  "minimumSupportedVersion": "0.4.7",
   "force": false,
   "title": "Nueva versión disponible",
-  "message": "Lun 4. de may. 09:49 p.m.\nLa pestaña de Cuenta ha sido rediseñada\nAhora es llamada 'Perfil'\n\nLa pestaña Descargas ha sido rediseñada\nAhora es llamada 'Biblioteca'\n\nAhora puedes anclar playlists en la biblioteca\n\nPuedes mantener preesionado sobre varios items, como canciones y playlists\n\nTu nota y la reproduccion actual ahora aparecen en el inicio\n\nEl reproductor ha sido rediseñado\n\nCorrección de errores y mejoras de rendimiento",
+  "message": "Lun 4. de may. 02:41 p.m.\nLa pestaña de Cuenta ha sido rediseñada\nAhora es llamada 'Perfil'\n\nLa pestaña Descargas ha sido rediseñada\nAhora es llamada 'Biblioteca'\n\nAhora puedes anclar playlists en la biblioteca\n\nPuedes mantener preesionado sobre varios items, como canciones y playlists\n\nTu nota y la reproduccion actual ahora aparecen en el inicio\n\nEl reproductor ha sido rediseñado\n\nCorrección de errores y mejoras de rendimiento",
   "actions": [
     {
       "label": "Actualizar - Rene",

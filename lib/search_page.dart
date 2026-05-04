@@ -444,6 +444,7 @@ Future<Map<String, dynamic>?> _fetchYoutubeMusicNextPayloadForAlbum(
 Future<Map<String, dynamic>?> _fetchYoutubeMusicSearchPayloadForAlbums(
   String query, {
   bool albumsOnly = false,
+  String? paramsOverride,
 }) async {
   final normalizedQuery = query.trim();
   if (normalizedQuery.isEmpty) return null;
@@ -478,7 +479,11 @@ Future<Map<String, dynamic>?> _fetchYoutubeMusicSearchPayloadForAlbums(
             },
             'request': {'useSsl': true},
           },
-          if (albumsOnly) 'params': 'EgWKAQIYAWoKEAoQAxAEEAkQBQ==',
+          if (paramsOverride != null && paramsOverride.trim().isNotEmpty)
+            'params': paramsOverride.trim(),
+          if ((paramsOverride == null || paramsOverride.trim().isEmpty) &&
+              albumsOnly)
+            'params': 'EgWKAQIYAWoKEAoQAxAEEAkQBQ==',
           'contentCheckOk': true,
           'racyCheckOk': true,
         }),
@@ -500,6 +505,14 @@ Future<Map<String, dynamic>?> _fetchYoutubeMusicSearchPayloadForAlbums(
     client.close(force: true);
   }
 }
+
+const List<String> _youtubeMusicSongsFilterParamsCandidates = <String>[
+  'EgWKAQIIAWoKEAoQAxAEEAkQBQ==',
+  'EgWKAQIYAWoKEAoQAxAEEAkQBQ==',
+];
+const List<String> _youtubeMusicArtistsFilterParamsCandidates = <String>[
+  'EgWKAQIgAWoKEAoQAxAEEAkQBQ==',
+];
 
 String? _extractJsonObjectAfterMarker(String source, String marker) {
   final markerIndex = source.indexOf(marker);
@@ -1229,14 +1242,29 @@ Future<_ResolvedAlbumRef?> _resolveAlbumFromAppSearchEngine(Video video) async {
   if (compactTitle.isEmpty && compactArtist.isEmpty) return null;
 
   // Regla solicitada: buscar "cancion + artista" y abrir el primer album.
-  final query = '$compactTitle $compactArtist'
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
-  if (query.isEmpty) return null;
+  final normalizedTitle = _normalizeAlbumSearchText(compactTitle);
+  final normalizedArtist = _normalizeAlbumSearchText(compactArtist);
+  final queryCandidates =
+      <String>{
+            '$compactTitle $compactArtist',
+            if (normalizedArtist.isNotEmpty) '$compactTitle $normalizedArtist',
+            if (normalizedTitle.isNotEmpty && normalizedArtist.isNotEmpty)
+              '$normalizedTitle $normalizedArtist',
+            compactTitle,
+          }
+          .map((q) => q.replaceAll(RegExp(r'\s+'), ' ').trim())
+          .where((q) => q.isNotEmpty)
+          .toList(growable: false);
 
-  final results = await _searchAlbumsFromAppEngine(query);
-  if (results.isEmpty) return null;
-  final best = results.first;
+  _SearchAlbumResult? best;
+  for (final query in queryCandidates) {
+    final results = await _searchAlbumsFromAppEngine(query);
+    if (results.isNotEmpty) {
+      best = results.first;
+      break;
+    }
+  }
+  if (best == null) return null;
   final title = best.title.trim();
   final artist = best.artist.trim();
   return _ResolvedAlbumRef(
@@ -1262,14 +1290,29 @@ resolveAlbumFromSongAndArtistLikeSearch({
   ).replaceAll(RegExp(r'\s+'), ' ').trim();
   if (compactTitle.isEmpty && compactArtist.isEmpty) return null;
 
-  final query = '$compactTitle $compactArtist'
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
-  if (query.isEmpty) return null;
+  final normalizedTitle = _normalizeAlbumSearchText(compactTitle);
+  final normalizedArtist = _normalizeAlbumSearchText(compactArtist);
+  final queryCandidates =
+      <String>{
+            '$compactTitle $compactArtist',
+            if (normalizedArtist.isNotEmpty) '$compactTitle $normalizedArtist',
+            if (normalizedTitle.isNotEmpty && normalizedArtist.isNotEmpty)
+              '$normalizedTitle $normalizedArtist',
+            compactTitle,
+          }
+          .map((q) => q.replaceAll(RegExp(r'\s+'), ' ').trim())
+          .where((q) => q.isNotEmpty)
+          .toList(growable: false);
 
-  final results = await _searchAlbumsFromAppEngine(query);
-  if (results.isEmpty) return null;
-  final best = results.first;
+  _SearchAlbumResult? best;
+  for (final query in queryCandidates) {
+    final results = await _searchAlbumsFromAppEngine(query);
+    if (results.isNotEmpty) {
+      best = results.first;
+      break;
+    }
+  }
+  if (best == null) return null;
   final title = best.title.trim();
   final artist = best.artist.trim();
   return (
@@ -1807,9 +1850,23 @@ class _SearchPageState extends State<SearchPage>
       final primaryArtistQuery = searchResult.isNotEmpty
           ? cleanArtistName(searchResult.first.author).trim()
           : '';
-      final albumResult = await _searchAlbumsWithCache(
-        primaryArtistQuery.isNotEmpty ? primaryArtistQuery : query,
+      final normalizedPrimaryArtist = _normalizeAlbumSearchText(
+        primaryArtistQuery,
       );
+      final hasMeaningfulPrimaryArtist =
+          normalizedPrimaryArtist.isNotEmpty &&
+          normalizedPrimaryArtist != 'artista' &&
+          normalizedPrimaryArtist != 'artist' &&
+          normalizedPrimaryArtist != 'unknown artist';
+      final albumQueryCandidates = <String>[
+        if (hasMeaningfulPrimaryArtist) primaryArtistQuery,
+        query,
+      ].where((value) => value.trim().isNotEmpty).toSet().toList();
+      List<_SearchAlbumResult> albumResult = const <_SearchAlbumResult>[];
+      for (final albumQuery in albumQueryCandidates) {
+        albumResult = await _searchAlbumsWithCache(albumQuery);
+        if (albumResult.isNotEmpty) break;
+      }
       if (!mounted || epoch != _searchEpoch) return;
       setState(() {
         _albums = albumResult;
@@ -2912,9 +2969,7 @@ class _SearchPageState extends State<SearchPage>
     late final Future<List<Video>> future;
     switch (mode) {
       case _SearchFilterMode.music:
-        future = _runYoutubeWithRetry(
-          () => _searchAutoGeneratedTopicVideos(query),
-        );
+        future = _runYoutubeWithRetry(() => _searchYoutubeMusicSongs(query));
       case _SearchFilterMode.podcast:
         future = _runYoutubeWithRetry(
           () => _searchPodcastMarkedVideos(query),
@@ -2934,6 +2989,125 @@ class _SearchPageState extends State<SearchPage>
     } finally {
       _searchInFlight.remove(cacheKey);
     }
+  }
+
+  Future<List<Video>> _searchYoutubeMusicSongs(String query) async {
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.isEmpty) return const <Video>[];
+
+    for (final params in _youtubeMusicSongsFilterParamsCandidates) {
+      final payload = await _runYoutubeWithRetry(
+        () => _fetchYoutubeMusicSearchPayloadForAlbums(
+          normalizedQuery,
+          paramsOverride: params,
+        ),
+        maxAttempts: 1,
+      );
+      if (payload == null) continue;
+      final extracted = _extractSongVideosFromYoutubeMusicPayload(payload);
+      if (extracted.isNotEmpty) return extracted;
+    }
+
+    // Fallback suave para no dejar vacía la búsqueda si YouTube cambia el payload.
+    return _searchAutoGeneratedTopicVideos(normalizedQuery);
+  }
+
+  List<Video> _extractSongVideosFromYoutubeMusicPayload(
+    Map<String, dynamic> payload,
+  ) {
+    final out = <Video>[];
+    final seen = <String>{};
+
+    void collect(dynamic node, {int depth = 0, String? currentShelfTitle}) {
+      if (depth > 20 || node == null) return;
+      if (node is Map) {
+        final shelf = node['musicShelfRenderer'];
+        if (shelf is Map) {
+          final shelfTitle = _normalizeAlbumSearchText(
+            _extractYouTubeText(shelf['title']),
+          );
+          collect(shelf['contents'], depth: depth + 1, currentShelfTitle: shelfTitle);
+        }
+
+        final responsive = node['musicResponsiveListItemRenderer'];
+        if (responsive is Map) {
+          final video = _videoFromYoutubeMusicRenderer(
+            Map<String, dynamic>.from(responsive.cast<dynamic, dynamic>()),
+            currentShelfTitle: currentShelfTitle ?? '',
+          );
+          if (video != null && seen.add(video.id.value)) out.add(video);
+        }
+
+        for (final value in node.values) {
+          collect(value, depth: depth + 1, currentShelfTitle: currentShelfTitle);
+        }
+        return;
+      }
+      if (node is List) {
+        for (final value in node) {
+          collect(value, depth: depth + 1, currentShelfTitle: currentShelfTitle);
+        }
+      }
+    }
+
+    collect(payload);
+    return out;
+  }
+
+  Video? _videoFromYoutubeMusicRenderer(
+    Map<String, dynamic> renderer, {
+    required String currentShelfTitle,
+  }) {
+    String? readVideoId(dynamic node, {int depth = 0}) {
+      if (depth > 12 || node == null) return null;
+      if (node is Map) {
+        final direct = (node['videoId'] ?? '').toString().trim();
+        if (direct.isNotEmpty && VideoId.validateVideoId(direct)) return direct;
+        for (final value in node.values) {
+          final nested = readVideoId(value, depth: depth + 1);
+          if (nested != null) return nested;
+        }
+        return null;
+      }
+      if (node is List) {
+        for (final value in node) {
+          final nested = readVideoId(value, depth: depth + 1);
+          if (nested != null) return nested;
+        }
+      }
+      return null;
+    }
+
+    final videoId = readVideoId(renderer);
+    if (videoId == null || videoId.isEmpty) return null;
+
+    final title = _extractFlexColumnText(renderer, 0).trim();
+    final author = _extractAlbumArtistFromRendererNode(renderer).trim();
+    if (title.isEmpty) return null;
+
+    final shelfText = _normalizeAlbumSearchText(currentShelfTitle);
+    final pageType = _extractPageTypeFromNode(renderer);
+    final looksLikeSongShelf =
+        shelfText.contains('cancion') || shelfText.contains('song');
+    final looksLikeTrackPage =
+        pageType.contains('TRACK') || pageType.contains('SONG');
+    if (!looksLikeSongShelf && !looksLikeTrackPage) return null;
+
+    return Video(
+      VideoId(videoId),
+      title,
+      author.isEmpty ? 'Artista' : author,
+      ChannelId('UC_x5XG1OV2P6uZZ5FSM9Ttw'),
+      null,
+      null,
+      null,
+      '',
+      null,
+      ThumbnailSet(videoId),
+      const <String>[],
+      const Engagement(0, null, null),
+      false,
+    );
   }
 
   Future<List<Video>> _searchUnfilteredVideos(String query) async {
@@ -3140,6 +3314,119 @@ class _SearchPageState extends State<SearchPage>
     return score;
   }
 
+  Future<SearchChannelWithSubscribers?>
+  _searchPrimaryArtistFromYoutubeMusicFilter(String query) async {
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.isEmpty) return null;
+
+    for (final params in _youtubeMusicArtistsFilterParamsCandidates) {
+      final payload = await _runYoutubeWithRetry(
+        () => _fetchYoutubeMusicSearchPayloadForAlbums(
+          normalizedQuery,
+          paramsOverride: params,
+        ),
+        maxAttempts: 1,
+      );
+      if (payload == null) continue;
+      final artist = _extractFirstArtistFromYoutubeMusicPayload(payload);
+      if (artist != null) return artist;
+    }
+    return null;
+  }
+
+  SearchChannelWithSubscribers? _extractFirstArtistFromYoutubeMusicPayload(
+    Map<String, dynamic> payload,
+  ) {
+    SearchChannelWithSubscribers? found;
+
+    String? readBrowseId(dynamic node, {int depth = 0}) {
+      if (depth > 12 || node == null) return null;
+      if (node is Map) {
+        final direct = (node['browseId'] ?? '').toString().trim();
+        if (direct.isNotEmpty) return direct;
+        final endpoint = node['browseEndpoint'];
+        if (endpoint is Map) {
+          final value = (endpoint['browseId'] ?? '').toString().trim();
+          if (value.isNotEmpty) return value;
+        }
+        for (final value in node.values) {
+          final nested = readBrowseId(value, depth: depth + 1);
+          if (nested != null && nested.isNotEmpty) return nested;
+        }
+        return null;
+      }
+      if (node is List) {
+        for (final value in node) {
+          final nested = readBrowseId(value, depth: depth + 1);
+          if (nested != null && nested.isNotEmpty) return nested;
+        }
+      }
+      return null;
+    }
+
+    void scan(dynamic node, {int depth = 0, String? currentShelfTitle}) {
+      if (found != null || depth > 20 || node == null) return;
+      if (node is Map) {
+        final shelf = node['musicShelfRenderer'];
+        if (shelf is Map) {
+          final shelfTitle = _normalizeAlbumSearchText(
+            _extractYouTubeText(shelf['title']),
+          );
+          scan(shelf['contents'], depth: depth + 1, currentShelfTitle: shelfTitle);
+        }
+
+        final responsive = node['musicResponsiveListItemRenderer'];
+        if (responsive is Map) {
+          final normalizedRenderer = Map<String, dynamic>.from(
+            responsive.cast<dynamic, dynamic>(),
+          );
+          final pageType = _extractPageTypeFromNode(normalizedRenderer);
+          final shelfTitle = _normalizeAlbumSearchText(currentShelfTitle ?? '');
+          final looksLikeArtistShelf =
+              shelfTitle.contains('artista') || shelfTitle.contains('artist');
+          if (pageType.contains('ARTIST') || looksLikeArtistShelf) {
+            final name = _extractFlexColumnText(normalizedRenderer, 0).trim();
+            final browseId = readBrowseId(normalizedRenderer)?.trim() ?? '';
+            if (name.isNotEmpty && browseId.isNotEmpty) {
+              final thumb = _extractThumbnailFromNode(normalizedRenderer);
+              final uri = Uri.tryParse(thumb ?? '');
+              final channel = SearchChannel(
+                ChannelId(browseId),
+                name,
+                '',
+                0,
+                uri != null ? [Thumbnail(uri, 0, 0)] : const <Thumbnail>[],
+              );
+              found = SearchChannelWithSubscribers(
+                channel: channel,
+                subscribersCount: null,
+                thumbnailUrlOverride: thumb?.trim().isNotEmpty == true
+                    ? thumb!.trim()
+                    : null,
+              );
+              return;
+            }
+          }
+        }
+
+        for (final value in node.values) {
+          scan(value, depth: depth + 1, currentShelfTitle: currentShelfTitle);
+          if (found != null) return;
+        }
+        return;
+      }
+      if (node is List) {
+        for (final value in node) {
+          scan(value, depth: depth + 1, currentShelfTitle: currentShelfTitle);
+          if (found != null) return;
+        }
+      }
+    }
+
+    scan(payload);
+    return found;
+  }
+
   Future<List<SearchChannelWithSubscribers>> _searchChannelsWithCache(
     String query,
   ) async {
@@ -3152,46 +3439,12 @@ class _SearchPageState extends State<SearchPage>
     }
 
     final future = _runYoutubeWithRetry<Object>(() async {
-      final list = await _youtubeExplode.search.searchContent(
-        query,
-        filter: TypeFilters.channel,
-      );
-      final channels = list.whereType<SearchChannel>().take(8).toList();
-      if (channels.isEmpty) return const <SearchChannelWithSubscribers>[];
-
-      // Ruta rápida: evita llamadas extras para que el artista aparezca antes.
-      final resolvedByChannelSearch = await _resolveChannelsWithSubscribers(
-        channels,
-      );
-      final filtered = _filterChannelsBySubscribers(resolvedByChannelSearch);
-      if (filtered.isNotEmpty) {
-        return _hydrateTopicChannelPhotos(
-          filtered,
-          resolvedByChannelSearch,
-          forcedTopicThumbnail: _topThumbnailFromResolved(
-            resolvedByChannelSearch,
-          ),
-        );
+      final primaryFromYoutubeMusicArtists =
+          await _searchPrimaryArtistFromYoutubeMusicFilter(query);
+      if (primaryFromYoutubeMusicArtists == null) {
+        return const <SearchChannelWithSubscribers>[];
       }
-
-      // Fallback solo si no hubo suficientes candidatos por canal.
-      final videos = await _searchWithCache(
-        query,
-        mode: _SearchFilterMode.music,
-      );
-      final resolvedByVideoSearch = await _resolveChannelsFromTopVideos(
-        videos.take(2).toList(),
-      );
-      final merged = _mergeChannelCandidates(
-        resolvedByChannelSearch,
-        resolvedByVideoSearch,
-      );
-      final mergedFiltered = _filterChannelsBySubscribers(merged);
-      return _hydrateTopicChannelPhotos(
-        mergedFiltered,
-        merged,
-        forcedTopicThumbnail: _topThumbnailFromResolved(merged),
-      );
+      return <SearchChannelWithSubscribers>[primaryFromYoutubeMusicArtists];
     });
     _channelSearchInFlight[query] = future;
     try {
@@ -3218,11 +3471,7 @@ class _SearchPageState extends State<SearchPage>
     Object rawResult,
   ) async {
     if (rawResult is List<SearchChannelWithSubscribers>) {
-      return _hydrateTopicChannelPhotos(
-        _filterChannelsBySubscribers(rawResult),
-        rawResult,
-        forcedTopicThumbnail: _topThumbnailFromResolved(rawResult),
-      );
+      return rawResult.take(_maxChannelsToShow).toList(growable: false);
     }
     if (rawResult is List<SearchChannel>) {
       final resolved = await _resolveChannelsWithSubscribers(rawResult);
@@ -3233,6 +3482,28 @@ class _SearchPageState extends State<SearchPage>
       );
     }
     return const [];
+  }
+
+  List<SearchChannelWithSubscribers> _prependPrimaryArtistChannel({
+    required SearchChannelWithSubscribers? primary,
+    required List<SearchChannelWithSubscribers> others,
+  }) {
+    if (others.isEmpty && primary == null) return const [];
+    final ordered = <SearchChannelWithSubscribers>[];
+    final seen = <String>{};
+
+    void add(SearchChannelWithSubscribers item) {
+      final id = item.channel.id.value.trim();
+      if (id.isEmpty || !seen.add(id)) return;
+      ordered.add(item);
+    }
+
+    if (primary != null) add(primary);
+    for (final item in others) {
+      add(item);
+      if (ordered.length >= _maxChannelsToShow) break;
+    }
+    return ordered.take(_maxChannelsToShow).toList(growable: false);
   }
 
   Future<List<SearchChannelWithSubscribers>> _resolveChannelsWithSubscribers(
@@ -6094,6 +6365,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
   List<Video> _videos = [];
   List<Video> _artistProfileVideos = const [];
   bool _artistProfileVideosLoading = false;
+  List<Video> _artistTopSongs = const [];
+  bool _artistTopSongsLoading = false;
+  String? _artistTopSongsShowAllPlaylistId;
+  int _artistTopSongsLoadEpoch = 0;
   _SelectedAlbumView? _selectedAlbumView;
   bool _showAllTopSongs = false;
   _SearchAlbumResult? _suggestedAlbum;
@@ -6130,6 +6405,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
         unawaited(_loadSuggestedAlbumForArtist());
       }
       unawaited(_loadArtistProfileVideosFromYouTubeMusic());
+      unawaited(_loadArtistTopSongsFromYouTubeMusic());
       return;
     }
     unawaited(_restoreArtistPersistentCacheOrLoad());
@@ -6171,6 +6447,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
         unawaited(_loadSuggestedAlbumForArtist());
       }
       unawaited(_loadArtistProfileVideosFromYouTubeMusic());
+      unawaited(_loadArtistTopSongsFromYouTubeMusic());
       return;
     }
     await _loadChannelVideos();
@@ -6346,6 +6623,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
         _loading = false;
       });
       unawaited(_loadArtistProfileVideosFromYouTubeMusic());
+      unawaited(_loadArtistTopSongsFromYouTubeMusic());
       _storeArtistCache(albumsResolved: false);
       unawaited(_loadSuggestedAlbumForArtist());
     } catch (_) {
@@ -6449,12 +6727,74 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     });
     final resolved = await _fetchArtistProfileVideosFromYouTubeMusic(query);
     if (!mounted) return;
-    // Ocultar los primeros 5 resultados que provienen de YouTube Music.
     final filtered = (resolved.length > 5) ? resolved.sublist(5) : <Video>[];
     setState(() {
       _artistProfileVideos = filtered;
       _artistProfileVideosLoading = false;
     });
+  }
+
+  Future<void> _loadArtistTopSongsFromYouTubeMusic() async {
+    final query = _artistDisplayName.trim().isNotEmpty
+        ? _artistDisplayName.trim()
+        : widget.channelName.trim();
+    if (query.isEmpty) return;
+    final loadEpoch = ++_artistTopSongsLoadEpoch;
+    setState(() {
+      _artistTopSongsLoading = true;
+    });
+    final resolved = await _fetchArtistTopSongsFromYouTubeMusic(query);
+    if (!mounted || loadEpoch != _artistTopSongsLoadEpoch) return;
+
+    // Fase 1: pintamos rápido el top corto de YT Music.
+    setState(() {
+      _artistTopSongs = resolved.songs;
+      _artistTopSongsShowAllPlaylistId = resolved.showAllPlaylistId;
+    });
+
+    // Fase 2: expandimos con "Show all" en background para reemplazar por lista completa.
+    final playlistId = (resolved.showAllPlaylistId ?? '').trim();
+    if (playlistId.isNotEmpty) {
+      try {
+        final full = await _runYoutubeWithRetry(
+          () => _yt.playlists.getVideos(PlaylistId(playlistId)).take(250).toList(),
+          maxAttempts: 1,
+        );
+        if (!mounted || loadEpoch != _artistTopSongsLoadEpoch) return;
+        if (full.isNotEmpty) {
+          setState(() {
+            _artistTopSongs = full;
+          });
+        }
+      } catch (_) {
+        // Best effort.
+      }
+    }
+
+    if (!mounted || loadEpoch != _artistTopSongsLoadEpoch) return;
+    setState(() {
+      _artistTopSongsLoading = false;
+    });
+  }
+
+  bool _isTopSongsShelfTitle(String shelfTitle) {
+    final title = _normalizeAlbumSearchText(shelfTitle);
+    if (title.isEmpty) return false;
+    return title == 'top songs' ||
+        title == 'top canciones' ||
+        title.contains('top songs') ||
+        title.contains('top canciones') ||
+        title.contains('canciones populares') ||
+        title.contains('popular songs');
+  }
+
+  bool _isVideosShelfTitle(String shelfTitle) {
+    final title = _normalizeAlbumSearchText(shelfTitle);
+    if (title.isEmpty) return false;
+    return title == 'videos' ||
+        title.contains('videos') ||
+        title.contains('music videos') ||
+        title.contains('videoclips');
   }
 
   Future<Map<String, dynamic>?> _fetchYoutubeMusicBrowsePayloadForArtistVideos(
@@ -6516,6 +6856,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
 
   String? _extractFirstArtistBrowseId(dynamic node, {int depth = 0}) {
     if (depth > 20 || node == null) return null;
+    final targetArtist = _normalizeAlbumSearchText(_artistDisplayName);
     if (node is Map) {
       final browseEndpoint = node['browseEndpoint'];
       if (browseEndpoint is Map) {
@@ -6542,13 +6883,18 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                     '')
                 .toString()
                 .trim();
-        if (browseId.isNotEmpty &&
-            (title == _normalizeAlbumSearchText(_artistDisplayName) ||
-                title.contains(
-                  _normalizeAlbumSearchText(_artistDisplayName),
-                ))) {
+        final pageType = _extractPageTypeFromNode(renderer);
+        final hasArtistSignal =
+            pageType.contains('ARTIST') ||
+            title == targetArtist ||
+            title.contains(targetArtist) ||
+            (targetArtist.isNotEmpty && targetArtist.contains(title));
+        if (browseId.isNotEmpty && hasArtistSignal) {
           return browseId;
         }
+        // Fallback: si el renderer parece de artista pero no coincide exacto
+        // (acentos/normalizacion rara), usamos su primer browseId.
+        if (browseId.isNotEmpty && pageType.contains('ARTIST')) return browseId;
       }
       for (final value in node.values) {
         final nested = _extractFirstArtistBrowseId(value, depth: depth + 1);
@@ -6560,6 +6906,57 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
         if (nested != null && nested.isNotEmpty) return nested;
       }
     }
+    return null;
+  }
+
+  List<String> _artistQueryVariantsForBrowseId(String query) {
+    final raw = query.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final normalized = _normalizeAlbumSearchText(raw);
+    return <String>{raw, normalized}.where((q) => q.isNotEmpty).toList();
+  }
+
+  Future<String?> _resolveArtistBrowseIdForProfile(String query) async {
+    final targetNormalized = _normalizeAlbumSearchText(_artistDisplayName);
+    final variants = _artistQueryVariantsForBrowseId(query);
+
+    // 1) Prioridad: filtro de Artistas en YT Music.
+    for (final variant in variants) {
+      for (final params in _youtubeMusicArtistsFilterParamsCandidates) {
+        final payload = await _fetchYoutubeMusicSearchPayloadForAlbums(
+          variant,
+          paramsOverride: params,
+        );
+        final browseId = _extractFirstArtistBrowseId(payload);
+        if (browseId != null && browseId.isNotEmpty) return browseId;
+      }
+    }
+
+    // 2) Fallback: búsqueda general con variante exacta y normalizada.
+    for (final variant in variants) {
+      final initialPayload = await _fetchYoutubeMusicSearchInitialDataForAlbums(
+        variant,
+      );
+      final searchPayload = await _fetchYoutubeMusicSearchPayloadForAlbums(
+        variant,
+      );
+      final browseId =
+          _extractFirstArtistBrowseId(initialPayload) ??
+          _extractFirstArtistBrowseId(searchPayload);
+      if (browseId != null && browseId.isNotEmpty) return browseId;
+    }
+
+    // 3) Último fallback: nombre del artista de la cabecera.
+    if (targetNormalized.isNotEmpty) {
+      for (final params in _youtubeMusicArtistsFilterParamsCandidates) {
+        final payload = await _fetchYoutubeMusicSearchPayloadForAlbums(
+          targetNormalized,
+          paramsOverride: params,
+        );
+        final browseId = _extractFirstArtistBrowseId(payload);
+        if (browseId != null && browseId.isNotEmpty) return browseId;
+      }
+    }
+
     return null;
   }
 
@@ -6653,15 +7050,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     String query,
   ) async {
     try {
-      final initialPayload = await _fetchYoutubeMusicSearchInitialDataForAlbums(
-        query,
-      );
-      final searchPayload = await _fetchYoutubeMusicSearchPayloadForAlbums(
-        query,
-      );
-      final artistBrowseId =
-          _extractFirstArtistBrowseId(initialPayload) ??
-          _extractFirstArtistBrowseId(searchPayload);
+      final artistBrowseId = await _resolveArtistBrowseIdForProfile(query);
       if (artistBrowseId == null || artistBrowseId.isEmpty) {
         return const <Video>[];
       }
@@ -6674,13 +7063,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       );
       final videosShelves = [...listShelves, ...carouselShelves]
           .where((shelf) {
-            final shelfTitle = _normalizeAlbumSearchText(
-              _extractYouTubeText(shelf['title']),
-            );
-            return shelfTitle == 'videos' ||
-                shelfTitle.contains('videos') ||
-                shelfTitle.contains('music videos') ||
-                shelfTitle.contains('videoclips');
+            final shelfTitle = _extractYouTubeText(shelf['title']);
+            return _isVideosShelfTitle(shelfTitle);
           })
           .toList(growable: false);
       final results = <Video>[];
@@ -6749,6 +7133,71 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       return results;
     } catch (_) {
       return const <Video>[];
+    }
+  }
+
+  Future<({List<Video> songs, String? showAllPlaylistId})>
+  _fetchArtistTopSongsFromYouTubeMusic(String query) async {
+    try {
+      final artistBrowseId = await _resolveArtistBrowseIdForProfile(query);
+      if (artistBrowseId == null || artistBrowseId.isEmpty) {
+        return (songs: const <Video>[], showAllPlaylistId: null);
+      }
+      final profilePayload =
+          await _fetchYoutubeMusicBrowsePayloadForArtistVideos(artistBrowseId);
+      if (profilePayload == null) {
+        return (songs: const <Video>[], showAllPlaylistId: null);
+      }
+      final listShelves = _extractMusicShelfRenderers(profilePayload);
+      final carouselShelves = _extractMusicCarouselShelfRenderers(
+        profilePayload,
+      );
+      final topSongsShelves = [...listShelves, ...carouselShelves]
+          .where((shelf) => _isTopSongsShelfTitle(_extractYouTubeText(shelf['title'])))
+          .toList(growable: false);
+      String? showAllPlaylistId;
+      for (final shelf in topSongsShelves) {
+        final candidates = _extractPlaylistIdsFromNode(shelf);
+        final picked = _pickBestPlayablePlaylistId(candidates);
+        if (picked != null && picked.trim().isNotEmpty) {
+          showAllPlaylistId = picked.trim();
+          break;
+        }
+      }
+      final results = <Video>[];
+      final seenIds = <String>{};
+      for (final shelf in topSongsShelves) {
+        final renderers = <Map<String, dynamic>>[];
+        _collectMusicResponsiveListItemRenderersForArtistVideos(
+          shelf,
+          renderers,
+        );
+        for (final renderer in renderers) {
+          final videoId = _extractArtistProfileVideoId(renderer);
+          if (videoId == null || videoId.isEmpty || !seenIds.add(videoId)) {
+            continue;
+          }
+          final title = _extractAlbumTitleFromRendererNode(renderer);
+          final artist = _extractAlbumArtistFromRendererNode(renderer).trim();
+          results.add(
+            _CachedVideoSnapshot(
+              videoId: videoId,
+              title: title.isEmpty ? 'Canción' : title,
+              author: artist.isEmpty ? _artistDisplayName : artist,
+              channelId: widget.channelId,
+              description: '',
+              durationMs: null,
+              viewCount: 0,
+              uploadDateMs: null,
+              publishDateMs: null,
+              isLive: false,
+            ).toVideo(),
+          );
+        }
+      }
+      return (songs: results, showAllPlaylistId: showAllPlaylistId);
+    } catch (_) {
+      return (songs: const <Video>[], showAllPlaylistId: null);
     }
   }
 
@@ -7719,8 +8168,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
   }
 
   Widget _buildTopSongsSection(BuildContext context) {
-    final columns = _buildTopSongColumns(_videos);
-    if (columns.isEmpty) return const SizedBox.shrink();
+    final columns = _buildTopSongColumns(_artistTopSongs);
+    if (columns.isEmpty && !_artistTopSongsLoading) return const SizedBox.shrink();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -7762,7 +8211,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
           const SizedBox(height: 8),
           SizedBox(
             height: 320,
-            child: ListView.separated(
+            child: _artistTopSongsLoading
+                ? const Center(child: CupertinoActivityIndicator(radius: 12))
+                : ListView.separated(
               padding: const EdgeInsets.symmetric(
                 horizontal: _artistSectionHorizontalInset,
               ),
@@ -7809,7 +8260,25 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     );
   }
 
-  void _openAllTopSongs() {
+  Future<void> _openAllTopSongs() async {
+    if (_artistTopSongs.isEmpty) return;
+    final playlistId = (_artistTopSongsShowAllPlaylistId ?? '').trim();
+    if (playlistId.isNotEmpty) {
+      try {
+        final loaded = await _runYoutubeWithRetry(
+          () => _yt.playlists.getVideos(PlaylistId(playlistId)).take(250).toList(),
+          maxAttempts: 1,
+        );
+        if (loaded.isNotEmpty && mounted) {
+          setState(() {
+            _artistTopSongs = loaded;
+          });
+        }
+      } catch (_) {
+        // Best effort: mantenemos la lista corta si falla show all.
+      }
+    }
+    if (!mounted) return;
     setState(() {
       _albumTransitionDirection = 1;
       _showAllTopSongs = true;
@@ -7864,12 +8333,12 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
             Expanded(
               child: ListView.separated(
                 padding: EdgeInsets.fromLTRB(16, 0, 16, bottomReserve),
-                itemCount: _videos.length,
+                itemCount: _artistTopSongs.length,
                 separatorBuilder: (_, _) => const SizedBox(height: 8),
                 itemBuilder: (context, index) {
                   return _buildTopSongCompactCard(
                     context,
-                    _videos[index],
+                    _artistTopSongs[index],
                     expanded: false,
                   );
                 },

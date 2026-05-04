@@ -49,21 +49,25 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   static const String _homeCacheBoxName = 'home_cache';
   static const String _trendingCacheKey = 'mx_trending_topic_v2';
-  static const String _curatedShelvesCacheKey = 'curated_music_shelves_v3';
+  static const String _curatedShelvesCacheKey = 'curated_music_shelves_v5';
+  static const String _homeContentCacheKey = 'home_content_v1';
   static const Duration _trendingCacheTtl = Duration(hours: 6);
   static const Duration _curatedShelvesCacheTtl = Duration(hours: 4);
+  static const Duration _homeContentCacheTtl = Duration(hours: 18);
   final YoutubeExplode _yt = YoutubeExplode();
   late Future<_HomeContent> _contentFuture;
   late Future<List<_HomeTrack>> _trendingFuture;
   final Map<String, _HomeResolvedAlbumRef> _albumRefByVideoIdCache = {};
   final Map<String, Future<_HomeResolvedAlbumRef?>> _albumRefByVideoIdInFlight =
       {};
+  final Map<String, _HomeResolvedAlbumRef> _albumShelfRefByItemId = {};
 
   @override
   void initState() {
     super.initState();
-    _contentFuture = _loadContent();
+    _contentFuture = _loadContent(includeNetwork: false);
     _trendingFuture = _loadTrendingTracks();
+    unawaited(_refreshHomeContentInBackground());
     unawaited(_warmHomeArtworkCache());
   }
 
@@ -94,24 +98,59 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<_HomeContent> _loadContent() async {
+  Future<void> _refreshHomeContentInBackground() async {
+    try {
+      // Deja que el contenido inicial (cache/local) se pinte primero.
+      await _contentFuture;
+    } catch (_) {
+      // Seguimos con refresh en background aunque falle cache inicial.
+    }
+    if (!mounted) return;
+    final updated = _loadContent();
+    setState(() {
+      _contentFuture = updated;
+    });
+    await updated;
+  }
+
+  Future<_HomeContent> _loadContent({bool includeNetwork = true}) async {
     final historyService = context.read<HistoryService>();
     final downloadService = context.read<DownloadService>();
+    if (!includeNetwork) {
+      final cached = await _readHomeContentCache();
+      if (cached != null) return cached;
+    }
 
     final history = await historyService.getHistory();
-    final downloads = await downloadService.getDownloadedVideos();
+    final asyncTasks = <Future<dynamic>>[
+      downloadService.getDownloadedVideos(),
+      _readTrendingCache(),
+      includeNetwork
+          ? _loadSearchStyleRecommendationSeed(history)
+          : Future.value(const <_HomeTrack>[]),
+      includeNetwork
+          ? _loadHistoryRandomRecommendationSeed(history)
+          : Future.value(const <_HomeTrack>[]),
+      includeNetwork
+          ? _loadCuratedShelves(history)
+          : _readCuratedShelvesCache(),
+    ];
+    final asyncResults = await Future.wait<dynamic>(asyncTasks);
+    final downloads = asyncResults[0] as List<DownloadedVideo>;
+    final trendingSeed = asyncResults[1] as List<_HomeTrack>;
+    final searchSeed = asyncResults[2] as List<_HomeTrack>;
+    final historyRandomSeed = asyncResults[3] as List<_HomeTrack>;
+    final curatedShelves = asyncResults[4] as List<_HomeShelf>;
     final downloadsById = <String, DownloadedVideo>{
       for (final item in downloads) item.videoId: item,
     };
-    final trendingSeed = await _readTrendingCache();
-    final searchSeed = await _loadSearchStyleRecommendationSeed(history);
-    final curatedShelves = await _loadCuratedShelves(history);
 
     final suggestions = _buildSuggestions(
       history: history,
       downloads: downloads,
       trendingSeed: trendingSeed,
       searchSeed: searchSeed,
+      historyRandomSeed: historyRandomSeed,
     );
     final relisten = history
         .take(20)
@@ -123,11 +162,167 @@ class _HomePageState extends State<HomePage> {
       trendingSeed: trendingSeed,
       searchSeed: searchSeed,
     );
-    return _HomeContent(
+    final albumsForYouShelf = includeNetwork
+        ? await _buildSuggestedAlbumsShelfFromSuggestions(suggestions)
+        : const _HomeShelf(
+            id: 'albums_for_you',
+            title: 'Álbumes sugeridos',
+            subtitle: 'Álbumes relacionados a tus sugerencias',
+            tracks: [],
+          );
+    final shelves = List<_HomeShelf>.from(curatedShelves, growable: true);
+    shelves.removeWhere((shelf) => shelf.id == 'albums_for_you');
+    if (albumsForYouShelf.tracks.isNotEmpty) {
+      final insertIndex = shelves.indexWhere((s) => s.id == 'quick_picks');
+      if (insertIndex == -1) {
+        shelves.insert(0, albumsForYouShelf);
+      } else {
+        shelves.insert(insertIndex + 1, albumsForYouShelf);
+      }
+    }
+    final content = _HomeContent(
       suggestions: suggestions,
       relisten: relisten,
       mixes: mixes,
-      curatedShelves: curatedShelves,
+      curatedShelves: shelves,
+    );
+    await _writeHomeContentCache(content);
+    return content;
+  }
+
+  Future<_HomeContent?> _readHomeContentCache() async {
+    try {
+      final box = await Hive.openBox<String>(_homeCacheBoxName);
+      final raw = box.get(_homeContentCacheKey);
+      if (raw == null || raw.isEmpty) return null;
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final updatedAtMs = (map['updatedAtMs'] as num?)?.toInt() ?? 0;
+      if (updatedAtMs <= 0) return null;
+      final updatedAt = DateTime.fromMillisecondsSinceEpoch(updatedAtMs);
+      if (DateTime.now().difference(updatedAt) > _homeContentCacheTtl) {
+        return null;
+      }
+
+      List<_HomeTrack> parseTracks(dynamic rawList) {
+        final list = (rawList as List<dynamic>? ?? const <dynamic>[])
+            .whereType<Map>()
+            .map(
+              (item) => _homeTrackFromMap(
+                Map<String, dynamic>.from(item.cast<dynamic, dynamic>()),
+              ),
+            )
+            .whereType<_HomeTrack>()
+            .toList(growable: false);
+        return list;
+      }
+
+      final suggestions = parseTracks(map['suggestions']);
+      final relisten = parseTracks(map['relisten']);
+      final mixes = (map['mixes'] as List<dynamic>? ?? const <dynamic>[])
+          .whereType<Map>()
+          .map((mixRaw) {
+            final mixMap = Map<String, dynamic>.from(
+              mixRaw.cast<dynamic, dynamic>(),
+            );
+            final tracks = parseTracks(mixMap['tracks']);
+            if (tracks.isEmpty) return null;
+            return _HomeMix(
+              title: (mixMap['title'] ?? '').toString(),
+              subtitle: (mixMap['subtitle'] ?? '').toString(),
+              tracks: tracks,
+            );
+          })
+          .whereType<_HomeMix>()
+          .toList(growable: false);
+      final curatedShelves =
+          (map['curatedShelves'] as List<dynamic>? ?? const <dynamic>[])
+              .whereType<Map>()
+              .map((shelfRaw) {
+                final shelfMap = Map<String, dynamic>.from(
+                  shelfRaw.cast<dynamic, dynamic>(),
+                );
+                final tracks = parseTracks(shelfMap['tracks']);
+                if (tracks.isEmpty) return null;
+                return _HomeShelf(
+                  id: (shelfMap['id'] ?? '').toString(),
+                  title: (shelfMap['title'] ?? '').toString(),
+                  subtitle: (shelfMap['subtitle'] ?? '').toString(),
+                  tracks: tracks,
+                );
+              })
+              .whereType<_HomeShelf>()
+              .toList(growable: false);
+
+      return _HomeContent(
+        suggestions: suggestions,
+        relisten: relisten,
+        mixes: mixes,
+        curatedShelves: curatedShelves,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeHomeContentCache(_HomeContent content) async {
+    try {
+      final box = await Hive.openBox<String>(_homeCacheBoxName);
+      final payload = jsonEncode({
+        'updatedAtMs': DateTime.now().millisecondsSinceEpoch,
+        'suggestions': content.suggestions.map(_homeTrackToMap).toList(),
+        'relisten': content.relisten.map(_homeTrackToMap).toList(),
+        'mixes': content.mixes
+            .map(
+              (mix) => {
+                'title': mix.title,
+                'subtitle': mix.subtitle,
+                'tracks': mix.tracks.map(_homeTrackToMap).toList(),
+              },
+            )
+            .toList(),
+        'curatedShelves': content.curatedShelves
+            .map(
+              (shelf) => {
+                'id': shelf.id,
+                'title': shelf.title,
+                'subtitle': shelf.subtitle,
+                'tracks': shelf.tracks.map(_homeTrackToMap).toList(),
+              },
+            )
+            .toList(),
+      });
+      await box.put(_homeContentCacheKey, payload);
+    } catch (_) {
+      // Best effort.
+    }
+  }
+
+  Map<String, dynamic> _homeTrackToMap(_HomeTrack item) {
+    return {
+      'videoId': item.videoId,
+      'title': item.title,
+      'artist': item.artist,
+      'thumbnailUrl': item.thumbnailUrl,
+      'isLocal': item.isLocal,
+      'localFilePath': item.localFilePath,
+      'localPlainLyrics': item.localPlainLyrics,
+      'localSyncedLyrics': item.localSyncedLyrics,
+    };
+  }
+
+  _HomeTrack? _homeTrackFromMap(Map<String, dynamic> map) {
+    final videoId = (map['videoId'] ?? '').toString().trim();
+    final title = (map['title'] ?? '').toString().trim();
+    if (videoId.isEmpty || title.isEmpty) return null;
+    return _HomeTrack(
+      videoId: videoId,
+      title: title,
+      artist: cleanArtistName((map['artist'] ?? '').toString()),
+      thumbnailUrl: (map['thumbnailUrl'] ?? '').toString(),
+      isLocal: (map['isLocal'] as bool?) ?? false,
+      localFilePath: (map['localFilePath'] as String?)?.trim(),
+      localPlainLyrics: (map['localPlainLyrics'] as String?)?.trim(),
+      localSyncedLyrics: (map['localSyncedLyrics'] as String?)?.trim(),
     );
   }
 
@@ -140,6 +335,8 @@ class _HomePageState extends State<HomePage> {
     final shelves = <_HomeShelf>[];
     final quickPicks = await _buildQuickPicksShelf(history);
     if (quickPicks.tracks.isNotEmpty) shelves.add(quickPicks);
+    final suggestedAlbums = await _buildSuggestedAlbumsShelf(history);
+    if (suggestedAlbums.tracks.isNotEmpty) shelves.add(suggestedAlbums);
 
     final fetched = await Future.wait([
       _buildShelfFromSeed(
@@ -216,6 +413,119 @@ class _HomePageState extends State<HomePage> {
       subtitle: 'Basado en lo que escuchas en YouTube Music',
       tracks: tracks,
     );
+  }
+
+  Future<_HomeShelf> _buildSuggestedAlbumsShelf(List<VideoHistory> history) async {
+    final topArtists = _extractTopArtists(history);
+    final queries = <String>[
+      'youtube music albums for you',
+      ...topArtists
+          .take(5)
+          .map((artist) => '$artist album youtube music'),
+      ...topArtists
+          .take(3)
+          .map((artist) => '$artist full album official audio'),
+      ...history
+          .take(6)
+          .map((item) => '${item.channelTitle} ${item.title} album'),
+    ];
+
+    final seen = <String>{};
+    final tracks = <_HomeTrack>[];
+    try {
+      final batches = await Future.wait(queries.map(_yt.search.search));
+      for (final batch in batches) {
+        for (final video in batch.take(44)) {
+          if (!_isValidSuggestedAlbumTrack(video)) continue;
+          final id = video.id.value.trim();
+          if (id.isEmpty || !seen.add(id)) continue;
+          tracks.add(_HomeTrack.fromVideo(video));
+          if (tracks.length >= 14) {
+            return _HomeShelf(
+              id: 'albums_for_you',
+              title: 'Álbumes sugeridos',
+              subtitle: 'Álbumes para ti en YouTube Music',
+              tracks: tracks,
+            );
+          }
+        }
+      }
+    } catch (_) {
+      // Best effort.
+    }
+
+    if (tracks.length < 10) {
+      final fallbackFromHistory = await _buildAlbumsFromHistoryFallback(
+        history,
+        seen,
+      );
+      for (final item in fallbackFromHistory) {
+        if (seen.add(item.videoId)) {
+          tracks.add(item);
+        }
+        if (tracks.length >= 14) break;
+      }
+    }
+
+    return _HomeShelf(
+      id: 'albums_for_you',
+      title: 'Álbumes sugeridos',
+      subtitle: 'Álbumes para ti en YouTube Music',
+      tracks: tracks,
+    );
+  }
+
+  Future<List<_HomeTrack>> _buildAlbumsFromHistoryFallback(
+    List<VideoHistory> history,
+    Set<String> seenIds,
+  ) async {
+    if (history.isEmpty) return const <_HomeTrack>[];
+    final output = <_HomeTrack>[];
+    final artistQueries = history
+        .map((item) => cleanArtistName(item.channelTitle).trim())
+        .where((artist) => artist.isNotEmpty)
+        .toSet()
+        .take(5)
+        .map((artist) => '$artist album topic')
+        .toList(growable: false);
+    try {
+      final batches = await Future.wait(artistQueries.map(_yt.search.search));
+      for (final batch in batches) {
+        for (final video in batch.take(30)) {
+          if (!_isValidSuggestedAlbumTrack(video)) continue;
+          final id = video.id.value.trim();
+          if (id.isEmpty || seenIds.contains(id)) continue;
+          output.add(_HomeTrack.fromVideo(video));
+          if (output.length >= 14) return output;
+        }
+      }
+    } catch (_) {
+      // Best effort.
+    }
+    return output;
+  }
+
+  bool _isValidSuggestedAlbumTrack(Video video) {
+    final title = video.title.toLowerCase();
+    final author = video.author.toLowerCase();
+    final description = video.description.toLowerCase();
+    final blob = '$title $author $description';
+    if (_shelfBlockedKeywords.any(blob.contains)) return false;
+    if (_isBlockedSearchAuthor(author)) return false;
+    final isVideoLike = _searchVideoLikeKeywords.any(blob.contains);
+    if (isVideoLike) return false;
+    final hasAlbumSignal =
+        blob.contains('album') ||
+        blob.contains('álbum') ||
+        blob.contains('ep') ||
+        blob.contains('deluxe') ||
+        blob.contains('edition');
+    final looksMusicSource =
+        author.endsWith('- topic') ||
+        author.endsWith('topic') ||
+        blob.contains('official audio') ||
+        blob.contains('youtube music');
+    return hasAlbumSignal && looksMusicSource;
   }
 
   Future<_HomeShelf> _buildShelfFromSeed(_ShelfSeed seed) async {
@@ -392,6 +702,40 @@ class _HomePageState extends State<HomePage> {
       if (id.isEmpty || !seen.add(id)) continue;
       output.add(_HomeTrack.fromQueueItem(item));
       if (output.length >= 14) break;
+    }
+    return output;
+  }
+
+  Future<List<_HomeTrack>> _loadHistoryRandomRecommendationSeed(
+    List<VideoHistory> history,
+  ) async {
+    if (history.isEmpty) return const <_HomeTrack>[];
+    final manager = context.read<VideoPlayerManager>();
+    final rand = math.Random();
+    final ids = history
+        .map((item) => item.videoId.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    ids.shuffle(rand);
+    final seeds = ids.take(5).toList(growable: false);
+    final queueBatches = await Future.wait(
+      seeds.map(
+        (seed) => manager.fetchQueueStyleRecommendations(
+          limit: 12,
+          seedVideoId: seed,
+        ),
+      ),
+    );
+    final output = <_HomeTrack>[];
+    final seen = <String>{};
+    for (final queueItems in queueBatches) {
+      for (final item in queueItems) {
+        final id = item.videoId.trim();
+        if (id.isEmpty || !seen.add(id)) continue;
+        output.add(_HomeTrack.fromQueueItem(item));
+        if (output.length >= 40) return output;
+      }
     }
     return output;
   }
@@ -623,8 +967,10 @@ class _HomePageState extends State<HomePage> {
     required List<DownloadedVideo> downloads,
     required List<_HomeTrack> trendingSeed,
     required List<_HomeTrack> searchSeed,
+    required List<_HomeTrack> historyRandomSeed,
   }) {
-    const target = 14;
+    const target = 24;
+    final rand = math.Random();
     final suggestions = <_HomeTrack>[];
     final seenIds = <String>{};
     final relistenIds = history.take(20).map((e) => e.videoId).toSet();
@@ -637,8 +983,14 @@ class _HomePageState extends State<HomePage> {
       suggestions.add(item);
     }
 
-    // 0) Parte de recomendados tipo Buscar/cola.
-    for (final item in searchSeed.take(8)) {
+    // 0) Primero variamos con recomendaciones de 5 canciones aleatorias del historial.
+    for (final item in historyRandomSeed) {
+      add(item);
+      if (suggestions.length >= target) return suggestions;
+    }
+
+    // 0.1) Luego parte de recomendados tipo Buscar/cola.
+    for (final item in searchSeed.take(10)) {
       add(item);
       if (suggestions.length >= target) return suggestions;
     }
@@ -678,6 +1030,7 @@ class _HomePageState extends State<HomePage> {
       if (suggestions.length >= target) break;
     }
 
+    suggestions.shuffle(rand);
     return suggestions;
   }
 
@@ -1013,6 +1366,20 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  Future<void> _openResolvedAlbumRef(_HomeResolvedAlbumRef resolved) async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      CupertinoPageRoute(
+        builder: (_) => AlbumTracksPage(
+          playlistId: resolved.playlistId,
+          albumTitle: resolved.title,
+          artistName: resolved.artist,
+          seedThumbnailUrl: resolved.thumbnailUrl,
+        ),
+      ),
+    );
+  }
+
   Future<_HomeResolvedAlbumRef?> _resolveAlbumFromSearchFallback(
     _HomeTrack track,
   ) async {
@@ -1083,6 +1450,58 @@ class _HomePageState extends State<HomePage> {
       title: refinedResolved.title,
       artist: refinedResolved.artist,
       thumbnailUrl: refinedResolved.thumbnailUrl,
+    );
+  }
+
+  Future<_HomeShelf> _buildSuggestedAlbumsShelfFromSuggestions(
+    List<_HomeTrack> suggestions,
+  ) async {
+    _albumShelfRefByItemId.clear();
+    if (suggestions.isEmpty) {
+      return const _HomeShelf(
+        id: 'albums_for_you',
+        title: 'Álbumes sugeridos',
+        subtitle: 'Álbumes relacionados a tus sugerencias',
+        tracks: [],
+      );
+    }
+
+    final uniqueSuggestions = <_HomeTrack>[];
+    final seenVideos = <String>{};
+    for (final item in suggestions) {
+      if (!seenVideos.add(item.videoId)) continue;
+      uniqueSuggestions.add(item);
+      if (uniqueSuggestions.length >= 12) break;
+    }
+
+    final results = await Future.wait(
+      uniqueSuggestions.map(_resolveAlbumRefFast),
+    );
+    final tracks = <_HomeTrack>[];
+    final seenAlbums = <String>{};
+    for (final resolved in results) {
+      if (resolved == null) continue;
+      final albumId = resolved.playlistId.trim();
+      if (albumId.isEmpty || !seenAlbums.add(albumId)) continue;
+      final itemId = 'album:$albumId';
+      _albumShelfRefByItemId[itemId] = resolved;
+      tracks.add(
+        _HomeTrack(
+          videoId: itemId,
+          title: resolved.title,
+          artist: cleanArtistName(resolved.artist),
+          thumbnailUrl: resolved.thumbnailUrl,
+          isLocal: false,
+        ),
+      );
+      if (tracks.length >= 14) break;
+    }
+
+    return _HomeShelf(
+      id: 'albums_for_you',
+      title: 'Álbumes sugeridos',
+      subtitle: 'Álbumes relacionados a tus sugerencias',
+      tracks: tracks,
     );
   }
 
@@ -1233,6 +1652,19 @@ class _HomePageState extends State<HomePage> {
         shelf.id == 'top_global';
   }
 
+  Future<void> _handleShelfItemTap(_HomeShelf shelf, _HomeTrack item) async {
+    if (shelf.id == 'albums_for_you') {
+      final resolved = _albumShelfRefByItemId[item.videoId];
+      if (resolved != null) {
+        await _openResolvedAlbumRef(resolved);
+        return;
+      }
+      await _openAlbumFromTrack(item);
+      return;
+    }
+    await _playTrack(item);
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -1256,13 +1688,14 @@ class _HomePageState extends State<HomePage> {
         child: FutureBuilder<_HomeContent>(
           future: _contentFuture,
           builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
+            final content = snapshot.data;
+            if (snapshot.connectionState == ConnectionState.waiting &&
+                content == null) {
               return const Center(
                 child: CupertinoActivityIndicator(radius: 14),
               );
             }
 
-            final content = snapshot.data;
             if (content == null) {
               return CustomScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
@@ -1279,6 +1712,10 @@ class _HomePageState extends State<HomePage> {
               content.relisten,
               itemsPerColumn: 4,
             );
+            final suggestionColumns = _buildTrackColumns(
+              content.suggestions,
+              itemsPerColumn: 4,
+            );
 
             return CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
@@ -1288,21 +1725,32 @@ class _HomePageState extends State<HomePage> {
                 const SliverToBoxAdapter(child: _HomeProfileNowPlayingHeader()),
                 _SectionHeaderSliver(
                   title: 'Sugerencias para ti',
-                  subtitle: 'Mezcla de tu historial y descargas',
+                  subtitle: '',
                 ),
                 SliverToBoxAdapter(
                   child: SizedBox(
-                    height: 222,
+                    height: 320,
                     child: ListView.separated(
                       padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
                       scrollDirection: Axis.horizontal,
-                      itemCount: content.suggestions.length,
+                      itemCount: suggestionColumns.length,
                       separatorBuilder: (_, _) => const SizedBox(width: 12),
                       itemBuilder: (context, index) {
-                        final item = content.suggestions[index];
-                        return _HomeFeatureCard(
-                          item: item,
-                          onTap: () => _playTrack(item),
+                        final columnItems = suggestionColumns[index];
+                        return _StackedTrackColumn(
+                          items: columnItems,
+                          onTap: _playTrack,
+                          onSwipeToQueueNext: (item) => _addTrackToQueue(
+                            item,
+                            insertMode: ManualQueueInsertMode.next,
+                          ),
+                          onSwipeToQueueEnd: (item) => _addTrackToQueue(
+                            item,
+                            insertMode: ManualQueueInsertMode.end,
+                          ),
+                          onContextAction: _runTrackContextAction,
+                          allowSwipeToQueue: false,
+                          thinCards: true,
                         );
                       },
                     ),
@@ -1366,7 +1814,8 @@ class _HomePageState extends State<HomePage> {
                               )[index];
                               return _StackedTrackColumn(
                                 items: columnItems,
-                                onTap: _playTrack,
+                                onTap: (item) =>
+                                    _handleShelfItemTap(shelf, item),
                                 onSwipeToQueueNext: (item) => _addTrackToQueue(
                                   item,
                                   insertMode: ManualQueueInsertMode.next,
@@ -1397,7 +1846,7 @@ class _HomePageState extends State<HomePage> {
                               final item = shelf.tracks[index];
                               return _HomeFeatureCard(
                                 item: item,
-                                onTap: () => _playTrack(item),
+                                onTap: () => _handleShelfItemTap(shelf, item),
                               );
                             },
                           ),
@@ -3817,10 +4266,11 @@ class _SectionHeaderSliver extends StatelessWidget {
   final String title;
   final String subtitle;
 
-  const _SectionHeaderSliver({required this.title, required this.subtitle});
+  const _SectionHeaderSliver({required this.title, this.subtitle = ''});
 
   @override
   Widget build(BuildContext context) {
+    final hasSubtitle = subtitle.trim().isNotEmpty;
     return SliverToBoxAdapter(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 2),
@@ -3836,15 +4286,17 @@ class _SectionHeaderSliver extends StatelessWidget {
                 letterSpacing: -0.4,
               ),
             ),
-            const SizedBox(height: 2),
-            Text(
-              subtitle,
-              style: TextStyle(
-                fontFamily: '.SF Pro Text',
-                fontSize: 13,
-                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+            if (hasSubtitle) ...[
+              const SizedBox(height: 2),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  fontFamily: '.SF Pro Text',
+                  fontSize: 13,
+                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ),
