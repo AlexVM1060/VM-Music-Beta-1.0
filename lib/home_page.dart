@@ -2274,8 +2274,6 @@ class _HomeProfileNowPlayingHeaderState
         }
       }
 
-      final resolved = await _ytResolverService.resolveVideo(id);
-      if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
       String? pickValidUrl(Iterable<String?> candidates) {
         for (final raw in candidates) {
           final trimmed = (raw ?? '').trim();
@@ -2335,22 +2333,43 @@ class _HomeProfileNowPlayingHeaderState
             : isIosFriendlyAudioSource(url);
       }
 
-      var previewUrl = pickValidUrl(<String?>[
-            // Igual que el player principal para fuentes de backend:
-            // en iOS suele ser más compatible muxed/source que audio webm.
-            resolved?.muxedUrl,
-            resolved?.audioUrl,
-            resolved?.sourceUrl,
-          ]) ??
-          '';
-      if (previewUrl.isNotEmpty &&
-          !isAllowedForPlatform(
-            previewUrl,
-            isVideo: previewUrl == (resolved?.muxedUrl ?? '').trim(),
-          )) {
-        previewUrl = '';
+      String? pickUrlFromResolved(YtResolverResult? resolved) {
+        if (resolved == null) return null;
+        final muxed = (resolved.muxedUrl ?? '').trim();
+        final audio = (resolved.audioUrl ?? '').trim();
+        final generic = resolved.sourceUrl.trim();
+        final url =
+            pickValidUrl(<String?>[muxed, audio, generic])?.trim() ?? '';
+        if (url.isEmpty) return null;
+        final isVideo = url == muxed || (url == generic && resolved.isVideoSource);
+        if (!isAllowedForPlatform(url, isVideo: isVideo)) return null;
+        return url;
       }
-      if (previewUrl.trim().isEmpty) {
+
+      final backendCount = _ytResolverService.backendCount;
+      final backendOrder = backendCount > 0
+          ? (List<int>.generate(backendCount, (i) => i)..shuffle())
+          : const <int>[];
+      String? previewUrl;
+      for (final backendIndex in backendOrder) {
+        final resolved = await _ytResolverService.resolveVideo(
+          id,
+          preferredBackendIndex: backendIndex,
+        );
+        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+        final picked = pickUrlFromResolved(resolved);
+        if (picked != null && picked.isNotEmpty) {
+          previewUrl = picked;
+          break;
+        }
+      }
+
+      if ((previewUrl ?? '').isEmpty) {
+        final resolved = await _ytResolverService.resolveVideo(id);
+        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+        previewUrl = pickUrlFromResolved(resolved);
+      }
+      if ((previewUrl ?? '').trim().isEmpty) {
         final manifest = await _yt.videos.streamsClient.getManifest(id);
         if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
         AudioOnlyStreamInfo? bestAudio;
@@ -2373,11 +2392,11 @@ class _HomeProfileNowPlayingHeaderState
           previewUrl = bestMuxed?.url.toString() ?? '';
         }
       }
-      if (previewUrl.trim().isEmpty) return;
+      if ((previewUrl ?? '').trim().isEmpty) return;
 
       await _friendPreviewPlayer.stop();
       if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
-      await _friendPreviewPlayer.setUrl(previewUrl);
+      await _friendPreviewPlayer.setUrl(previewUrl!);
       if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
       _startFriendPreviewPlayback(requestEpoch);
       _friendPreviewVideoIdByFriendId[ownerId] = id;

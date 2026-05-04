@@ -205,7 +205,7 @@ class _AccountPageState extends State<AccountPage> {
         message: SizedBox(
           height: 220,
           child: frames.isEmpty
-              ? const Center(child: Text('No hay marcos disponibles'))
+              ? const Center(child: Text('No hay Stickers disponibles'))
               : GridView.builder(
                   itemCount: frames.length,
                   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
