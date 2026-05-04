@@ -8,13 +8,8 @@
   "actions": [
     {
       "label": "Actualizar - Rene",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/6ec486e42c00.plist",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/021f6e96e7b3.plist",
       "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/6ec486e42c00.plist"
-    },
-    {
-      "label": "Actualizar - Juan",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/7332f0cd6d5d.plist",
-      "urlAndroid": "https://play.google.com/store/apps/details?id=tu.paquete.2"
     }
   ]
 }
