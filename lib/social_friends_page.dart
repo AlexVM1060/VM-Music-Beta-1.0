@@ -160,19 +160,52 @@ class _SocialFriendsPageState extends State<SocialFriendsPage> {
                         const SizedBox(height: 10),
                         SizedBox(
                           width: double.infinity,
-                          child: CupertinoButton.filled(
-                            color: const Color(0xFFE07A00),
-                            borderRadius: BorderRadius.circular(12),
+                          child: CupertinoButton(
+                            padding: EdgeInsets.zero,
+                            borderRadius: BorderRadius.circular(18),
                             onPressed: _searching ? null : _search,
-                            child: _searching
-                                ? const CupertinoActivityIndicator()
-                                : const Text(
-                                    'Buscar',
-                                    style: TextStyle(
-                                      color: CupertinoColors.white,
-                                      decoration: TextDecoration.none,
-                                    ),
+                            child: AnimatedOpacity(
+                              duration: const Duration(milliseconds: 180),
+                              opacity: _searching ? 0.84 : 1,
+                              child: Container(
+                                height: 46,
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(18),
+                                  gradient: const LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      Color(0xFFFFB347),
+                                      Color(0xFFE07A00),
+                                    ],
                                   ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: const Color(
+                                        0xFFE07A00,
+                                      ).withValues(alpha: 0.28),
+                                      blurRadius: 14,
+                                      offset: const Offset(0, 7),
+                                    ),
+                                  ],
+                                ),
+                                alignment: Alignment.center,
+                                child: _searching
+                                    ? const CupertinoActivityIndicator(
+                                        color: CupertinoColors.white,
+                                      )
+                                    : const Text(
+                                        'Buscar',
+                                        style: TextStyle(
+                                          color: CupertinoColors.white,
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w600,
+                                          letterSpacing: 0.2,
+                                          decoration: TextDecoration.none,
+                                        ),
+                                      ),
+                              ),
+                            ),
                           ),
                         ),
                       ],
