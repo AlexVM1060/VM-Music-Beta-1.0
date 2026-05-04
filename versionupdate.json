@@ -8,7 +8,7 @@
   "actions": [
     {
       "label": "Actualizar - Rene",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/021f6e96e7b3.plist",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/c85c87b7d89a.plist",
       "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/6ec486e42c00.plist"
     }
   ]
