@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:hive/hive.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/app_tab_state.dart';
@@ -20,7 +21,9 @@ import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
+import 'package:myapp/services/song_stream_cache_service.dart';
 import 'package:myapp/services/social_service.dart';
+import 'package:myapp/services/yt_resolver_service.dart';
 import 'package:myapp/social_friends_page.dart';
 import 'package:myapp/services/thumbnail_cache_service.dart';
 import 'package:myapp/search_page.dart';
@@ -1524,16 +1527,72 @@ class _HomeProfileNowPlayingHeader extends StatefulWidget {
 class _HomeProfileNowPlayingHeaderState
     extends State<_HomeProfileNowPlayingHeader> {
   List<SocialUser> _followingUsers = const <SocialUser>[];
+  final YoutubeExplode _yt = YoutubeExplode();
+  final AudioPlayer _friendPreviewPlayer = AudioPlayer();
+  final YtResolverService _ytResolverService = YtResolverService();
   RealtimeChannel? _friendRealtimeChannel;
   Set<String> _followingIds = <String>{};
   Timer? _friendRefreshTimer;
   final Map<String, String> _friendPhotoUrlById = <String, String>{};
   final Map<String, ImageProvider<Object>> _friendImageById =
       <String, ImageProvider<Object>>{};
+  final Map<String, String> _friendPreviewVideoIdByFriendId = <String, String>{};
+  final Map<String, String> _friendPreviewUrlByFriendId = <String, String>{};
+  bool _resumeMainPlayerAfterPreview = false;
+  final ValueNotifier<bool> _isFriendPreviewLoading = ValueNotifier<bool>(false);
+  int _friendPreviewRequestEpoch = 0;
+  StreamSubscription<PlayerState>? _friendPreviewStateSub;
+
+  void _setFriendPreviewLoading(bool value) {
+    if (_isFriendPreviewLoading.value == value) return;
+    _isFriendPreviewLoading.value = value;
+  }
+
+  void _startFriendPreviewPlayback(int requestEpoch) {
+    unawaited(_startFriendPreviewPlaybackAsync(requestEpoch));
+  }
+
+  Future<void> _startFriendPreviewPlaybackAsync(int requestEpoch) async {
+    try {
+      await _friendPreviewPlayer.seek(const Duration(minutes: 1));
+    } catch (_) {
+      // Si el stream no permite seek inmediato, continuamos.
+    }
+    if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+    unawaited(_friendPreviewPlayer.play());
+    if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+    if (_friendPreviewPlayer.playing ||
+        _friendPreviewPlayer.processingState == ProcessingState.ready) {
+      _setFriendPreviewLoading(false);
+      return;
+    }
+    unawaited(_settleFriendPreviewLoading(requestEpoch));
+  }
+
+  Future<void> _settleFriendPreviewLoading(int requestEpoch) async {
+    for (var i = 0; i < 14; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+      if (_friendPreviewPlayer.playing ||
+          _friendPreviewPlayer.processingState == ProcessingState.ready) {
+        _setFriendPreviewLoading(false);
+        return;
+      }
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    _friendPreviewStateSub = _friendPreviewPlayer.playerStateStream.listen((
+      state,
+    ) {
+      if (!mounted) return;
+      if (_isFriendPreviewLoading.value &&
+          (state.playing || state.processingState == ProcessingState.ready)) {
+        _setFriendPreviewLoading(false);
+      }
+    });
     unawaited(_loadFollowingPreview());
   }
 
@@ -1601,6 +1660,7 @@ class _HomeProfileNowPlayingHeaderState
           if (index == -1) return;
           final current = _followingUsers[index];
           if (_sameSocialUser(current, updated)) return;
+          unawaited(_invalidateFriendPreviewCacheIfSongChanged(current, updated));
           setState(() {
             final next = List<SocialUser>.from(
               _followingUsers,
@@ -1633,6 +1693,7 @@ class _HomeProfileNowPlayingHeaderState
       for (final user in _followingUsers) {
         final refreshed = byId[user.id] ?? user;
         if (!_sameSocialUser(user, refreshed)) changed = true;
+        unawaited(_invalidateFriendPreviewCacheIfSongChanged(user, refreshed));
         next.add(refreshed);
       }
       if (!changed) return;
@@ -1660,6 +1721,7 @@ class _HomeProfileNowPlayingHeaderState
         a.username == b.username &&
         (a.photoUrl ?? '') == (b.photoUrl ?? '') &&
         (a.frameUrl ?? '') == (b.frameUrl ?? '') &&
+        (a.currentVideoId ?? '') == (b.currentVideoId ?? '') &&
         a.note == b.note &&
         a.currentSong == b.currentSong &&
         a.currentArtist == b.currentArtist &&
@@ -1679,12 +1741,545 @@ class _HomeProfileNowPlayingHeaderState
   void _pruneFriendImageCache(Set<String> validIds) {
     _friendPhotoUrlById.removeWhere((id, _) => !validIds.contains(id));
     _friendImageById.removeWhere((id, _) => !validIds.contains(id));
+    _friendPreviewVideoIdByFriendId.removeWhere((id, _) => !validIds.contains(id));
+    _friendPreviewUrlByFriendId.removeWhere((id, _) => !validIds.contains(id));
+  }
+
+  Future<void> _invalidateFriendPreviewCacheIfSongChanged(
+    SocialUser previous,
+    SocialUser next,
+  ) async {
+    if (previous.id != next.id) return;
+    final oldVideoId = (previous.currentVideoId ?? '').trim();
+    final newVideoId = (next.currentVideoId ?? '').trim();
+    if (oldVideoId.isEmpty || oldVideoId == newVideoId) return;
+    _friendPreviewVideoIdByFriendId.remove(previous.id);
+    _friendPreviewUrlByFriendId.remove(previous.id);
+    await SongStreamCacheService.evictVideoId(oldVideoId);
   }
 
   @override
   void dispose() {
+    unawaited(_friendPreviewStateSub?.cancel());
+    _isFriendPreviewLoading.dispose();
+    unawaited(_friendPreviewPlayer.dispose());
+    _yt.close();
     _detachFriendRealtime();
     super.dispose();
+  }
+
+  Future<void> _playFriendPreviewAudio({
+    required String? friendId,
+    required String? videoId,
+  }) async {
+    final ownerId = (friendId ?? '').trim();
+    final id = (videoId ?? '').trim();
+    if (ownerId.isEmpty || id.isEmpty) return;
+
+    final manager = context.read<VideoPlayerManager>();
+    final shouldPauseMain = manager.isPlaying;
+    if (shouldPauseMain) {
+      _resumeMainPlayerAfterPreview = true;
+      await manager.togglePlayPause();
+    } else {
+      _resumeMainPlayerAfterPreview = false;
+    }
+
+    final requestEpoch = ++_friendPreviewRequestEpoch;
+    if (mounted) {
+      _setFriendPreviewLoading(true);
+    }
+    try {
+      final cachedVideoId = _friendPreviewVideoIdByFriendId[ownerId];
+      final cachedUrl = (_friendPreviewUrlByFriendId[ownerId] ?? '').trim();
+      if (cachedVideoId == id && cachedUrl.isNotEmpty) {
+        await _friendPreviewPlayer.stop();
+        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+        if (!kIsWeb && cachedUrl.startsWith('/')) {
+          final cachedFile = File(cachedUrl);
+          if (await cachedFile.exists()) {
+            await _friendPreviewPlayer.setFilePath(cachedUrl);
+            if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+            _startFriendPreviewPlayback(requestEpoch);
+            return;
+          }
+        }
+        await _friendPreviewPlayer.setUrl(cachedUrl);
+        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+        _startFriendPreviewPlayback(requestEpoch);
+        return;
+      }
+
+      if (!kIsWeb) {
+        final cachedFilePath = await SongStreamCacheService.resolveFreshFilePath(id);
+        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+        if (cachedFilePath != null && cachedFilePath.isNotEmpty) {
+          await _friendPreviewPlayer.stop();
+          if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+          await _friendPreviewPlayer.setFilePath(cachedFilePath);
+          if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+          _startFriendPreviewPlayback(requestEpoch);
+          _friendPreviewVideoIdByFriendId[ownerId] = id;
+          _friendPreviewUrlByFriendId[ownerId] = cachedFilePath;
+          return;
+        }
+      }
+
+      final resolved = await _ytResolverService.resolveVideo(id);
+      if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+      String? pickValidUrl(Iterable<String?> candidates) {
+        for (final raw in candidates) {
+          final trimmed = (raw ?? '').trim();
+          if (trimmed.isEmpty) continue;
+          final uri = Uri.tryParse(trimmed);
+          if (uri == null) continue;
+          if (uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https')) {
+            return trimmed;
+          }
+        }
+        return null;
+      }
+
+      bool isIosFriendlyAudioSource(String rawUrl) {
+        final trimmed = rawUrl.trim();
+        if (trimmed.isEmpty) return false;
+        final uri = Uri.tryParse(trimmed);
+        if (uri == null) return false;
+        final path = uri.path.toLowerCase();
+        final mime = (uri.queryParameters['mime'] ?? '')
+            .toLowerCase()
+            .replaceAll(' ', '');
+        if (mime.contains('audio/webm') || mime.contains('audio/ogg')) {
+          return false;
+        }
+        if (path.endsWith('.webm') || path.endsWith('.ogg')) return false;
+        return true;
+      }
+
+      bool isIosFriendlyVideoSource(String rawUrl) {
+        final trimmed = rawUrl.trim();
+        if (trimmed.isEmpty) return false;
+        final uri = Uri.tryParse(trimmed);
+        if (uri == null) return false;
+        final path = uri.path.toLowerCase();
+        final mime = (uri.queryParameters['mime'] ?? '')
+            .toLowerCase()
+            .replaceAll(' ', '');
+        if (mime.contains('video/webm') || mime.contains('video/ogg')) {
+          return false;
+        }
+        return path.endsWith('.mp4') ||
+            path.endsWith('.m3u8') ||
+            path.endsWith('.mov') ||
+            mime.contains('video/mp4') ||
+            mime.contains('application/x-mpegurl') ||
+            mime.contains('application/vnd.apple.mpegurl') ||
+            path == '/stream' ||
+            path.endsWith('/stream');
+      }
+
+      bool isAllowedForPlatform(String url, {required bool isVideo}) {
+        if (kIsWeb) return true;
+        if (!Platform.isIOS) return true;
+        return isVideo
+            ? isIosFriendlyVideoSource(url)
+            : isIosFriendlyAudioSource(url);
+      }
+
+      var previewUrl = pickValidUrl(<String?>[
+            // Igual que el player principal para fuentes de backend:
+            // en iOS suele ser más compatible muxed/source que audio webm.
+            resolved?.muxedUrl,
+            resolved?.audioUrl,
+            resolved?.sourceUrl,
+          ]) ??
+          '';
+      if (previewUrl.isNotEmpty &&
+          !isAllowedForPlatform(
+            previewUrl,
+            isVideo: previewUrl == (resolved?.muxedUrl ?? '').trim(),
+          )) {
+        previewUrl = '';
+      }
+      if (previewUrl.trim().isEmpty) {
+        final manifest = await _yt.videos.streamsClient.getManifest(id);
+        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+        AudioOnlyStreamInfo? bestAudio;
+        for (final stream in manifest.audioOnly) {
+          if (bestAudio == null ||
+              stream.bitrate.bitsPerSecond > bestAudio.bitrate.bitsPerSecond) {
+            bestAudio = stream;
+          }
+        }
+        if (bestAudio != null) {
+          previewUrl = bestAudio.url.toString();
+        } else {
+          MuxedStreamInfo? bestMuxed;
+          for (final stream in manifest.muxed) {
+            if (bestMuxed == null ||
+                stream.bitrate.bitsPerSecond > bestMuxed.bitrate.bitsPerSecond) {
+              bestMuxed = stream;
+            }
+          }
+          previewUrl = bestMuxed?.url.toString() ?? '';
+        }
+      }
+      if (previewUrl.trim().isEmpty) return;
+
+      await _friendPreviewPlayer.stop();
+      if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+      await _friendPreviewPlayer.setUrl(previewUrl);
+      if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+      _startFriendPreviewPlayback(requestEpoch);
+      _friendPreviewVideoIdByFriendId[ownerId] = id;
+      _friendPreviewUrlByFriendId[ownerId] = previewUrl;
+      final warmUri = Uri.tryParse(previewUrl);
+      if (warmUri != null && !kIsWeb) {
+        unawaited(
+          SongStreamCacheService.warmFromStreamUrl(
+            videoId: id,
+            streamUri: warmUri,
+          ),
+        );
+      }
+    } catch (e, s) {
+      debugPrint('[friend-preview] play failed videoId=$id error=$e');
+      debugPrintStack(
+        stackTrace: s,
+        label: '[friend-preview] stack videoId=$id',
+      );
+      if (mounted && requestEpoch == _friendPreviewRequestEpoch) {
+        _setFriendPreviewLoading(false);
+      }
+    }
+  }
+
+  Future<void> _stopFriendPreviewAudio() async {
+    _friendPreviewRequestEpoch++;
+    if (mounted) {
+      _setFriendPreviewLoading(false);
+    }
+    try {
+      await _friendPreviewPlayer.stop();
+    } catch (_) {
+      // Ignorar.
+    }
+    if (!_resumeMainPlayerAfterPreview) return;
+    _resumeMainPlayerAfterPreview = false;
+    if (!mounted) return;
+    final manager = context.read<VideoPlayerManager>();
+    if (!manager.isPlaying && manager.currentVideoId != null) {
+      await manager.togglePlayPause();
+    }
+  }
+
+  Future<void> _playSongFromNowPlayingNote({
+    required String titleText,
+    required String artistText,
+    String? preferredVideoId,
+    String? preferredThumbnailUrl,
+  }) async {
+    final manager = context.read<VideoPlayerManager>();
+    final directVideoId = (preferredVideoId ?? '').trim();
+    if (directVideoId.isEmpty) {
+      if (!mounted) return;
+      showIosNotice(context, 'Surgio un problema al intentarlo.');
+      return;
+    }
+    final preferredTitle = titleText.trim();
+    final preferredArtist = artistText.trim();
+    final thumbnailFallback =
+        'https://i.ytimg.com/vi/$directVideoId/hqdefault.jpg';
+    final thumb = (preferredThumbnailUrl ?? '').trim();
+    try {
+      await manager.playFromUserSelection(
+        context,
+        directVideoId,
+        preferredTitle: preferredTitle.isEmpty ? null : preferredTitle,
+        preferredArtist: preferredArtist.isEmpty ? null : preferredArtist,
+        preferredThumbnailUrl: thumb.isEmpty ? thumbnailFallback : thumb,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      showIosNotice(context, 'Surgio un problema al intentarlo.');
+    }
+  }
+
+  Future<void> _addNowPlayingToQueue({
+    required String videoId,
+    required String title,
+    required String artist,
+    required String thumbnailUrl,
+    required ManualQueueInsertMode insertMode,
+  }) async {
+    final manager = context.read<VideoPlayerManager>();
+    final added = manager.addOnlineTrackToPlaybackQueue(
+      videoId: videoId,
+      title: title,
+      thumbnailUrl: thumbnailUrl,
+      artist: artist,
+      insertMode: insertMode,
+    );
+    if (!mounted) return;
+    await HapticFeedback.lightImpact();
+    if (!mounted) return;
+    _showQueueIosToast(
+      context,
+      message: added
+          ? (insertMode == ManualQueueInsertMode.next
+                ? 'Se añadió como siguiente'
+                : 'Se ha añadido a la cola')
+          : 'Esta canción ya está en cola',
+      icon: added
+          ? CupertinoIcons.check_mark_circled_solid
+          : CupertinoIcons.info_circle_fill,
+    );
+  }
+
+  Future<void> _saveNowPlayingToPlaylist({
+    required String playlistName,
+    required String videoId,
+    required String title,
+    required String artist,
+    required String thumbnailUrl,
+  }) async {
+    final playlistService = context.read<PlaylistService>();
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    final entry = VideoHistory(
+      videoId: videoId,
+      title: title,
+      thumbnailUrl: thumbnailUrl,
+      channelTitle: artist,
+      watchedAt: DateTime.now(),
+    );
+    await playlistService.addVideoToPlaylist(playlistName, entry);
+    await downloadService.autoDownloadIfEnabledUsingClone(
+      playlistName,
+      entry,
+      videoManager: videoManager,
+    );
+    if (!mounted) return;
+    await HapticFeedback.lightImpact();
+    if (!mounted) return;
+    final label = PlaylistService.isFavoritesPlaylistName(playlistName)
+        ? 'Añadida a Favoritos'
+        : 'Añadida a $playlistName';
+    _showQueueIosToast(
+      context,
+      message: label,
+      icon: PlaylistService.isFavoritesPlaylistName(playlistName)
+          ? CupertinoIcons.star_fill
+          : CupertinoIcons.check_mark_circled_solid,
+    );
+  }
+
+  Future<void> _addNowPlayingToPlaylistPicker({
+    required String videoId,
+    required String title,
+    required String artist,
+    required String thumbnailUrl,
+  }) async {
+    final playlistService = context.read<PlaylistService>();
+    final playlists = await playlistService.getPlaylists();
+    if (!mounted || playlists.isEmpty) return;
+    final selectedName = await showGlassPlaylistPickerSheet(
+      context: context,
+      playlists: playlists,
+      subtitle: title,
+    );
+    if (!mounted || selectedName == null || selectedName.isEmpty) return;
+    await _saveNowPlayingToPlaylist(
+      playlistName: selectedName,
+      videoId: videoId,
+      title: title,
+      artist: artist,
+      thumbnailUrl: thumbnailUrl,
+    );
+  }
+
+  Future<void> _openArtistFromNowPlaying(String videoId) async {
+    final cleanId = videoId.trim();
+    if (cleanId.isEmpty) return;
+    try {
+      final details = await _yt.channels.getByVideo(cleanId);
+      if (!mounted) return;
+      final channelId = details.id.value.trim();
+      if (channelId.isEmpty) return;
+      context.read<SearchViewState>().requestOpenArtistProfile(
+        PendingArtistProfile(
+          channelId: channelId,
+          channelName: details.title,
+          channelThumbnailUrl: details.logoUrl,
+        ),
+      );
+      context.read<AppTabState?>()?.setIndex(1);
+    } catch (_) {
+      if (!mounted) return;
+      showIosNotice(context, 'No se pudo abrir el perfil del artista.');
+    }
+  }
+
+  Future<void> _openAlbumFromNowPlaying({
+    required String videoId,
+    required String title,
+    required String artist,
+    required String thumbnailUrl,
+  }) async {
+    try {
+      final resolved = await resolveAlbumFromSongAndArtistLikeSearch(
+        songTitle: title,
+        artistName: artist,
+      );
+      if (!mounted) return;
+      if (resolved == null) {
+        showIosNotice(
+          context,
+          'No se pudo identificar el álbum de esta canción.',
+        );
+        return;
+      }
+      await Navigator.of(context).push(
+        CupertinoPageRoute<void>(
+          builder: (_) => AlbumTracksPage(
+            playlistId: resolved.playlistId,
+            albumTitle: resolved.title,
+            artistName: resolved.artist,
+            seedThumbnailUrl: resolved.thumbnailUrl.isNotEmpty
+                ? resolved.thumbnailUrl
+                : thumbnailUrl,
+          ),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      showIosNotice(context, 'No se pudo abrir el álbum.');
+    }
+  }
+
+  Future<void> _openExpandedSocialCard({
+    required Widget titleNote,
+    required VoidCallback? onPlayNowFromTitleMenu,
+    required String noteText,
+    required String footerText,
+    required ImageProvider<Object>? imageProvider,
+    required String? frameImageUrl,
+    String? autoplayVideoId,
+    String? autoplayFriendId,
+    VoidCallback? onAddNextFromTitleMenu,
+    VoidCallback? onAddToEndFromTitleMenu,
+    VoidCallback? onAddToFavoritesFromTitleMenu,
+    VoidCallback? onAddToPlaylistFromTitleMenu,
+    VoidCallback? onOpenArtistFromTitleMenu,
+    VoidCallback? onOpenAlbumFromTitleMenu,
+  }) async {
+    final previewId = (autoplayVideoId ?? '').trim();
+    if (previewId.isNotEmpty) {
+      unawaited(
+        _playFriendPreviewAudio(
+          friendId: autoplayFriendId,
+          videoId: previewId,
+        ),
+      );
+    }
+    try {
+      await showGeneralDialog<void>(
+        context: context,
+        barrierLabel: 'Cerrar',
+        barrierDismissible: true,
+        barrierColor: Colors.black.withValues(alpha: 0.14),
+        transitionDuration: const Duration(milliseconds: 280),
+        pageBuilder: (context, animation, secondaryAnimation) {
+          final expandedPlayNowAction = onPlayNowFromTitleMenu == null
+              ? null
+              : () {
+                  onPlayNowFromTitleMenu();
+                  if (Navigator.of(context).canPop()) {
+                    Navigator.of(context).pop();
+                  }
+                };
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => Navigator.of(context).pop(),
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+                Center(
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      GestureDetector(
+                        onTap: () {},
+                        child: _HomeSocialPreviewCard(
+                          titleNote: titleNote,
+                          onPlayNowFromTitleMenu: expandedPlayNowAction,
+                          onAddNextFromTitleMenu: onAddNextFromTitleMenu,
+                          onAddToEndFromTitleMenu: onAddToEndFromTitleMenu,
+                          onAddToFavoritesFromTitleMenu:
+                              onAddToFavoritesFromTitleMenu,
+                          onAddToPlaylistFromTitleMenu:
+                              onAddToPlaylistFromTitleMenu,
+                          onOpenArtistFromTitleMenu: onOpenArtistFromTitleMenu,
+                          onOpenAlbumFromTitleMenu: onOpenAlbumFromTitleMenu,
+                          noteText: noteText,
+                          footerText: footerText,
+                          imageProvider: imageProvider,
+                          frameImageUrl: frameImageUrl,
+                          scale: 1.65,
+                        ),
+                      ),
+                      ValueListenableBuilder<bool>(
+                        valueListenable: _isFriendPreviewLoading,
+                        builder: (context, isLoading, child) {
+                          if (!isLoading) return const SizedBox.shrink();
+                          return Positioned(
+                            top: 14,
+                            right: 14,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: CupertinoColors.systemBackground
+                                    .resolveFrom(context)
+                                    .withValues(alpha: 0.86),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: const Padding(
+                                padding: EdgeInsets.all(8),
+                                child: CupertinoActivityIndicator(radius: 10),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+        transitionBuilder: (context, animation, secondaryAnimation, child) {
+          final curved = CurvedAnimation(
+            parent: animation,
+            curve: Curves.easeOutCubic,
+            reverseCurve: Curves.easeInCubic,
+          );
+          return FadeTransition(
+            opacity: curved,
+            child: ScaleTransition(
+              scale: Tween<double>(begin: 0.9, end: 1.0).animate(curved),
+              child: child,
+            ),
+          );
+        },
+      );
+    } finally {
+      await _stopFriendPreviewAudio();
+    }
   }
 
   @override
@@ -1699,9 +2294,17 @@ class _HomeProfileNowPlayingHeaderState
     final isPlaying = context.select<VideoPlayerManager, bool>(
       (manager) => manager.isPlaying,
     );
-    final hasTrack = (currentTrackTitle ?? '').trim().isNotEmpty;
+    final currentVideoId = context.select<VideoPlayerManager, String?>(
+      (manager) => manager.currentVideoId,
+    );
+    final hasTrack =
+        (currentTrackTitle ?? '').trim().isNotEmpty ||
+        (currentVideoId ?? '').trim().isNotEmpty;
+    final safeTrackTitle = (currentTrackTitle ?? '').trim();
     final titleText = hasTrack
-        ? currentTrackTitle!.trim()
+        ? (safeTrackTitle.isNotEmpty
+              ? safeTrackTitle
+              : 'Reproduciendo ahora')
         : 'No estas reproduciendo nada ahora.';
     final artistText = (currentTrackArtist ?? '').trim();
     final bioText = profile.bio.trim().isEmpty
@@ -1729,18 +2332,179 @@ class _HomeProfileNowPlayingHeaderState
                   hasTrack: hasTrack,
                   isPlaying: isPlaying,
                 ),
+                onPlayNowFromTitleMenu: hasTrack
+                    ? () => _playSongFromNowPlayingNote(
+                        titleText: titleText,
+                        artistText: artistText,
+                        preferredVideoId: context
+                            .read<VideoPlayerManager>()
+                            .currentVideoId,
+                        preferredThumbnailUrl: context
+                            .read<VideoPlayerManager>()
+                            .trackThumbnailUrl,
+                      )
+                    : null,
+                onAddNextFromTitleMenu: hasTrack
+                    ? () => _addNowPlayingToQueue(
+                        videoId: (currentVideoId ?? '').trim(),
+                        title: titleText,
+                        artist: artistText,
+                        thumbnailUrl:
+                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            '',
+                        insertMode: ManualQueueInsertMode.next,
+                      )
+                    : null,
+                onAddToEndFromTitleMenu: hasTrack
+                    ? () => _addNowPlayingToQueue(
+                        videoId: (currentVideoId ?? '').trim(),
+                        title: titleText,
+                        artist: artistText,
+                        thumbnailUrl:
+                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            '',
+                        insertMode: ManualQueueInsertMode.end,
+                      )
+                    : null,
+                onAddToFavoritesFromTitleMenu: hasTrack
+                    ? () => _saveNowPlayingToPlaylist(
+                        playlistName: PlaylistService.favoritesPlaylistName,
+                        videoId: (currentVideoId ?? '').trim(),
+                        title: titleText,
+                        artist: artistText,
+                        thumbnailUrl:
+                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            '',
+                      )
+                    : null,
+                onAddToPlaylistFromTitleMenu: hasTrack
+                    ? () => _addNowPlayingToPlaylistPicker(
+                        videoId: (currentVideoId ?? '').trim(),
+                        title: titleText,
+                        artist: artistText,
+                        thumbnailUrl:
+                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            '',
+                      )
+                    : null,
+                onOpenArtistFromTitleMenu: hasTrack
+                    ? () => _openArtistFromNowPlaying((currentVideoId ?? '').trim())
+                    : null,
+                onOpenAlbumFromTitleMenu: hasTrack
+                    ? () => _openAlbumFromNowPlaying(
+                        videoId: (currentVideoId ?? '').trim(),
+                        title: titleText,
+                        artist: artistText,
+                        thumbnailUrl:
+                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            '',
+                      )
+                    : null,
                 noteText: bioText,
                 footerText: 'Tu',
                 imageProvider: hasLocalPhoto
                     ? FileImage(File(photoPath))
                     : null,
                 frameImageUrl: frameUrl.isEmpty ? null : frameUrl,
+                onTap: () => _openExpandedSocialCard(
+                  titleNote: _HomeAnimatedNowPlayingNote(
+                    titleText: titleText,
+                    artistText: artistText,
+                    hasTrack: hasTrack,
+                    isPlaying: isPlaying,
+                  ),
+                  onPlayNowFromTitleMenu: hasTrack
+                      ? () => _playSongFromNowPlayingNote(
+                          titleText: titleText,
+                          artistText: artistText,
+                          preferredVideoId: context
+                              .read<VideoPlayerManager>()
+                              .currentVideoId,
+                          preferredThumbnailUrl: context
+                              .read<VideoPlayerManager>()
+                              .trackThumbnailUrl,
+                        )
+                      : null,
+                  onAddNextFromTitleMenu: hasTrack
+                      ? () => _addNowPlayingToQueue(
+                          videoId: (currentVideoId ?? '').trim(),
+                          title: titleText,
+                          artist: artistText,
+                          thumbnailUrl: context
+                                  .read<VideoPlayerManager>()
+                                  .trackThumbnailUrl ??
+                              '',
+                          insertMode: ManualQueueInsertMode.next,
+                        )
+                      : null,
+                  onAddToEndFromTitleMenu: hasTrack
+                      ? () => _addNowPlayingToQueue(
+                          videoId: (currentVideoId ?? '').trim(),
+                          title: titleText,
+                          artist: artistText,
+                          thumbnailUrl: context
+                                  .read<VideoPlayerManager>()
+                                  .trackThumbnailUrl ??
+                              '',
+                          insertMode: ManualQueueInsertMode.end,
+                        )
+                      : null,
+                  onAddToFavoritesFromTitleMenu: hasTrack
+                      ? () => _saveNowPlayingToPlaylist(
+                          playlistName: PlaylistService.favoritesPlaylistName,
+                          videoId: (currentVideoId ?? '').trim(),
+                          title: titleText,
+                          artist: artistText,
+                          thumbnailUrl: context
+                                  .read<VideoPlayerManager>()
+                                  .trackThumbnailUrl ??
+                              '',
+                        )
+                      : null,
+                  onAddToPlaylistFromTitleMenu: hasTrack
+                      ? () => _addNowPlayingToPlaylistPicker(
+                          videoId: (currentVideoId ?? '').trim(),
+                          title: titleText,
+                          artist: artistText,
+                          thumbnailUrl: context
+                                  .read<VideoPlayerManager>()
+                                  .trackThumbnailUrl ??
+                              '',
+                        )
+                      : null,
+                  onOpenArtistFromTitleMenu: hasTrack
+                      ? () => _openArtistFromNowPlaying(
+                          (currentVideoId ?? '').trim(),
+                        )
+                      : null,
+                  onOpenAlbumFromTitleMenu: hasTrack
+                      ? () => _openAlbumFromNowPlaying(
+                          videoId: (currentVideoId ?? '').trim(),
+                          title: titleText,
+                          artist: artistText,
+                          thumbnailUrl: context
+                                  .read<VideoPlayerManager>()
+                                  .trackThumbnailUrl ??
+                              '',
+                        )
+                      : null,
+                  noteText: bioText,
+                  footerText: 'Tu',
+                  imageProvider: hasLocalPhoto ? FileImage(File(photoPath)) : null,
+                  frameImageUrl: frameUrl.isEmpty ? null : frameUrl,
+                ),
               ),
               const SizedBox(width: 26),
               ..._followingUsers.map((friend) {
                 final friendSong = friend.currentSong.trim();
                 final friendArtist = friend.currentArtist.trim();
-                final friendHasTrack = friendSong.isNotEmpty;
+                final friendFrameUrlRaw = (friend.frameUrl ?? '').trim();
+                final friendFrameUrl = friendFrameUrlRaw.isEmpty
+                    ? null
+                    : friendFrameUrlRaw;
+                final friendHasTrack =
+                    friendSong.isNotEmpty ||
+                    (friend.currentVideoId ?? '').trim().isNotEmpty;
                 final friendTitleText = friendHasTrack
                     ? friendSong
                     : 'No esta reproduciendo nada ahora.';
@@ -1757,6 +2521,68 @@ class _HomeProfileNowPlayingHeaderState
                       hasTrack: friendHasTrack,
                       isPlaying: friend.isPlaying,
                     ),
+                    onPlayNowFromTitleMenu: friendHasTrack
+                        ? () => _playSongFromNowPlayingNote(
+                            titleText: friendTitleText,
+                            artistText: friendArtist,
+                            preferredVideoId: friend.currentVideoId,
+                            preferredThumbnailUrl:
+                                'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                          )
+                        : null,
+                    onAddNextFromTitleMenu: friendHasTrack
+                        ? () => _addNowPlayingToQueue(
+                            videoId: (friend.currentVideoId ?? '').trim(),
+                            title: friendTitleText,
+                            artist: friendArtist,
+                            thumbnailUrl:
+                                'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                            insertMode: ManualQueueInsertMode.next,
+                          )
+                        : null,
+                    onAddToEndFromTitleMenu: friendHasTrack
+                        ? () => _addNowPlayingToQueue(
+                            videoId: (friend.currentVideoId ?? '').trim(),
+                            title: friendTitleText,
+                            artist: friendArtist,
+                            thumbnailUrl:
+                                'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                            insertMode: ManualQueueInsertMode.end,
+                          )
+                        : null,
+                    onAddToFavoritesFromTitleMenu: friendHasTrack
+                        ? () => _saveNowPlayingToPlaylist(
+                            playlistName: PlaylistService.favoritesPlaylistName,
+                            videoId: (friend.currentVideoId ?? '').trim(),
+                            title: friendTitleText,
+                            artist: friendArtist,
+                            thumbnailUrl:
+                                'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                          )
+                        : null,
+                    onAddToPlaylistFromTitleMenu: friendHasTrack
+                        ? () => _addNowPlayingToPlaylistPicker(
+                            videoId: (friend.currentVideoId ?? '').trim(),
+                            title: friendTitleText,
+                            artist: friendArtist,
+                            thumbnailUrl:
+                                'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                          )
+                        : null,
+                    onOpenArtistFromTitleMenu: friendHasTrack
+                        ? () => _openArtistFromNowPlaying(
+                            (friend.currentVideoId ?? '').trim(),
+                          )
+                        : null,
+                    onOpenAlbumFromTitleMenu: friendHasTrack
+                        ? () => _openAlbumFromNowPlaying(
+                            videoId: (friend.currentVideoId ?? '').trim(),
+                            title: friendTitleText,
+                            artist: friendArtist,
+                            thumbnailUrl:
+                                'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                          )
+                        : null,
                     noteText: friend.note.trim().isEmpty
                         ? 'Escribe algo...'
                         : friend.note.trim(),
@@ -1764,9 +2590,87 @@ class _HomeProfileNowPlayingHeaderState
                         ? '@${friend.username}'
                         : friend.name.trim(),
                     imageProvider: _friendImageProvider(friend),
-                    frameImageUrl: (friend.frameUrl ?? '').trim().isEmpty
-                        ? null
-                        : friend.frameUrl!.trim(),
+                    frameImageUrl: friendFrameUrl,
+                    onTap: () => _openExpandedSocialCard(
+                      titleNote: _HomeAnimatedNowPlayingNote(
+                        titleText: friendTitleText,
+                        artistText: friendArtist,
+                        hasTrack: friendHasTrack,
+                        isPlaying: friend.isPlaying,
+                      ),
+                      onPlayNowFromTitleMenu: friendHasTrack
+                          ? () => _playSongFromNowPlayingNote(
+                              titleText: friendTitleText,
+                              artistText: friendArtist,
+                              preferredVideoId: friend.currentVideoId,
+                              preferredThumbnailUrl:
+                                  'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                            )
+                          : null,
+                      onAddNextFromTitleMenu: friendHasTrack
+                          ? () => _addNowPlayingToQueue(
+                              videoId: (friend.currentVideoId ?? '').trim(),
+                              title: friendTitleText,
+                              artist: friendArtist,
+                              thumbnailUrl:
+                                  'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                              insertMode: ManualQueueInsertMode.next,
+                            )
+                          : null,
+                      onAddToEndFromTitleMenu: friendHasTrack
+                          ? () => _addNowPlayingToQueue(
+                              videoId: (friend.currentVideoId ?? '').trim(),
+                              title: friendTitleText,
+                              artist: friendArtist,
+                              thumbnailUrl:
+                                  'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                              insertMode: ManualQueueInsertMode.end,
+                            )
+                          : null,
+                      onAddToFavoritesFromTitleMenu: friendHasTrack
+                          ? () => _saveNowPlayingToPlaylist(
+                              playlistName: PlaylistService.favoritesPlaylistName,
+                              videoId: (friend.currentVideoId ?? '').trim(),
+                              title: friendTitleText,
+                              artist: friendArtist,
+                              thumbnailUrl:
+                                  'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                            )
+                          : null,
+                      onAddToPlaylistFromTitleMenu: friendHasTrack
+                          ? () => _addNowPlayingToPlaylistPicker(
+                              videoId: (friend.currentVideoId ?? '').trim(),
+                              title: friendTitleText,
+                              artist: friendArtist,
+                              thumbnailUrl:
+                                  'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                            )
+                          : null,
+                      onOpenArtistFromTitleMenu: friendHasTrack
+                          ? () => _openArtistFromNowPlaying(
+                              (friend.currentVideoId ?? '').trim(),
+                            )
+                          : null,
+                      onOpenAlbumFromTitleMenu: friendHasTrack
+                          ? () => _openAlbumFromNowPlaying(
+                              videoId: (friend.currentVideoId ?? '').trim(),
+                              title: friendTitleText,
+                              artist: friendArtist,
+                              thumbnailUrl:
+                                  'https://i.ytimg.com/vi/${(friend.currentVideoId ?? '').trim()}/hqdefault.jpg',
+                            )
+                          : null,
+                      noteText: friend.note.trim().isEmpty
+                          ? 'Escribe algo...'
+                          : friend.note.trim(),
+                      footerText: friend.name.trim().isEmpty
+                          ? '@${friend.username}'
+                          : friend.name.trim(),
+                      imageProvider: _friendImageProvider(friend),
+                      frameImageUrl: friendFrameUrl,
+                      autoplayVideoId: friend.currentVideoId,
+                      autoplayFriendId: friend.id,
+                    ),
                   ),
                 );
               }),
@@ -1810,47 +2714,207 @@ class _HomeProfileNowPlayingHeaderState
 class _HomeSocialPreviewCard extends StatelessWidget {
   static const double _titleAreaHeight = 56;
   final Widget titleNote;
+  final VoidCallback? onPlayNowFromTitleMenu;
+  final VoidCallback? onAddNextFromTitleMenu;
+  final VoidCallback? onAddToEndFromTitleMenu;
+  final VoidCallback? onAddToFavoritesFromTitleMenu;
+  final VoidCallback? onAddToPlaylistFromTitleMenu;
+  final VoidCallback? onOpenArtistFromTitleMenu;
+  final VoidCallback? onOpenAlbumFromTitleMenu;
   final String noteText;
   final String footerText;
   final ImageProvider<Object>? imageProvider;
   final String? frameImageUrl;
+  final double scale;
+  final VoidCallback? onTap;
 
   const _HomeSocialPreviewCard({
     super.key,
     required this.titleNote,
+    this.onPlayNowFromTitleMenu,
+    this.onAddNextFromTitleMenu,
+    this.onAddToEndFromTitleMenu,
+    this.onAddToFavoritesFromTitleMenu,
+    this.onAddToPlaylistFromTitleMenu,
+    this.onOpenArtistFromTitleMenu,
+    this.onOpenAlbumFromTitleMenu,
     required this.noteText,
     required this.footerText,
     required this.imageProvider,
     required this.frameImageUrl,
+    this.scale = 1.0,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    final normalizedFrameImageUrl = (frameImageUrl ?? '').trim();
+    final resolvedFrameImageUrl = normalizedFrameImageUrl.isEmpty
+        ? null
+        : normalizedFrameImageUrl;
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: onTap,
+      child: Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         SizedBox(
-          width: 130,
-          height: _titleAreaHeight,
-          child: Align(alignment: Alignment.topCenter, child: titleNote),
+          width: 130 * scale,
+          height: _titleAreaHeight * scale,
+          child: Padding(
+            padding: EdgeInsets.only(top: scale > 1.0 ? 18 * scale : 0),
+            child: onPlayNowFromTitleMenu == null
+                ? Align(alignment: Alignment.topCenter, child: titleNote)
+                : CupertinoContextMenu(
+                    actions: [
+                      CupertinoContextMenuAction(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          unawaited(HapticFeedback.selectionClick());
+                          onPlayNowFromTitleMenu?.call();
+                        },
+                        child: _ContextMenuActionContent(
+                          label: 'Reproducir ahora',
+                          icon: CupertinoIcons.play_fill,
+                          textColor: CupertinoColors.label.resolveFrom(context),
+                          iconColor: CupertinoColors.systemGrey.resolveFrom(
+                            context,
+                          ),
+                        ),
+                      ),
+                      if (onAddNextFromTitleMenu != null)
+                        CupertinoContextMenuAction(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            unawaited(HapticFeedback.selectionClick());
+                            onAddNextFromTitleMenu?.call();
+                          },
+                          child: _ContextMenuActionContent(
+                            label: 'Añadir como siguiente',
+                            icon: CupertinoIcons.text_insert,
+                            textColor: CupertinoColors.label.resolveFrom(
+                              context,
+                            ),
+                            iconColor: CupertinoColors.systemGrey.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        ),
+                      if (onAddToEndFromTitleMenu != null)
+                        CupertinoContextMenuAction(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            unawaited(HapticFeedback.selectionClick());
+                            onAddToEndFromTitleMenu?.call();
+                          },
+                          child: _ContextMenuActionContent(
+                            label: 'Añadir al final',
+                            icon: CupertinoIcons.text_append,
+                            textColor: CupertinoColors.label.resolveFrom(
+                              context,
+                            ),
+                            iconColor: CupertinoColors.systemGrey.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        ),
+                      if (onAddToFavoritesFromTitleMenu != null)
+                        CupertinoContextMenuAction(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            unawaited(HapticFeedback.selectionClick());
+                            onAddToFavoritesFromTitleMenu?.call();
+                          },
+                          child: _ContextMenuActionContent(
+                            label: 'Añadir a Favoritos',
+                            icon: CupertinoIcons.star_fill,
+                            textColor: CupertinoColors.label.resolveFrom(
+                              context,
+                            ),
+                            iconColor: CupertinoColors.systemGrey.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        ),
+                      if (onAddToPlaylistFromTitleMenu != null)
+                        CupertinoContextMenuAction(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            unawaited(HapticFeedback.selectionClick());
+                            onAddToPlaylistFromTitleMenu?.call();
+                          },
+                          child: _ContextMenuActionContent(
+                            label: 'Añadir a playlist',
+                            icon: CupertinoIcons.music_note_list,
+                            textColor: CupertinoColors.label.resolveFrom(
+                              context,
+                            ),
+                            iconColor: CupertinoColors.systemGrey.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        ),
+                      if (onOpenArtistFromTitleMenu != null)
+                        CupertinoContextMenuAction(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            unawaited(HapticFeedback.selectionClick());
+                            onOpenArtistFromTitleMenu?.call();
+                          },
+                          child: _ContextMenuActionContent(
+                            label: 'Ir al artista',
+                            icon: CupertinoIcons.person_crop_circle,
+                            textColor: CupertinoColors.label.resolveFrom(
+                              context,
+                            ),
+                            iconColor: CupertinoColors.systemGrey.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        ),
+                      if (onOpenAlbumFromTitleMenu != null)
+                        CupertinoContextMenuAction(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            unawaited(HapticFeedback.selectionClick());
+                            onOpenAlbumFromTitleMenu?.call();
+                          },
+                          child: _ContextMenuActionContent(
+                            label: 'Ir al álbum',
+                            icon: CupertinoIcons.rectangle_stack_fill,
+                            textColor: CupertinoColors.label.resolveFrom(
+                              context,
+                            ),
+                            iconColor: CupertinoColors.systemGrey.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        ),
+                    ],
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: titleNote,
+                    ),
+                  ),
+          ),
         ),
-        const Padding(
-          padding: EdgeInsets.only(left: 22, top: 2),
+        Padding(
+          padding: EdgeInsets.only(left: 22 * scale, top: 2 * scale),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _HomeThoughtDot(size: 8),
-              SizedBox(width: 3),
-              _HomeThoughtDot(size: 6),
-              SizedBox(width: 3),
-              _HomeThoughtDot(size: 4),
+              _HomeThoughtDot(size: 8 * scale),
+              SizedBox(width: 3 * scale),
+              _HomeThoughtDot(size: 6 * scale),
+              SizedBox(width: 3 * scale),
+              _HomeThoughtDot(size: 4 * scale),
             ],
           ),
         ),
-        const SizedBox(height: 6),
+        SizedBox(height: 6 * scale),
         SizedBox(
-          width: 98,
-          height: 98,
+          width: 98 * scale,
+          height: 98 * scale,
           child: Stack(
             clipBehavior: Clip.none,
             children: [
@@ -1858,8 +2922,8 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                 left: 0,
                 top: 0,
                 child: SizedBox(
-                  width: 90,
-                  height: 90,
+                  width: 90 * scale,
+                  height: 90 * scale,
                   child: ClipOval(
                     child: ColoredBox(
                       color: CupertinoColors.tertiarySystemFill.resolveFrom(
@@ -1871,7 +2935,7 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                               size: 34,
                             )
                           : Image(
-                              image: imageProvider!,
+                              image: imageProvider as ImageProvider<Object>,
                               fit: BoxFit.cover,
                               gaplessPlayback: true,
                               errorBuilder: (_, _, _) => const Icon(
@@ -1883,18 +2947,18 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                   ),
                 ),
               ),
-              if ((frameImageUrl ?? '').trim().isNotEmpty)
+              if (resolvedFrameImageUrl != null)
                 Positioned(
-                  left: -2,
-                  bottom: -3,
+                  left: -2 * scale,
+                  bottom: -3 * scale,
                   child: IgnorePointer(
                     child: _HomeFloatingFrameDrift(
                       child: SizedBox(
-                        width: 36,
-                        height: 36,
+                        width: 36 * scale,
+                        height: 36 * scale,
                         child: Image.network(
-                          frameImageUrl!,
-                          key: ValueKey<String>(frameImageUrl!),
+                          resolvedFrameImageUrl,
+                          key: ValueKey<String>(resolvedFrameImageUrl),
                           fit: BoxFit.contain,
                         ),
                       ),
@@ -1905,10 +2969,10 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                 right: 0,
                 bottom: 0,
                 child: Container(
-                  constraints: const BoxConstraints(maxWidth: 68),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 7,
-                    vertical: 4,
+                  constraints: BoxConstraints(maxWidth: 68 * scale),
+                  padding: EdgeInsets.symmetric(
+                    horizontal: 7 * scale,
+                    vertical: 4 * scale,
                   ),
                   decoration: BoxDecoration(
                     color: CupertinoColors.secondarySystemGroupedBackground
@@ -1925,8 +2989,9 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                     text: noteText,
                     style: TextStyle(
                       fontFamily: '.SF Pro Text',
-                      fontSize: 10,
+                      fontSize: 10 * scale,
                       color: CupertinoColors.label.resolveFrom(context),
+                      decoration: TextDecoration.none,
                     ),
                   ),
                 ),
@@ -1934,21 +2999,23 @@ class _HomeSocialPreviewCard extends StatelessWidget {
             ],
           ),
         ),
-        const SizedBox(height: 6),
+        SizedBox(height: 6 * scale),
         SizedBox(
-          width: 90,
+          width: 90 * scale,
           child: Text(
             footerText,
             textAlign: TextAlign.center,
             style: TextStyle(
               fontFamily: '.SF Pro Text',
-              fontSize: 12,
+              fontSize: 12 * scale,
               fontWeight: FontWeight.w600,
               color: CupertinoColors.secondaryLabel.resolveFrom(context),
+              decoration: TextDecoration.none,
             ),
           ),
         ),
       ],
+    ),
     );
   }
 }
@@ -2534,6 +3601,7 @@ class _HomeAnimatedNowPlayingNoteState
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
                             color: CupertinoColors.label.resolveFrom(context),
+                            decoration: TextDecoration.none,
                           ),
                         ),
                         if (widget.hasTrack &&
@@ -2547,6 +3615,7 @@ class _HomeAnimatedNowPlayingNoteState
                               color: CupertinoColors.secondaryLabel.resolveFrom(
                                 context,
                               ),
+                              decoration: TextDecoration.none,
                             ),
                           ),
                         ],

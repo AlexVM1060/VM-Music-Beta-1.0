@@ -65,6 +65,28 @@ class SongStreamCacheService {
     }
   }
 
+  static Future<void> evictVideoId(String videoId) async {
+    final normalized = videoId.trim();
+    if (normalized.isEmpty) return;
+    await _ensureLoaded();
+    final removed = _entries.where((entry) => entry.videoId == normalized).toList(
+      growable: false,
+    );
+    if (removed.isEmpty) return;
+    _entries.removeWhere((entry) => entry.videoId == normalized);
+    await _persistEntries();
+    for (final entry in removed) {
+      try {
+        final file = File(entry.filePath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (_) {
+        // Best effort.
+      }
+    }
+  }
+
   static Future<String?> waitForFreshFilePath(
     String videoId, {
     Duration maxWait = const Duration(seconds: 2),

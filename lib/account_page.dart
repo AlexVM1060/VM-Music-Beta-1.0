@@ -161,11 +161,13 @@ class _AccountPageState extends State<AccountPage> {
       final player = context.read<VideoPlayerManager>();
       final currentSong = (player.trackTitle ?? '').trim();
       final currentArtist = (player.trackArtist ?? '').trim();
+      final currentVideoId = (player.currentVideoId ?? '').trim();
       final isPlaying = currentSong.isNotEmpty && player.isPlaying;
       await social.publishProfile(
         profile: profile,
         currentSong: currentSong,
         currentArtist: currentArtist,
+        currentVideoId: currentVideoId,
         isPlaying: isPlaying,
       );
     } catch (_) {
@@ -313,11 +315,13 @@ class _AccountPageState extends State<AccountPage> {
     try {
       final currentSong = (player.trackTitle ?? '').trim();
       final currentArtist = (player.trackArtist ?? '').trim();
+      final currentVideoId = (player.currentVideoId ?? '').trim();
       final isPlaying = currentSong.isNotEmpty && player.isPlaying;
       await social.syncNowPlaying(
         profile: profile,
         currentSong: currentSong,
         currentArtist: currentArtist,
+        currentVideoId: currentVideoId,
         isPlaying: isPlaying,
       );
     } catch (_) {

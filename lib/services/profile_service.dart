@@ -1,5 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 class ProfileService extends ChangeNotifier {
   static const String _boxName = 'user_profile';
@@ -44,7 +48,15 @@ class ProfileService extends ChangeNotifier {
         ? (_box!.get(_bioKey) as String).trim()
         : _bio;
     final rawPhoto = (_box!.get(_photoPathKey) as String?)?.trim();
-    _photoPath = (rawPhoto == null || rawPhoto.isEmpty) ? null : rawPhoto;
+    _photoPath = await _resolveStoredPhotoPath(rawPhoto);
+    if ((_photoPath ?? '').isNotEmpty) {
+      final canonicalToken = await _toStoredPhotoToken(_photoPath);
+      if (canonicalToken != null && canonicalToken != rawPhoto) {
+        await _box!.put(_photoPathKey, canonicalToken);
+      }
+    } else if ((rawPhoto ?? '').isNotEmpty) {
+      await _box!.delete(_photoPathKey);
+    }
     final rawFrame = (_box!.get(_frameUrlKey) as String?)?.trim();
     _frameUrl = (rawFrame == null || rawFrame.isEmpty) ? null : rawFrame;
     _followersCount = (_box!.get(_followersKey) as int?) ?? 0;
@@ -88,10 +100,53 @@ class ProfileService extends ChangeNotifier {
       _photoPath = null;
       await box.delete(_photoPathKey);
     } else {
-      _photoPath = clean;
-      await box.put(_photoPathKey, clean);
+      _photoPath = await _resolveStoredPhotoPath(clean);
+      final token = await _toStoredPhotoToken(clean);
+      await box.put(_photoPathKey, token ?? clean);
     }
     notifyListeners();
+  }
+
+  Future<String?> _resolveStoredPhotoPath(String? raw) async {
+    final token = (raw ?? '').trim();
+    if (token.isEmpty) return null;
+    final docs = await getApplicationDocumentsDirectory();
+    final docsPath = docs.path;
+
+    String candidate;
+    if (token.startsWith('rel:')) {
+      final rel = token.substring(4).trim();
+      if (rel.isEmpty) return null;
+      candidate = p.normalize(p.join(docsPath, rel));
+    } else {
+      candidate = token;
+    }
+
+    final directFile = File(candidate);
+    if (await directFile.exists()) return candidate;
+
+    // Migración de rutas absolutas antiguas: intentar por basename en Documents actual.
+    final base = p.basename(token);
+    if (base.isEmpty || base == token) return null;
+    final migrated = p.join(docsPath, base);
+    final migratedFile = File(migrated);
+    if (await migratedFile.exists()) return migrated;
+    return null;
+  }
+
+  Future<String?> _toStoredPhotoToken(String? absoluteOrTokenPath) async {
+    final clean = (absoluteOrTokenPath ?? '').trim();
+    if (clean.isEmpty) return null;
+    if (clean.startsWith('rel:')) return clean;
+
+    final docs = await getApplicationDocumentsDirectory();
+    final docsPath = p.normalize(docs.path);
+    final normalized = p.normalize(clean);
+    if (p.isWithin(docsPath, normalized)) {
+      final rel = p.relative(normalized, from: docsPath).trim();
+      if (rel.isNotEmpty) return 'rel:$rel';
+    }
+    return clean;
   }
 
   Future<void> updateFrameUrl(String? url) async {

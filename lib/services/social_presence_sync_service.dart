@@ -77,6 +77,7 @@ class SocialPresenceSyncService {
             profile: profileService,
             currentSong: song,
             currentArtist: artist,
+            currentVideoId: currentVideoId,
             isPlaying: isPlayingForPresence,
           )
           .timeout(const Duration(seconds: 10));

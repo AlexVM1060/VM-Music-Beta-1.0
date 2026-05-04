@@ -14,6 +14,7 @@ class SocialUser {
   final String note;
   final String currentSong;
   final String currentArtist;
+  final String? currentVideoId;
   final bool isPlaying;
   final DateTime? updatedAt;
 
@@ -26,6 +27,7 @@ class SocialUser {
     required this.note,
     required this.currentSong,
     required this.currentArtist,
+    required this.currentVideoId,
     required this.isPlaying,
     required this.updatedAt,
   });
@@ -44,6 +46,10 @@ class SocialUser {
       note: (map['note_profile'] ?? '').toString(),
       currentSong: (map['current_song'] ?? '').toString(),
       currentArtist: (map['current_artist'] ?? '').toString(),
+      currentVideoId: (map['current_video_id'] as String?)?.trim().isEmpty ==
+              true
+          ? null
+          : map['current_video_id'] as String?,
       isPlaying: map['is_playing'] == true,
       updatedAt: DateTime.tryParse((map['updated_at'] ?? '').toString()),
     );
@@ -78,6 +84,7 @@ class SocialService extends ChangeNotifier {
     required ProfileService profile,
     required String currentSong,
     required String currentArtist,
+    required String? currentVideoId,
     required bool isPlaying,
   }) async {
     await ensureReady();
@@ -103,6 +110,9 @@ class SocialService extends ChangeNotifier {
       'note_profile': profile.bio.trim(),
       'current_song': currentSong.trim(),
       'current_artist': currentArtist.trim(),
+      'current_video_id': (currentVideoId ?? '').trim().isEmpty
+          ? null
+          : currentVideoId!.trim(),
       'is_playing': isPlaying,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     });
@@ -112,6 +122,7 @@ class SocialService extends ChangeNotifier {
     required ProfileService profile,
     required String currentSong,
     required String currentArtist,
+    required String? currentVideoId,
     required bool isPlaying,
   }) async {
     await ensureReady();
@@ -130,6 +141,9 @@ class SocialService extends ChangeNotifier {
         'note_profile': profile.bio.trim(),
         'current_song': currentSong.trim(),
         'current_artist': currentArtist.trim(),
+        'current_video_id': (currentVideoId ?? '').trim().isEmpty
+            ? null
+            : currentVideoId!.trim(),
         'is_playing': isPlaying,
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       },
