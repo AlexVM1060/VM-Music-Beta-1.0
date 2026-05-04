@@ -1261,14 +1261,15 @@ class _HomePageState extends State<HomePage> {
 
             final content = snapshot.data;
             if (content == null) {
-              return RefreshIndicator(
-                onRefresh: _refresh,
-                child: ListView(
-                  children: const [
-                    SizedBox(height: 180),
-                    Center(child: Text('No se pudo cargar Inicio.')),
-                  ],
-                ),
+              return CustomScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                slivers: [
+                  CupertinoSliverRefreshControl(onRefresh: _refresh),
+                  const SliverToBoxAdapter(child: SizedBox(height: 180)),
+                  const SliverToBoxAdapter(
+                    child: Center(child: Text('No se pudo cargar Inicio.')),
+                  ),
+                ],
               );
             }
             final relistenColumns = _buildTrackColumns(
@@ -1276,239 +1277,234 @@ class _HomePageState extends State<HomePage> {
               itemsPerColumn: 4,
             );
 
-            return RefreshIndicator(
-              onRefresh: _refresh,
-              child: CustomScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                slivers: [
-                  const SliverToBoxAdapter(child: SizedBox(height: 12)),
-                  const SliverToBoxAdapter(
-                    child: _HomeProfileNowPlayingHeader(),
+            return CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                CupertinoSliverRefreshControl(onRefresh: _refresh),
+                const SliverToBoxAdapter(child: SizedBox(height: 12)),
+                const SliverToBoxAdapter(child: _HomeProfileNowPlayingHeader()),
+                _SectionHeaderSliver(
+                  title: 'Sugerencias para ti',
+                  subtitle: 'Mezcla de tu historial y descargas',
+                ),
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: 222,
+                    child: ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                      scrollDirection: Axis.horizontal,
+                      itemCount: content.suggestions.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 12),
+                      itemBuilder: (context, index) {
+                        final item = content.suggestions[index];
+                        return _HomeFeatureCard(
+                          item: item,
+                          onTap: () => _playTrack(item),
+                        );
+                      },
+                    ),
                   ),
+                ),
+                if (content.mixes.isNotEmpty) ...[
+                  const SliverToBoxAdapter(child: SizedBox(height: 6)),
                   _SectionHeaderSliver(
-                    title: 'Sugerencias para ti',
-                    subtitle: 'Mezcla de tu historial y descargas',
+                    title: 'Mixes para ti',
+                    subtitle: 'Como en radio, pero con tu gusto',
                   ),
                   SliverToBoxAdapter(
                     child: SizedBox(
-                      height: 222,
+                      height: 154,
                       child: ListView.separated(
                         padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
                         scrollDirection: Axis.horizontal,
-                        itemCount: content.suggestions.length,
+                        itemCount: content.mixes.length,
                         separatorBuilder: (_, _) => const SizedBox(width: 12),
                         itemBuilder: (context, index) {
-                          final item = content.suggestions[index];
-                          return _HomeFeatureCard(
-                            item: item,
-                            onTap: () => _playTrack(item),
+                          final mix = content.mixes[index];
+                          return _HomeMixCard(
+                            mix: mix,
+                            onPlay: () => _playMix(mix),
+                            onQueue: () => _queueMix(mix),
                           );
                         },
                       ),
                     ),
                   ),
-                  if (content.mixes.isNotEmpty) ...[
-                    const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                ],
+                if (content.curatedShelves.isNotEmpty) ...[
+                  const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                  _SectionHeaderSliver(
+                    title: 'Explorar en VM Music',
+                    subtitle:
+                        'Quick picks, throwbacks y playlists en tendencia',
+                  ),
+                  for (final shelf in content.curatedShelves) ...[
                     _SectionHeaderSliver(
-                      title: 'Mixes para ti',
-                      subtitle: 'Como en radio, pero con tu gusto',
+                      title: shelf.title,
+                      subtitle: shelf.subtitle,
                     ),
-                    SliverToBoxAdapter(
-                      child: SizedBox(
-                        height: 154,
-                        child: ListView.separated(
-                          padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                          scrollDirection: Axis.horizontal,
-                          itemCount: content.mixes.length,
-                          separatorBuilder: (_, _) => const SizedBox(width: 12),
-                          itemBuilder: (context, index) {
-                            final mix = content.mixes[index];
-                            return _HomeMixCard(
-                              mix: mix,
-                              onPlay: () => _playMix(mix),
-                              onQueue: () => _queueMix(mix),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ],
-                  if (content.curatedShelves.isNotEmpty) ...[
-                    const SliverToBoxAdapter(child: SizedBox(height: 6)),
-                    _SectionHeaderSliver(
-                      title: 'Explorar en VM Music',
-                      subtitle:
-                          'Quick picks, throwbacks y playlists en tendencia',
-                    ),
-                    for (final shelf in content.curatedShelves) ...[
-                      _SectionHeaderSliver(
-                        title: shelf.title,
-                        subtitle: shelf.subtitle,
-                      ),
-                      if (_shouldRenderAsTopSongsStack(shelf))
-                        SliverToBoxAdapter(
-                          child: SizedBox(
-                            height: _isThinStackShelf(shelf) ? 320 : 352,
-                            child: ListView.separated(
-                              padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                              scrollDirection: Axis.horizontal,
-                              itemCount: _buildTrackColumns(
+                    if (_shouldRenderAsTopSongsStack(shelf))
+                      SliverToBoxAdapter(
+                        child: SizedBox(
+                          height: _isThinStackShelf(shelf) ? 320 : 352,
+                          child: ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                            scrollDirection: Axis.horizontal,
+                            itemCount: _buildTrackColumns(
+                              shelf.tracks,
+                              itemsPerColumn: 4,
+                            ).length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(width: 12),
+                            itemBuilder: (context, index) {
+                              final columnItems = _buildTrackColumns(
                                 shelf.tracks,
                                 itemsPerColumn: 4,
-                              ).length,
-                              separatorBuilder: (_, _) =>
-                                  const SizedBox(width: 12),
-                              itemBuilder: (context, index) {
-                                final columnItems = _buildTrackColumns(
-                                  shelf.tracks,
-                                  itemsPerColumn: 4,
-                                )[index];
-                                return _StackedTrackColumn(
-                                  items: columnItems,
-                                  onTap: _playTrack,
-                                  onSwipeToQueueNext: (item) =>
-                                      _addTrackToQueue(
-                                        item,
-                                        insertMode: ManualQueueInsertMode.next,
-                                      ),
-                                  onSwipeToQueueEnd: (item) => _addTrackToQueue(
-                                    item,
-                                    insertMode: ManualQueueInsertMode.end,
-                                  ),
-                                  onContextAction: _runTrackContextAction,
-                                  allowSwipeToQueue: false,
-                                  thinCards: _isThinStackShelf(shelf),
-                                );
-                              },
-                            ),
-                          ),
-                        )
-                      else
-                        SliverToBoxAdapter(
-                          child: SizedBox(
-                            height: 222,
-                            child: ListView.separated(
-                              padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                              scrollDirection: Axis.horizontal,
-                              itemCount: shelf.tracks.length,
-                              separatorBuilder: (_, _) =>
-                                  const SizedBox(width: 12),
-                              itemBuilder: (context, index) {
-                                final item = shelf.tracks[index];
-                                return _HomeFeatureCard(
-                                  item: item,
-                                  onTap: () => _playTrack(item),
-                                );
-                              },
-                            ),
+                              )[index];
+                              return _StackedTrackColumn(
+                                items: columnItems,
+                                onTap: _playTrack,
+                                onSwipeToQueueNext: (item) => _addTrackToQueue(
+                                  item,
+                                  insertMode: ManualQueueInsertMode.next,
+                                ),
+                                onSwipeToQueueEnd: (item) => _addTrackToQueue(
+                                  item,
+                                  insertMode: ManualQueueInsertMode.end,
+                                ),
+                                onContextAction: _runTrackContextAction,
+                                allowSwipeToQueue: false,
+                                thinCards: _isThinStackShelf(shelf),
+                              );
+                            },
                           ),
                         ),
-                    ],
+                      )
+                    else
+                      SliverToBoxAdapter(
+                        child: SizedBox(
+                          height: 222,
+                          child: ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                            scrollDirection: Axis.horizontal,
+                            itemCount: shelf.tracks.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(width: 12),
+                            itemBuilder: (context, index) {
+                              final item = shelf.tracks[index];
+                              return _HomeFeatureCard(
+                                item: item,
+                                onTap: () => _playTrack(item),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
                   ],
-                  const SliverToBoxAdapter(child: SizedBox(height: 6)),
-                  _SectionHeaderSliver(
-                    title: 'Volver a escuchar',
-                    subtitle: 'Tus últimas reproducciones',
+                ],
+                const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                _SectionHeaderSliver(
+                  title: 'Volver a escuchar',
+                  subtitle: 'Tus últimas reproducciones',
+                ),
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: 320,
+                    child: ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                      scrollDirection: Axis.horizontal,
+                      itemCount: relistenColumns.length,
+                      separatorBuilder: (_, _) => const SizedBox(width: 12),
+                      itemBuilder: (context, index) {
+                        final columnItems = relistenColumns[index];
+                        return _StackedTrackColumn(
+                          items: columnItems,
+                          onTap: _playTrack,
+                          onSwipeToQueueNext: (item) => _addTrackToQueue(
+                            item,
+                            insertMode: ManualQueueInsertMode.next,
+                          ),
+                          onSwipeToQueueEnd: (item) => _addTrackToQueue(
+                            item,
+                            insertMode: ManualQueueInsertMode.end,
+                          ),
+                          onContextAction: _runTrackContextAction,
+                          allowSwipeToQueue: false,
+                          thinCards: true,
+                        );
+                      },
+                    ),
                   ),
-                  SliverToBoxAdapter(
-                    child: SizedBox(
-                      height: 320,
-                      child: ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                        scrollDirection: Axis.horizontal,
-                        itemCount: relistenColumns.length,
-                        separatorBuilder: (_, _) => const SizedBox(width: 12),
+                ),
+                const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                _SectionHeaderSliver(
+                  title: 'En tendencia',
+                  subtitle: 'Lo más escuchado ahora',
+                ),
+                FutureBuilder<List<_HomeTrack>>(
+                  future: _trendingFuture,
+                  builder: (context, trendingSnapshot) {
+                    if (trendingSnapshot.connectionState ==
+                        ConnectionState.waiting) {
+                      return const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(0, 20, 0, 24),
+                          child: Center(
+                            child: CupertinoActivityIndicator(radius: 12),
+                          ),
+                        ),
+                      );
+                    }
+
+                    final trending =
+                        trendingSnapshot.data ?? const <_HomeTrack>[];
+                    if (trending.isEmpty) {
+                      return const SliverToBoxAdapter(
+                        child: Padding(
+                          padding: EdgeInsets.fromLTRB(16, 10, 16, 24),
+                          child: Text(
+                            'No se pudieron cargar tendencias ahora.',
+                          ),
+                        ),
+                      );
+                    }
+
+                    return SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(12, 6, 12, 18),
+                      sliver: SliverList.builder(
+                        itemCount: trending.length,
                         itemBuilder: (context, index) {
-                          final columnItems = relistenColumns[index];
-                          return _StackedTrackColumn(
-                            items: columnItems,
-                            onTap: _playTrack,
-                            onSwipeToQueueNext: (item) => _addTrackToQueue(
-                              item,
-                              insertMode: ManualQueueInsertMode.next,
+                          final item = trending[index];
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: SizedBox(
+                              height: 76,
+                              child: _CompactReplayCard(
+                                item: item,
+                                onTap: () => _playTrack(item),
+                                onSwipeToQueueNext: () => _addTrackToQueue(
+                                  item,
+                                  insertMode: ManualQueueInsertMode.next,
+                                ),
+                                onSwipeToQueueEnd: () => _addTrackToQueue(
+                                  item,
+                                  insertMode: ManualQueueInsertMode.end,
+                                ),
+                                onContextAction: (action) =>
+                                    _runTrackContextAction(item, action),
+                                allowSwipeToQueue: true,
+                                thin: true,
+                              ),
                             ),
-                            onSwipeToQueueEnd: (item) => _addTrackToQueue(
-                              item,
-                              insertMode: ManualQueueInsertMode.end,
-                            ),
-                            onContextAction: _runTrackContextAction,
-                            allowSwipeToQueue: false,
-                            thinCards: true,
                           );
                         },
                       ),
-                    ),
-                  ),
-                  const SliverToBoxAdapter(child: SizedBox(height: 6)),
-                  const SliverToBoxAdapter(child: SizedBox(height: 6)),
-                  _SectionHeaderSliver(
-                    title: 'En tendencia',
-                    subtitle: 'Lo más escuchado ahora',
-                  ),
-                  FutureBuilder<List<_HomeTrack>>(
-                    future: _trendingFuture,
-                    builder: (context, trendingSnapshot) {
-                      if (trendingSnapshot.connectionState ==
-                          ConnectionState.waiting) {
-                        return const SliverToBoxAdapter(
-                          child: Padding(
-                            padding: EdgeInsets.fromLTRB(0, 20, 0, 24),
-                            child: Center(
-                              child: CupertinoActivityIndicator(radius: 12),
-                            ),
-                          ),
-                        );
-                      }
-
-                      final trending =
-                          trendingSnapshot.data ?? const <_HomeTrack>[];
-                      if (trending.isEmpty) {
-                        return const SliverToBoxAdapter(
-                          child: Padding(
-                            padding: EdgeInsets.fromLTRB(16, 10, 16, 24),
-                            child: Text(
-                              'No se pudieron cargar tendencias ahora.',
-                            ),
-                          ),
-                        );
-                      }
-
-                      return SliverPadding(
-                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 18),
-                        sliver: SliverList.builder(
-                          itemCount: trending.length,
-                          itemBuilder: (context, index) {
-                            final item = trending[index];
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 4),
-                              child: SizedBox(
-                                height: 76,
-                                child: _CompactReplayCard(
-                                  item: item,
-                                  onTap: () => _playTrack(item),
-                                  onSwipeToQueueNext: () => _addTrackToQueue(
-                                    item,
-                                    insertMode: ManualQueueInsertMode.next,
-                                  ),
-                                  onSwipeToQueueEnd: () => _addTrackToQueue(
-                                    item,
-                                    insertMode: ManualQueueInsertMode.end,
-                                  ),
-                                  onContextAction: (action) =>
-                                      _runTrackContextAction(item, action),
-                                  allowSwipeToQueue: true,
-                                  thin: true,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      );
-                    },
-                  ),
-                  SliverToBoxAdapter(child: SizedBox(height: bottomReserve)),
-                ],
-              ),
+                    );
+                  },
+                ),
+                SliverToBoxAdapter(child: SizedBox(height: bottomReserve)),
+              ],
             );
           },
         ),
