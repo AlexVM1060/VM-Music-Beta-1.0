@@ -27,16 +27,24 @@ import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/app_update_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
+import 'package:myapp/services/social_presence_sync_service.dart';
+import 'package:myapp/services/social_service.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/music_player_page.dart';
 import 'package:provider/provider.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+const String _defaultSupabaseUrl = 'https://jziefknvztxxllogiwba.supabase.co';
+const String _defaultSupabaseAnonKey =
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp6aWVma252enR4eGxsb2dpd2JhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk2MjI1MzUsImV4cCI6MjA4NTE5ODUzNX0.uQzvXMfLT4spxhTjerxdarcMR8-f5l2KDpby-9Q1bAg';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   _configureImageCacheForMobile();
+  await _initSupabase();
 
   // Inicialización de Hive
   final appDocumentDir = await getApplicationDocumentsDirectory();
@@ -68,6 +76,20 @@ void main() async {
         ChangeNotifierProvider(create: (_) => AppTabState()),
         ChangeNotifierProvider(create: (_) => SearchViewState()),
         ChangeNotifierProvider(create: (_) => ProfileService()..init()),
+        ChangeNotifierProvider(create: (_) => SocialService()),
+        Provider<SocialPresenceSyncService>(
+          lazy: false,
+          create: (context) {
+            final syncService = SocialPresenceSyncService(
+              socialService: context.read<SocialService>(),
+              playerManager: context.read<VideoPlayerManager>(),
+              profileService: context.read<ProfileService>(),
+            );
+            syncService.start();
+            return syncService;
+          },
+          dispose: (_, service) => service.dispose(),
+        ),
         Provider(create: (_) => HistoryService()),
         Provider(create: (_) => PlaylistService()),
         ChangeNotifierProvider(
@@ -80,6 +102,19 @@ void main() async {
   );
 
   unawaited(_configureAudioSessionSafe());
+}
+
+Future<void> _initSupabase() async {
+  const supabaseUrl = String.fromEnvironment(
+    'SUPABASE_URL',
+    defaultValue: _defaultSupabaseUrl,
+  );
+  const supabaseAnonKey = String.fromEnvironment(
+    'SUPABASE_ANON_KEY',
+    defaultValue: _defaultSupabaseAnonKey,
+  );
+  if (supabaseUrl.isEmpty || supabaseAnonKey.isEmpty) return;
+  await Supabase.initialize(url: supabaseUrl, anonKey: supabaseAnonKey);
 }
 
 void _configureImageCacheForMobile() {

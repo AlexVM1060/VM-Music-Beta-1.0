@@ -4,8 +4,11 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:myapp/services/profile_service.dart';
+import 'package:myapp/services/social_service.dart';
+import 'package:myapp/video_player_manager.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
 
 class ProfileEditPage extends StatefulWidget {
   final ProfileService profile;
@@ -21,6 +24,8 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   late final TextEditingController _usernameController;
   final ImagePicker _picker = ImagePicker();
   bool _isSaving = false;
+  bool _isPublishing = false;
+  late bool _isPublicProfileEnabled;
 
   @override
   void initState() {
@@ -31,6 +36,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
           ? widget.profile.username.substring(1)
           : widget.profile.username,
     );
+    _isPublicProfileEnabled = widget.profile.isPublicProfile;
   }
 
   @override
@@ -40,7 +46,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     super.dispose();
   }
 
-  Future<void> _save() async {
+  Future<void> _saveProfile({required bool closeOnSuccess}) async {
     if (_isSaving) return;
     setState(() => _isSaving = true);
     try {
@@ -49,11 +55,15 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
         username: _usernameController.text,
         bio: widget.profile.bio,
       );
-      if (!mounted) return;
+      if (!mounted || !closeOnSuccess) return;
       Navigator.of(context).pop();
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
+  }
+
+  Future<void> _save() async {
+    await _saveProfile(closeOnSuccess: true);
   }
 
   Future<void> _changePhoto() async {
@@ -77,6 +87,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
               final target = File(p.join(docsDir.path, fileName));
               await File(file.path).copy(target.path);
               await widget.profile.updatePhotoPath(target.path);
+              await _syncProfilePhotoToSupabase();
               if (mounted) setState(() {});
             },
             child: const Text('Elegir de galeria'),
@@ -94,6 +105,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                     await file.delete();
                   }
                 }
+                await _syncProfilePhotoToSupabase();
                 if (mounted) setState(() {});
               },
               child: const Text('Quitar foto'),
@@ -105,6 +117,94 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _syncProfilePhotoToSupabase() async {
+    try {
+      final social = context.read<SocialService>();
+      final player = context.read<VideoPlayerManager>();
+      final currentSong = (player.trackTitle ?? '').trim();
+      final currentArtist = (player.trackArtist ?? '').trim();
+      final isPlaying = currentSong.isNotEmpty && player.isPlaying;
+      await social.publishProfile(
+        profile: widget.profile,
+        currentSong: currentSong,
+        currentArtist: currentArtist,
+        isPlaying: isPlaying,
+      );
+    } catch (_) {
+      // Mejor esfuerzo: no bloqueamos cambio de foto por red/supabase.
+    }
+  }
+
+  Future<void> _publishProfile() async {
+    if (_isPublishing) return;
+    setState(() => _isPublishing = true);
+    try {
+      final social = context.read<SocialService>();
+      final player = context.read<VideoPlayerManager>();
+      final currentSong = (player.trackTitle ?? '').trim();
+      final currentArtist = (player.trackArtist ?? '').trim();
+      final isPlaying = currentSong.isNotEmpty && player.isPlaying;
+      await social.publishProfile(
+        profile: widget.profile,
+        currentSong: currentSong,
+        currentArtist: currentArtist,
+        isPlaying: isPlaying,
+      );
+      if (!mounted) return;
+      showCupertinoDialog<void>(
+        context: context,
+        builder: (context) => CupertinoAlertDialog(
+          title: const Text('Perfil publicado'),
+          content: const Text('Tu perfil ahora es público.'),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      showCupertinoDialog<void>(
+        context: context,
+        builder: (context) => CupertinoAlertDialog(
+          title: const Text('No se pudo publicar'),
+          content: Text(e.toString()),
+          actions: [
+            CupertinoDialogAction(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isPublishing = false);
+    }
+  }
+
+  Future<void> _onTogglePublicProfile(bool enabled) async {
+    if (_isPublishing || _isSaving) return;
+    setState(() {
+      _isPublicProfileEnabled = enabled;
+    });
+    try {
+      if (enabled) {
+        // Primero guardamos exactamente como el botón "Guardar", sin cerrar.
+        await _saveProfile(closeOnSuccess: false);
+      }
+      await widget.profile.setPublicProfileEnabled(enabled);
+      if (!enabled) return;
+      await _publishProfile();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isPublicProfileEnabled = !enabled;
+      });
+    }
   }
 
   @override
@@ -256,6 +356,56 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                       ),
                     ),
                     decoration: const BoxDecoration(),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(14),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Perfil publico',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: CupertinoColors.label.resolveFrom(context),
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _isPublicProfileEnabled
+                              ? 'Tu perfil ahora es público.'
+                              : 'Activalo para compartir tu perfil.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (_isPublishing)
+                    const Padding(
+                      padding: EdgeInsets.only(right: 10),
+                      child: CupertinoActivityIndicator(radius: 10),
+                    ),
+                  CupertinoSwitch(
+                    value: _isPublicProfileEnabled,
+                    onChanged: _isPublishing ? null : _onTogglePublicProfile,
                   ),
                 ],
               ),

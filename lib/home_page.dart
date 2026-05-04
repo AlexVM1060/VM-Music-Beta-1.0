@@ -20,6 +20,8 @@ import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
+import 'package:myapp/services/social_service.dart';
+import 'package:myapp/social_friends_page.dart';
 import 'package:myapp/services/thumbnail_cache_service.dart';
 import 'package:myapp/search_page.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
@@ -31,6 +33,7 @@ import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 class HomePage extends StatefulWidget {
@@ -983,7 +986,10 @@ class _HomePageState extends State<HomePage> {
       final resolved = await _resolveAlbumFromSearchFallback(track);
       if (!mounted) return;
       if (resolved == null) {
-        showIosNotice(context, 'No se pudo identificar el álbum de esta canción.');
+        showIosNotice(
+          context,
+          'No se pudo identificar el álbum de esta canción.',
+        );
         return;
       }
       await Navigator.of(context).push(
@@ -1511,8 +1517,178 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-class _HomeProfileNowPlayingHeader extends StatelessWidget {
+class _HomeProfileNowPlayingHeader extends StatefulWidget {
   const _HomeProfileNowPlayingHeader();
+
+  @override
+  State<_HomeProfileNowPlayingHeader> createState() =>
+      _HomeProfileNowPlayingHeaderState();
+}
+
+class _HomeProfileNowPlayingHeaderState
+    extends State<_HomeProfileNowPlayingHeader> {
+  List<SocialUser> _followingUsers = const <SocialUser>[];
+  RealtimeChannel? _friendRealtimeChannel;
+  Set<String> _followingIds = <String>{};
+  Timer? _friendRefreshTimer;
+  final Map<String, String> _friendPhotoUrlById = <String, String>{};
+  final Map<String, ImageProvider<Object>> _friendImageById =
+      <String, ImageProvider<Object>>{};
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadFollowingPreview());
+  }
+
+  Future<void> _loadFollowingPreview() async {
+    try {
+      final social = context.read<SocialService>();
+      await social.ensureReady();
+      final following = await social.getFollowingUsers();
+      if (!mounted) return;
+      _attachRealtimeToFriends(following);
+      _pruneFriendImageCache(following.map((u) => u.id).toSet());
+      final hasListChanges = !_sameSocialUserList(_followingUsers, following);
+      final nextIds = following.map((u) => u.id).toSet();
+      final hasIdChanges =
+          nextIds.length != _followingIds.length ||
+          !nextIds.containsAll(_followingIds);
+      if (!hasListChanges && !hasIdChanges) return;
+      setState(() {
+        _followingUsers = following;
+        _followingIds = nextIds;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      _detachFriendRealtime();
+      _pruneFriendImageCache(const <String>{});
+      setState(() {
+        _followingUsers = const <SocialUser>[];
+        _followingIds = <String>{};
+      });
+    }
+  }
+
+  void _attachRealtimeToFriends(List<SocialUser> users) {
+    final ids = users
+        .map((u) => u.id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    if (ids.isEmpty) {
+      _detachFriendRealtime();
+      return;
+    }
+    final sameSet =
+        ids.length == _followingIds.length && ids.containsAll(_followingIds);
+    if (sameSet && _friendRealtimeChannel != null) return;
+    _detachFriendRealtime();
+    final client = Supabase.instance.client;
+    _followingIds = ids;
+    _friendRefreshTimer?.cancel();
+    _friendRefreshTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+      unawaited(_refreshFriendsFromServer(ids));
+    });
+    _friendRealtimeChannel = client.channel('friends-live-all')
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'users',
+        callback: (payload) {
+          if (!mounted) return;
+          final map = payload.newRecord;
+          if (map.isEmpty) return;
+          final id = (map['id'] ?? '').toString().trim();
+          if (id.isEmpty || !_followingIds.contains(id)) return;
+          final updated = SocialUser.fromMap(Map<String, dynamic>.from(map));
+          final index = _followingUsers.indexWhere((u) => u.id == id);
+          if (index == -1) return;
+          final current = _followingUsers[index];
+          if (_sameSocialUser(current, updated)) return;
+          setState(() {
+            final next = List<SocialUser>.from(
+              _followingUsers,
+              growable: false,
+            );
+            next[index] = updated;
+            _followingUsers = next;
+          });
+        },
+      )
+      ..subscribe();
+    unawaited(_refreshFriendsFromServer(ids));
+  }
+
+  Future<void> _refreshFriendsFromServer(Set<String> ids) async {
+    try {
+      if (ids.isEmpty) return;
+      final rows = await Supabase.instance.client
+          .from('users')
+          .select()
+          .inFilter('id', ids.toList(growable: false));
+      if (!mounted || rows.isEmpty) return;
+      final byId = <String, SocialUser>{};
+      for (final row in rows) {
+        final user = SocialUser.fromMap(Map<String, dynamic>.from(row));
+        byId[user.id] = user;
+      }
+      bool changed = false;
+      final next = <SocialUser>[];
+      for (final user in _followingUsers) {
+        final refreshed = byId[user.id] ?? user;
+        if (!_sameSocialUser(user, refreshed)) changed = true;
+        next.add(refreshed);
+      }
+      if (!changed) return;
+      setState(() {
+        _followingUsers = List<SocialUser>.unmodifiable(next);
+      });
+    } catch (_) {
+      // Fallback silencioso.
+    }
+  }
+
+  void _detachFriendRealtime() {
+    final channel = _friendRealtimeChannel;
+    _friendRealtimeChannel = null;
+    _friendRefreshTimer?.cancel();
+    _friendRefreshTimer = null;
+    if (channel != null) {
+      Supabase.instance.client.removeChannel(channel);
+    }
+  }
+
+  bool _sameSocialUser(SocialUser a, SocialUser b) {
+    return a.id == b.id &&
+        a.name == b.name &&
+        a.username == b.username &&
+        (a.photoUrl ?? '') == (b.photoUrl ?? '') &&
+        a.note == b.note &&
+        a.currentSong == b.currentSong &&
+        a.currentArtist == b.currentArtist &&
+        a.isPlaying == b.isPlaying &&
+        a.updatedAt == b.updatedAt;
+  }
+
+  bool _sameSocialUserList(List<SocialUser> a, List<SocialUser> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_sameSocialUser(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
+  void _pruneFriendImageCache(Set<String> validIds) {
+    _friendPhotoUrlById.removeWhere((id, _) => !validIds.contains(id));
+    _friendImageById.removeWhere((id, _) => !validIds.contains(id));
+  }
+
+  @override
+  void dispose() {
+    _detachFriendRealtime();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1529,9 +1705,11 @@ class _HomeProfileNowPlayingHeader extends StatelessWidget {
     final hasTrack = (currentTrackTitle ?? '').trim().isNotEmpty;
     final titleText = hasTrack
         ? currentTrackTitle!.trim()
-        : 'No estás reproduciendo nada ahora.';
+        : 'No estas reproduciendo nada ahora.';
     final artistText = (currentTrackArtist ?? '').trim();
-    final bioText = profile.bio.trim().isEmpty ? 'Escribe algo...' : profile.bio.trim();
+    final bioText = profile.bio.trim().isEmpty
+        ? 'Escribe algo...'
+        : profile.bio.trim();
     final photoPath = (profile.photoPath ?? '').trim();
     final hasLocalPhoto = photoPath.isNotEmpty && File(photoPath).existsSync();
 
@@ -1539,170 +1717,265 @@ class _HomeProfileNowPlayingHeader extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
       child: Align(
         alignment: Alignment.centerLeft,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SizedBox(
-              width: 130,
-              child: _HomeAnimatedNowPlayingNote(
-                titleText: titleText,
-                artistText: artistText,
-                hasTrack: hasTrack,
-                isPlaying: isPlaying,
-              ),
-            ),
-            const Padding(
-              padding: EdgeInsets.only(left: 22, top: 2),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _HomeThoughtDot(size: 8),
-                  SizedBox(width: 3),
-                  _HomeThoughtDot(size: 6),
-                  SizedBox(width: 3),
-                  _HomeThoughtDot(size: 4),
-                ],
-              ),
-            ),
-            const SizedBox(height: 6),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 98,
-                      height: 98,
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          Positioned(
-                            left: 0,
-                            top: 0,
-                            child: CircleAvatar(
-                              radius: 45,
-                              backgroundColor: CupertinoColors.tertiarySystemFill
-                                  .resolveFrom(context),
-                              backgroundImage: hasLocalPhoto
-                                  ? FileImage(File(photoPath))
-                                  : null,
-                              child: hasLocalPhoto
-                                  ? null
-                                  : const Icon(
-                                      CupertinoIcons.person_crop_circle_fill,
-                                      size: 34,
-                                    ),
-                            ),
-                          ),
-                          Positioned(
-                            right: 0,
-                            bottom: 0,
-                            child: Container(
-                              constraints: const BoxConstraints(maxWidth: 68),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 7,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: CupertinoColors
-                                    .secondarySystemGroupedBackground
-                                    .resolveFrom(context),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: CupertinoColors.separator
-                                      .resolveFrom(context)
-                                      .withValues(alpha: 0.22),
-                                  width: 0.6,
-                                ),
-                              ),
-                              child: _HomeReverseMarqueeText(
-                                text: bioText,
-                                style: TextStyle(
-                                  fontFamily: '.SF Pro Text',
-                                  fontSize: 10,
-                                  color: CupertinoColors.label.resolveFrom(
-                                    context,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    SizedBox(
-                      width: 90,
-                      child: Text(
-                        'Tú',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontFamily: '.SF Pro Text',
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: CupertinoColors.secondaryLabel.resolveFrom(
-                            context,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _HomeSocialPreviewCard(
+                key: const ValueKey<String>('home-social-self'),
+                titleNote: _HomeAnimatedNowPlayingNote(
+                  titleText: titleText,
+                  artistText: artistText,
+                  hasTrack: hasTrack,
+                  isPlaying: isPlaying,
                 ),
-                const SizedBox(width: 26),
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CupertinoButton(
-                      padding: EdgeInsets.zero,
-                      minimumSize: Size.zero,
-                      onPressed: () {
-                        _showQueueIosToast(
-                          context,
-                          message: 'Disponible muy pronto.',
-                          icon: CupertinoIcons.clock,
-                        );
-                      },
-                      child: Container(
-                        width: 90,
-                        height: 90,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: CupertinoColors.tertiarySystemFill.resolveFrom(
-                            context,
-                          ),
-                        ),
-                        child: Icon(
-                          CupertinoIcons.add,
-                          size: 26,
-                          color: CupertinoColors.label.resolveFrom(context),
-                        ),
-                      ),
+                noteText: bioText,
+                footerText: 'Tu',
+                imageProvider: hasLocalPhoto
+                    ? FileImage(File(photoPath))
+                    : null,
+              ),
+              const SizedBox(width: 26),
+              ..._followingUsers.map((friend) {
+                final friendSong = friend.currentSong.trim();
+                final friendArtist = friend.currentArtist.trim();
+                final friendHasTrack = friendSong.isNotEmpty;
+                final friendTitleText = friendHasTrack
+                    ? friendSong
+                    : 'No esta reproduciendo nada ahora.';
+                return Padding(
+                  key: ValueKey<String>('home-social-friend-${friend.id}'),
+                  padding: const EdgeInsets.only(right: 26),
+                  child: _HomeSocialPreviewCard(
+                    key: ValueKey<String>(
+                      'home-social-friend-card-${friend.id}',
                     ),
-                    const SizedBox(height: 6),
-                    SizedBox(
-                      width: 90,
-                      child: Text(
-                        'Añadir Amigos',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontFamily: '.SF Pro Text',
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: CupertinoColors.secondaryLabel.resolveFrom(
-                            context,
-                          ),
-                        ),
-                      ),
+                    titleNote: _HomeAnimatedNowPlayingNote(
+                      titleText: friendTitleText,
+                      artistText: friendArtist,
+                      hasTrack: friendHasTrack,
+                      isPlaying: friend.isPlaying,
                     ),
-                  ],
-                ),
-              ],
-            ),
-          ],
+                    noteText: friend.note.trim().isEmpty
+                        ? 'Escribe algo...'
+                        : friend.note.trim(),
+                    footerText: friend.name.trim().isEmpty
+                        ? '@${friend.username}'
+                        : friend.name.trim(),
+                    imageProvider: _friendImageProvider(friend),
+                  ),
+                );
+              }),
+              _HomeAddFriendCard(
+                onPressed: () async {
+                  await Navigator.of(context).push(
+                    CupertinoPageRoute<void>(
+                      builder: (_) => const SocialFriendsPage(),
+                    ),
+                  );
+                  await _loadFollowingPreview();
+                },
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  ImageProvider<Object>? _friendImageProvider(SocialUser friend) {
+    final id = friend.id.trim();
+    if (id.isEmpty) return null;
+    final baseUrl = (friend.photoUrl ?? '').trim();
+    if (baseUrl.isEmpty) {
+      _friendPhotoUrlById.remove(id);
+      _friendImageById.remove(id);
+      return null;
+    }
+    final previousUrl = _friendPhotoUrlById[id];
+    if (previousUrl == baseUrl) {
+      return _friendImageById[id];
+    }
+    final provider = NetworkImage(baseUrl);
+    _friendPhotoUrlById[id] = baseUrl;
+    _friendImageById[id] = provider;
+    return provider;
+  }
+}
+
+class _HomeSocialPreviewCard extends StatelessWidget {
+  static const double _titleAreaHeight = 56;
+  final Widget titleNote;
+  final String noteText;
+  final String footerText;
+  final ImageProvider<Object>? imageProvider;
+
+  const _HomeSocialPreviewCard({
+    super.key,
+    required this.titleNote,
+    required this.noteText,
+    required this.footerText,
+    required this.imageProvider,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 130,
+          height: _titleAreaHeight,
+          child: Align(alignment: Alignment.topCenter, child: titleNote),
+        ),
+        const Padding(
+          padding: EdgeInsets.only(left: 22, top: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _HomeThoughtDot(size: 8),
+              SizedBox(width: 3),
+              _HomeThoughtDot(size: 6),
+              SizedBox(width: 3),
+              _HomeThoughtDot(size: 4),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          width: 98,
+          height: 98,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned(
+                left: 0,
+                top: 0,
+                child: SizedBox(
+                  width: 90,
+                  height: 90,
+                  child: ClipOval(
+                    child: ColoredBox(
+                      color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                        context,
+                      ),
+                      child: imageProvider == null
+                          ? const Icon(
+                              CupertinoIcons.person_crop_circle_fill,
+                              size: 34,
+                            )
+                          : Image(
+                              image: imageProvider!,
+                              fit: BoxFit.cover,
+                              gaplessPlayback: true,
+                              errorBuilder: (_, _, _) => const Icon(
+                                CupertinoIcons.person_crop_circle_fill,
+                                size: 34,
+                              ),
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+              Positioned(
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 68),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: CupertinoColors.secondarySystemGroupedBackground
+                        .resolveFrom(context),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: CupertinoColors.separator
+                          .resolveFrom(context)
+                          .withValues(alpha: 0.22),
+                      width: 0.6,
+                    ),
+                  ),
+                  child: _HomeReverseMarqueeText(
+                    text: noteText,
+                    style: TextStyle(
+                      fontFamily: '.SF Pro Text',
+                      fontSize: 10,
+                      color: CupertinoColors.label.resolveFrom(context),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          width: 90,
+          child: Text(
+            footerText,
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontFamily: '.SF Pro Text',
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HomeAddFriendCard extends StatelessWidget {
+  final Future<void> Function() onPressed;
+
+  const _HomeAddFriendCard({required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Espacio equivalente al bloque "nota + puntos" de las tarjetas sociales.
+        const SizedBox(height: 70),
+        CupertinoButton(
+          padding: EdgeInsets.zero,
+          minimumSize: Size.zero,
+          onPressed: onPressed,
+          child: Container(
+            width: 90,
+            height: 90,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+            ),
+            child: Icon(
+              CupertinoIcons.add,
+              size: 26,
+              color: CupertinoColors.label.resolveFrom(context),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        SizedBox(
+          width: 90,
+          child: Text(
+            'Anadir Amigos',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontFamily: '.SF Pro Text',
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: CupertinoColors.secondaryLabel.resolveFrom(context),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -2019,7 +2292,8 @@ class _HomeReverseMarqueeText extends StatefulWidget {
   const _HomeReverseMarqueeText({required this.text, required this.style});
 
   @override
-  State<_HomeReverseMarqueeText> createState() => _HomeReverseMarqueeTextState();
+  State<_HomeReverseMarqueeText> createState() =>
+      _HomeReverseMarqueeTextState();
 }
 
 class _HomeReverseMarqueeTextState extends State<_HomeReverseMarqueeText>
@@ -2147,11 +2421,15 @@ class _HomeAnimatedNowPlayingNoteState
   Widget build(BuildContext context) {
     final trackKey =
         '${widget.titleText}|${widget.artistText}|${widget.hasTrack}';
+    final idleVerticalOffset = widget.hasTrack ? 0.0 : 16.0;
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, _) {
         return Transform.translate(
-          offset: Offset(_xAnimation.value, _yAnimation.value),
+          offset: Offset(
+            _xAnimation.value,
+            _yAnimation.value + idleVerticalOffset,
+          ),
           child: _HomeNoteBubble(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 320),

@@ -2621,7 +2621,10 @@ class _SearchPageState extends State<SearchPage>
       final album = await _resolveAlbumFromVideo(video);
       if (!mounted) return;
       if (album == null) {
-        showIosNotice(context, 'No se pudo identificar el álbum de esta canción.');
+        showIosNotice(
+          context,
+          'No se pudo identificar el álbum de esta canción.',
+        );
         return;
       }
       await _openAlbumEmbedded(
@@ -3681,7 +3684,9 @@ class _SearchPageState extends State<SearchPage>
             children: [
               Padding(
                 padding: const EdgeInsets.only(top: 16),
-                child: _buildBody(additionalBottomPadding: -bottomOverlayReserve),
+                child: _buildBody(
+                  additionalBottomPadding: -bottomOverlayReserve,
+                ),
               ),
               Positioned(
                 left: 0,
@@ -3803,7 +3808,11 @@ class _SearchPageState extends State<SearchPage>
         controller: _textController,
         textInputAction: TextInputAction.search,
         onSubmitted: (_) => _searchVideos(),
-        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+        style: const TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+          color: Colors.white,
+        ),
         decoration: InputDecoration(
           hintText: 'Buscar en VM Music...',
           hintStyle: TextStyle(
@@ -4157,14 +4166,10 @@ class _SearchPageState extends State<SearchPage>
         return _SearchHistoryTrackCard(
           entry: track,
           onTap: () => _playFromSearchHistoryTrack(track),
-          onQueueNext: () => _queueHistoryTrack(
-            track,
-            insertMode: ManualQueueInsertMode.next,
-          ),
-          onQueueEnd: () => _queueHistoryTrack(
-            track,
-            insertMode: ManualQueueInsertMode.end,
-          ),
+          onQueueNext: () =>
+              _queueHistoryTrack(track, insertMode: ManualQueueInsertMode.next),
+          onQueueEnd: () =>
+              _queueHistoryTrack(track, insertMode: ManualQueueInsertMode.end),
         );
       },
       separatorBuilder: (context, index) {
@@ -4784,11 +4789,7 @@ class SearchModeButton extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  icon,
-                  size: 14,
-                  color: foregroundColor,
-                ),
+                Icon(icon, size: 14, color: foregroundColor),
                 const SizedBox(width: 6),
                 Text(
                   label,
@@ -5400,7 +5401,10 @@ class _VideoCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: borderColor, width: 0.6),
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8.0,
+                vertical: 4.0,
+              ),
               child: Row(
                 children: [
                   SquareThumbnail.network(
@@ -7978,7 +7982,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     final withContextMenu = _SearchVideoContextMenu(
       onContextAction: (action) async {
         if (action == _SearchVideoContextAction.addToFavorites) {
-          await _addVideoToPlaylist(video, PlaylistService.favoritesPlaylistName);
+          await _addVideoToPlaylist(
+            video,
+            PlaylistService.favoritesPlaylistName,
+          );
           return;
         }
         if (action == _SearchVideoContextAction.addToPlaylist) {
@@ -8135,7 +8142,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       final album = await _resolveAlbumFromVideo(video);
       if (!mounted) return;
       if (album == null) {
-        showIosNotice(context, 'No se pudo identificar el álbum de esta canción.');
+        showIosNotice(
+          context,
+          'No se pudo identificar el álbum de esta canción.',
+        );
         return;
       }
       setState(() {
@@ -9913,85 +9923,89 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
             ? double.infinity
             : previewWidth;
         return ClipRRect(
-      borderRadius: BorderRadius.circular(14),
-      child: _AdaptiveBackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            color: Colors.white.withValues(alpha: 0.11),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.18),
-              width: 0.55,
-            ),
-          ),
-          child: CupertinoButton(
-            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-            onPressed: () => _playVideoPreferLocal(video),
-            child: SizedBox(
-              width: cardWidth,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 220),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          video.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 16,
-                                color: CupertinoColors.white,
-                              ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          cleanArtistName(video.author),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 13,
-                                color: CupertinoColors.systemGrey2,
-                              ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+          borderRadius: BorderRadius.circular(14),
+          child: _AdaptiveBackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                color: Colors.white.withValues(alpha: 0.11),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.18),
+                  width: 0.55,
+                ),
+              ),
+              child: CupertinoButton(
+                padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                onPressed: () => _playVideoPreferLocal(video),
+                child: SizedBox(
+                  width: cardWidth,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      if (isDownloaded) ...[
-                        const Icon(
-                          CupertinoIcons.arrow_down_circle_fill,
-                          size: 16,
-                          color: CupertinoColors.systemGreen,
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 220),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              video.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
+                                    fontSize: 16,
+                                    color: CupertinoColors.white,
+                                  ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              cleanArtistName(video.author),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: CupertinoTheme.of(context)
+                                  .textTheme
+                                  .textStyle
+                                  .copyWith(
+                                    fontSize: 13,
+                                    color: CupertinoColors.systemGrey2,
+                                  ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 8),
-                      ],
-                      CupertinoButton(
-                        padding: EdgeInsets.zero,
-                        minimumSize: const Size(30, 30),
-                        onPressed: contextMenuController.open,
-                        child: Icon(
-                          CupertinoIcons.ellipsis_circle,
-                          size: 22,
-                          color: CupertinoColors.systemGrey2,
-                        ),
+                      ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (isDownloaded) ...[
+                            const Icon(
+                              CupertinoIcons.arrow_down_circle_fill,
+                              size: 16,
+                              color: CupertinoColors.systemGreen,
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          CupertinoButton(
+                            padding: EdgeInsets.zero,
+                            minimumSize: const Size(30, 30),
+                            onPressed: contextMenuController.open,
+                            child: Icon(
+                              CupertinoIcons.ellipsis_circle,
+                              size: 22,
+                              color: CupertinoColors.systemGrey2,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
-        ),
-      ),
-    );
+        );
       },
     );
 

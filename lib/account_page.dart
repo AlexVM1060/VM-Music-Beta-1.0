@@ -15,6 +15,7 @@ import 'package:myapp/profile_edit_page.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
+import 'package:myapp/services/social_service.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:path/path.dart' as p;
@@ -122,6 +123,7 @@ class _AccountPageState extends State<AccountPage> {
               final target = File(p.join(docsDir.path, fileName));
               await File(file.path).copy(target.path);
               await profile.updatePhotoPath(target.path);
+              await _syncProfileToSupabase(profile);
             },
             child: const Text('Elegir de galeria'),
           ),
@@ -138,6 +140,7 @@ class _AccountPageState extends State<AccountPage> {
                     await file.delete();
                   }
                 }
+                await _syncProfileToSupabase(profile);
               },
               child: const Text('Quitar foto'),
             ),
@@ -148,6 +151,24 @@ class _AccountPageState extends State<AccountPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _syncProfileToSupabase(ProfileService profile) async {
+    try {
+      final social = context.read<SocialService>();
+      final player = context.read<VideoPlayerManager>();
+      final currentSong = (player.trackTitle ?? '').trim();
+      final currentArtist = (player.trackArtist ?? '').trim();
+      final isPlaying = currentSong.isNotEmpty && player.isPlaying;
+      await social.publishProfile(
+        profile: profile,
+        currentSong: currentSong,
+        currentArtist: currentArtist,
+        isPlaying: isPlaying,
+      );
+    } catch (_) {
+      // Mejor esfuerzo: no bloqueamos cambio de foto por red/supabase.
+    }
   }
 
   void _startInlineNoteEdit(ProfileService profile) {
@@ -196,11 +217,26 @@ class _AccountPageState extends State<AccountPage> {
   }
 
   Future<void> _saveInlineNote(ProfileService profile) async {
+    final social = context.read<SocialService>();
+    final player = context.read<VideoPlayerManager>();
     await profile.updateProfile(
       name: profile.name,
       username: profile.username,
       bio: _noteController.text,
     );
+    try {
+      final currentSong = (player.trackTitle ?? '').trim();
+      final currentArtist = (player.trackArtist ?? '').trim();
+      final isPlaying = currentSong.isNotEmpty && player.isPlaying;
+      await social.syncNowPlaying(
+        profile: profile,
+        currentSong: currentSong,
+        currentArtist: currentArtist,
+        isPlaying: isPlaying,
+      );
+    } catch (_) {
+      // Mejor esfuerzo: no bloqueamos guardar nota si falla red/supabase.
+    }
     if (!mounted) return;
     setState(() => _isEditingNoteInline = false);
   }

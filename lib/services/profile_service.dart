@@ -8,6 +8,7 @@ class ProfileService extends ChangeNotifier {
   static const String _bioKey = 'bio';
   static const String _photoPathKey = 'photo_path';
   static const String _followersKey = 'followers_count';
+  static const String _isPublicProfileKey = 'is_public_profile';
 
   Box<dynamic>? _box;
   bool _isReady = false;
@@ -17,6 +18,7 @@ class ProfileService extends ChangeNotifier {
   String _bio = 'Escribe una biografia para tu perfil.';
   String? _photoPath;
   int _followersCount = 0;
+  bool _isPublicProfile = false;
 
   bool get isReady => _isReady;
   String get name => _name;
@@ -24,6 +26,7 @@ class ProfileService extends ChangeNotifier {
   String get bio => _bio;
   String? get photoPath => _photoPath;
   int get followersCount => _followersCount;
+  bool get isPublicProfile => _isPublicProfile;
 
   Future<void> init() async {
     if (_isReady) return;
@@ -40,6 +43,7 @@ class ProfileService extends ChangeNotifier {
     final rawPhoto = (_box!.get(_photoPathKey) as String?)?.trim();
     _photoPath = (rawPhoto == null || rawPhoto.isEmpty) ? null : rawPhoto;
     _followersCount = (_box!.get(_followersKey) as int?) ?? 0;
+    _isPublicProfile = (_box!.get(_isPublicProfileKey) as bool?) ?? false;
     _isReady = true;
     notifyListeners();
   }
@@ -82,6 +86,14 @@ class ProfileService extends ChangeNotifier {
       _photoPath = clean;
       await box.put(_photoPathKey, clean);
     }
+    notifyListeners();
+  }
+
+  Future<void> setPublicProfileEnabled(bool enabled) async {
+    final box = _box;
+    if (box == null) return;
+    _isPublicProfile = enabled;
+    await box.put(_isPublicProfileKey, enabled);
     notifyListeners();
   }
 }

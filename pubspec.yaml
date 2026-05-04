@@ -1,7 +1,7 @@
 name: myapp
 description: "A Music project..."
 publish_to: 'none'
-version: 0.4.4+1
+version: 0.4.5+1
 
 environment:
   sdk: ^3.9.0
@@ -41,6 +41,7 @@ dependencies:
   package_info_plus: ^8.3.0
   url_launcher: ^6.3.1
   cupertino_context_menu_plus: ^1.0.3
+  supabase_flutter: ^2.10.4
 
 dev_dependencies:
   flutter_test:

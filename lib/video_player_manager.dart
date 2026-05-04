@@ -226,6 +226,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Completer<void>? _resetEnginesCompleter;
   bool _isSwitchingEngine = false;
   bool _isTogglingPlayPause = false;
+  bool? _lastUserRequestedPlaying;
+  DateTime? _lastUserRequestedPlayingAt;
   String? _currentStreamUrl;
   List<PlaybackQueueItem> _manualPlaybackQueue = const [];
   List<PlaybackQueueItem> _playbackQueue = const [];
@@ -615,6 +617,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Duration get position => _position;
   Duration get bufferedPosition => _bufferedPosition;
   bool get isPlaying => _isPlaying;
+  bool? get lastUserRequestedPlaying => _lastUserRequestedPlaying;
+  DateTime? get lastUserRequestedPlayingAt => _lastUserRequestedPlayingAt;
   bool get isBuffering => _isBuffering;
   bool get isLoading => _isLoading && !_isCrossfadeTransitioning;
   bool get isLocal => _isLocal;
@@ -6444,6 +6448,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (_usingHiddenVideo && _hiddenVideoController != null) {
         final controller = _hiddenVideoController!;
         final shouldPlay = !controller.value.isPlaying;
+        _lastUserRequestedPlaying = shouldPlay;
+        _lastUserRequestedPlayingAt = DateTime.now();
 
         // Feedback inmediato para que el botón cambie sin esperar al stream.
         _isPlaying = shouldPlay;
@@ -6469,6 +6475,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
 
       // Usamos el estado real del motor para evitar desincronizaciones del UI flag.
       final shouldPlay = !_player.playing;
+      _lastUserRequestedPlaying = shouldPlay;
+      _lastUserRequestedPlayingAt = DateTime.now();
       _isPlaying = shouldPlay;
       if (shouldPlay) {
         _isBuffering = true;
