@@ -62,7 +62,8 @@ class DownloadService with ChangeNotifier {
     '34.58.164.68',
     '34.173.78.255',
     '136.111.242.170',
-    '34.70.29.254'
+    '34.70.29.254',
+    '34.170.163.28',
   };
 
   final Map<String, double> _downloadProgress = {};

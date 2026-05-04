@@ -1,24 +1,35 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/models/playlist.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/ios_notice.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 class PlaylistsPage extends StatefulWidget {
   final ValueChanged<Playlist>? onOpenPlaylist;
+  final ValueChanged<Playlist>? onPinPlaylist;
+  final ValueChanged<Playlist>? onUnpinPlaylist;
+  final bool Function(Playlist playlist)? isPlaylistPinned;
   final VoidCallback? onBack;
   final bool useSafeArea;
 
   const PlaylistsPage({
     super.key,
     this.onOpenPlaylist,
+    this.onPinPlaylist,
+    this.onUnpinPlaylist,
+    this.isPlaylistPinned,
     this.onBack,
     this.useSafeArea = true,
   });
@@ -55,46 +66,24 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
     });
   }
 
-  void _createPlaylist() {
-    final controller = TextEditingController();
-    showCupertinoDialog(
-      context: context,
-      builder: (context) {
-        return CupertinoAlertDialog(
-          title: const Text('Nueva playlist'),
-          content: Padding(
-            padding: const EdgeInsets.only(top: 12),
-            child: CupertinoTextField(
-              controller: controller,
-              autofocus: true,
-              placeholder: 'Nombre de la playlist',
-              textCapitalization: TextCapitalization.words,
-              style: const TextStyle(fontFamily: '.SF Pro Text'),
-            ),
-          ),
-          actions: [
-            CupertinoDialogAction(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancelar'),
-            ),
-            CupertinoDialogAction(
-              isDefaultAction: true,
-              onPressed: () async {
-                if (controller.text.isEmpty) return;
-                await Provider.of<PlaylistService>(
-                  context,
-                  listen: false,
-                ).createPlaylist(controller.text);
-                if (!context.mounted) return;
-                Navigator.of(context).pop();
-                _loadPlaylists();
-              },
-              child: const Text('Crear'),
-            ),
-          ],
-        );
-      },
+  Future<void> _createPlaylist() async {
+    final payload = await Navigator.of(context).push<_NewPlaylistPayload>(
+      CupertinoPageRoute<_NewPlaylistPayload>(
+        builder: (_) => const _CreatePlaylistPage(),
+      ),
     );
+    if (!mounted || payload == null) return;
+    try {
+      await context.read<PlaylistService>().createPlaylist(
+        payload.name,
+        coverUrl: payload.coverUrl,
+        description: payload.description,
+      );
+      _loadPlaylists();
+    } catch (e) {
+      if (!mounted) return;
+      showIosNotice(context, e.toString().replaceFirst('Exception: ', ''));
+    }
   }
 
   @override
@@ -177,7 +166,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                         context,
                       ),
                       borderRadius: BorderRadius.circular(12),
-                      onPressed: _createPlaylist,
+                      onPressed: () {
+                        unawaited(_createPlaylist());
+                      },
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -295,7 +286,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                               );
                             }
 
-                            return Padding(
+                            final tile = Padding(
                               padding: const EdgeInsets.symmetric(vertical: 2),
                               child: ClipRRect(
                                 borderRadius: BorderRadius.circular(14),
@@ -314,6 +305,8 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                           .then((_) => _loadPlaylists());
                                     },
                                     child: Container(
+                                      width:
+                                          MediaQuery.sizeOf(context).width - 24,
                                       decoration: BoxDecoration(
                                         borderRadius: BorderRadius.circular(14),
                                         border: Border.all(
@@ -382,6 +375,35 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                                   ),
                                 ),
                               ),
+                            );
+
+                            if (!Platform.isIOS) return tile;
+                            final isPinned =
+                                widget.isPlaylistPinned?.call(playlist) ??
+                                false;
+                            return CupertinoContextMenu(
+                              enableHapticFeedback: true,
+                              actions: [
+                                CupertinoContextMenuAction(
+                                  trailingIcon: isPinned
+                                      ? CupertinoIcons.pin_slash_fill
+                                      : CupertinoIcons.pin_fill,
+                                  onPressed: () {
+                                    Navigator.of(context).pop();
+                                    if (isPinned) {
+                                      widget.onUnpinPlaylist?.call(playlist);
+                                    } else {
+                                      widget.onPinPlaylist?.call(playlist);
+                                    }
+                                  },
+                                  child: Text(
+                                    isPinned
+                                        ? 'Desanclar Playlist'
+                                        : 'Anclar Playlist',
+                                  ),
+                                ),
+                              ],
+                              child: tile,
                             );
                           },
                         ),
@@ -469,6 +491,257 @@ class _IosEdgeSwipeBackState extends State<_IosEdgeSwipeBack> {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _NewPlaylistPayload {
+  final String name;
+  final String? coverUrl;
+  final String? description;
+
+  const _NewPlaylistPayload({
+    required this.name,
+    this.coverUrl,
+    this.description,
+  });
+}
+
+class _CreatePlaylistPage extends StatefulWidget {
+  const _CreatePlaylistPage();
+
+  @override
+  State<_CreatePlaylistPage> createState() => _CreatePlaylistPageState();
+}
+
+class _CreatePlaylistPageState extends State<_CreatePlaylistPage> {
+  final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _descriptionController = TextEditingController();
+  String? _coverPath;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _descriptionController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickCover() async {
+    final picker = ImagePicker();
+    final file = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 90,
+      maxWidth: 1800,
+      maxHeight: 1800,
+    );
+    if (file == null || !mounted) return;
+    setState(() {
+      _coverPath = file.path;
+    });
+  }
+
+  Future<String?> _persistCoverIfNeeded(String? sourcePath) async {
+    final raw = sourcePath?.trim() ?? '';
+    if (raw.isEmpty || !raw.startsWith('/')) return null;
+    final source = File(raw);
+    if (!await source.exists()) return null;
+    final docs = await getApplicationDocumentsDirectory();
+    final dir = Directory('${docs.path}/playlist_covers');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    final ext = p.extension(raw).toLowerCase();
+    final safeExt = ext.isEmpty ? '.jpg' : ext;
+    final fileName = 'cover_${DateTime.now().millisecondsSinceEpoch}$safeExt';
+    final target = File('${dir.path}/$fileName');
+    await source.copy(target.path);
+    return target.path;
+  }
+
+  Future<void> _submit() async {
+    final name = _nameController.text.trim();
+    if (name.isEmpty) {
+      showIosNotice(context, 'Escribe un nombre para la playlist.');
+      return;
+    }
+    if (_saving) return;
+    setState(() {
+      _saving = true;
+    });
+    try {
+      final persistedCover = await _persistCoverIfNeeded(_coverPath);
+      if (!mounted) return;
+      Navigator.of(context).pop(
+        _NewPlaylistPayload(
+          name: name,
+          coverUrl: persistedCover,
+          description: _descriptionController.text.trim(),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final accent = CupertinoColors.systemPink.resolveFrom(context);
+
+    return Scaffold(
+      backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
+        context,
+      ),
+      appBar: CupertinoNavigationBar(
+        transitionBetweenRoutes: false,
+        backgroundColor: CupertinoColors.systemGroupedBackground.resolveFrom(
+          context,
+        ),
+        middle: const Text('Nueva playlist'),
+        leading: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: () => Navigator.of(context).maybePop(),
+          child: const Text(
+            'Cancelar',
+            style: TextStyle(color: CupertinoColors.systemRed),
+          ),
+        ),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: _saving ? null : _submit,
+          child: _saving
+              ? const CupertinoActivityIndicator(radius: 10)
+              : const Text(
+                  'Crear',
+                  style: TextStyle(color: CupertinoColors.activeBlue),
+                ),
+        ),
+      ),
+      body: SafeArea(
+        top: false,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 28),
+          children: [
+            const SizedBox(height: 4),
+            Center(
+              child: Container(
+                width: 188,
+                height: 188,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(
+                        alpha: isDark ? 0.42 : 0.18,
+                      ),
+                      blurRadius: 26,
+                      offset: const Offset(0, 12),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: _coverPath == null
+                      ? Container(
+                          color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                            context,
+                          ),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            CupertinoIcons.music_note_list,
+                            size: 52,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        )
+                      : Image.file(File(_coverPath!), fit: BoxFit.cover),
+                ),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Center(
+              child: CupertinoButton(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                borderRadius: BorderRadius.circular(20),
+                color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                onPressed: _pickCover,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(CupertinoIcons.photo, size: 16, color: accent),
+                    const SizedBox(width: 8),
+                    Text(
+                      _coverPath == null
+                          ? 'Agregar portada'
+                          : 'Cambiar portada',
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontWeight: FontWeight.w600,
+                        color: accent,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            CupertinoTextField(
+              controller: _nameController,
+              autofocus: true,
+              placeholder: 'Nombre de la playlist',
+              textCapitalization: TextCapitalization.words,
+              style: const TextStyle(
+                fontFamily: '.SF Pro Text',
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+              ),
+              placeholderStyle: TextStyle(
+                fontFamily: '.SF Pro Text',
+                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              prefix: Padding(
+                padding: const EdgeInsets.only(left: 10),
+                child: Icon(
+                  CupertinoIcons.music_note_list,
+                  size: 18,
+                  color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                ),
+              ),
+              decoration: BoxDecoration(
+                color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+            const SizedBox(height: 10),
+            CupertinoTextField(
+              controller: _descriptionController,
+              placeholder: 'Agregar descripción (opcional)',
+              maxLines: 4,
+              minLines: 4,
+              style: const TextStyle(fontFamily: '.SF Pro Text'),
+              placeholderStyle: TextStyle(
+                fontFamily: '.SF Pro Text',
+                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+              decoration: BoxDecoration(
+                color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

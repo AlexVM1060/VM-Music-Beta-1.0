@@ -29,13 +29,15 @@ class YtResolverService {
 
   static const String _baseUrl = String.fromEnvironment(
     'YT_RESOLVER_BASE_URL',
-    defaultValue: 'http://34.170.69.96:10000',
+    defaultValue: 'http://34.58.164.68:10000',
   );
   static const List<String> _fallbackBaseUrls = <String>[
-    'http://34.58.164.68:10000',
+    'http://34.83.255.210:10000',
+    'http://34.39.147.69:10000',
     'http://34.173.78.255:10000',
     'http://136.111.242.170:10000',
-    'http://34.70.29.254:10000'
+    'http://34.70.29.254:10000',
+    'http://34.29.48.106:10000',
   ];
   static const String _apiKey = String.fromEnvironment(
     'YT_RESOLVER_API_KEY',
@@ -331,7 +333,7 @@ class YtResolverService {
     return uri.toString();
   }
 
-  List<String> _orderedCandidateBases({int? preferredBackendIndex}) {
+  List<String> _configuredUniqueBases() {
     final unique = <String>[];
     final seen = <String>{};
     for (final raw in <String>[_baseUrl.trim(), ..._fallbackBaseUrls]) {
@@ -340,6 +342,13 @@ class YtResolverService {
       if (!seen.add(normalized)) continue;
       unique.add(normalized);
     }
+    return unique;
+  }
+
+  int get backendCount => _configuredUniqueBases().length;
+
+  List<String> _orderedCandidateBases({int? preferredBackendIndex}) {
+    final unique = _configuredUniqueBases();
     if (unique.isEmpty) return const <String>[];
 
     final now = DateTime.now();

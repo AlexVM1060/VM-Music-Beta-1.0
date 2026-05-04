@@ -21,7 +21,17 @@ class PlaylistService {
     return name;
   }
 
-  Future<void> createPlaylist(String name) async {
+  String? _favoritesCoverFromVideos(List<VideoHistory> videos) {
+    if (videos.isEmpty) return null;
+    final thumb = videos.first.thumbnailUrl.trim();
+    return thumb.isEmpty ? null : thumb;
+  }
+
+  Future<void> createPlaylist(
+    String name, {
+    String? coverUrl,
+    String? description,
+  }) async {
     final box = await _box;
     final normalizedName = _normalizePlaylistName(name.trim());
     if (normalizedName.isEmpty) {
@@ -32,7 +42,16 @@ class PlaylistService {
     )) {
       throw Exception('Ya existe una playlist con este nombre');
     }
-    await box.add(Playlist(name: normalizedName, videos: []));
+    final cleanCover = (coverUrl ?? '').trim();
+    final cleanDescription = (description ?? '').trim();
+    await box.add(
+      Playlist(
+        name: normalizedName,
+        videos: [],
+        coverUrl: cleanCover.isEmpty ? null : cleanCover,
+        description: cleanDescription.isEmpty ? null : cleanDescription,
+      ),
+    );
   }
 
   Future<void> addVideoToPlaylist(
@@ -68,9 +87,16 @@ class PlaylistService {
 
     if (playlist != null && playlistKey != null) {
       if (!playlist.videos.any((v) => v.videoId == video.videoId)) {
-        playlist.videos.add(video);
-        // Vuelve a guardar la playlist actualizada en su clave
-        await box.put(playlistKey, playlist);
+        final updatedVideos = List<VideoHistory>.from(playlist.videos)..add(video);
+        final updated = Playlist(
+          name: playlist.name,
+          videos: updatedVideos,
+          coverUrl: isFavoritesPlaylistName(playlist.name)
+              ? _favoritesCoverFromVideos(updatedVideos)
+              : playlist.coverUrl,
+          description: playlist.description,
+        );
+        await box.put(playlistKey, updated);
       }
     }
   }
@@ -106,16 +132,25 @@ class PlaylistService {
 
     if (playlist == null || playlistKey == null) return 0;
 
-    final existingIds = playlist.videos.map((v) => v.videoId).toSet();
+    final updatedVideos = List<VideoHistory>.from(playlist.videos);
+    final existingIds = updatedVideos.map((v) => v.videoId).toSet();
     var added = 0;
     for (final video in videos) {
       if (existingIds.add(video.videoId)) {
-        playlist.videos.add(video);
+        updatedVideos.add(video);
         added++;
       }
     }
     if (added > 0) {
-      await box.put(playlistKey, playlist);
+      final updated = Playlist(
+        name: playlist.name,
+        videos: updatedVideos,
+        coverUrl: isFavoritesPlaylistName(playlist.name)
+            ? _favoritesCoverFromVideos(updatedVideos)
+            : playlist.coverUrl,
+        description: playlist.description,
+      );
+      await box.put(playlistKey, updated);
     }
     return added;
   }
@@ -126,9 +161,27 @@ class PlaylistService {
   ) async {
     final box = await _box;
     final normalizedName = _normalizePlaylistName(playlistName);
-    final playlist = box.values.firstWhere((p) => p.name == normalizedName);
-    playlist.videos.removeWhere((v) => v.videoId == videoId);
-    await playlist.save();
+    dynamic playlistKey;
+    Playlist? playlist;
+    for (final entry in box.toMap().entries) {
+      if (entry.value.name == normalizedName) {
+        playlistKey = entry.key;
+        playlist = entry.value;
+        break;
+      }
+    }
+    if (playlist == null || playlistKey == null) return;
+    final updatedVideos = List<VideoHistory>.from(playlist.videos)
+      ..removeWhere((v) => v.videoId == videoId);
+    final updated = Playlist(
+      name: playlist.name,
+      videos: updatedVideos,
+      coverUrl: isFavoritesPlaylistName(playlist.name)
+          ? _favoritesCoverFromVideos(updatedVideos)
+          : playlist.coverUrl,
+      description: playlist.description,
+    );
+    await box.put(playlistKey, updated);
   }
 
   Future<void> deletePlaylist(String playlistName) async {
@@ -155,6 +208,7 @@ class PlaylistService {
     required String currentName,
     required String newName,
     String? coverUrl,
+    String? description,
   }) async {
     final box = await _box;
     final normalizedCurrent = _normalizePlaylistName(currentName.trim());
@@ -197,10 +251,13 @@ class PlaylistService {
     }
 
     final cleanCover = (coverUrl ?? '').trim();
+    final cleanDescription = (description ?? currentPlaylist.description ?? '')
+        .trim();
     final updated = Playlist(
       name: normalizedNew,
       videos: List<VideoHistory>.from(currentPlaylist.videos),
       coverUrl: cleanCover.isEmpty ? null : cleanCover,
+      description: cleanDescription.isEmpty ? null : cleanDescription,
     );
     await box.put(targetKey, updated);
     return updated;

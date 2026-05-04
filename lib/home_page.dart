@@ -19,11 +19,13 @@ import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/services/profile_service.dart';
 import 'package:myapp/services/thumbnail_cache_service.dart';
 import 'package:myapp/search_page.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/ios_notice.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
@@ -48,7 +50,8 @@ class _HomePageState extends State<HomePage> {
   late Future<_HomeContent> _contentFuture;
   late Future<List<_HomeTrack>> _trendingFuture;
   final Map<String, _HomeResolvedAlbumRef> _albumRefByVideoIdCache = {};
-  final Map<String, Future<_HomeResolvedAlbumRef?>> _albumRefByVideoIdInFlight = {};
+  final Map<String, Future<_HomeResolvedAlbumRef?>> _albumRefByVideoIdInFlight =
+      {};
 
   @override
   void initState() {
@@ -71,7 +74,9 @@ class _HomePageState extends State<HomePage> {
       final urls = <String>[
         ...content.suggestions.map((item) => item.thumbnailUrl),
         ...content.relisten.map((item) => item.thumbnailUrl),
-        ...content.mixes.expand((mix) => mix.tracks.map((item) => item.thumbnailUrl)),
+        ...content.mixes.expand(
+          (mix) => mix.tracks.map((item) => item.thumbnailUrl),
+        ),
         ...content.curatedShelves.expand(
           (shelf) => shelf.tracks.map((item) => item.thumbnailUrl),
         ),
@@ -120,7 +125,9 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<List<_HomeShelf>> _loadCuratedShelves(List<VideoHistory> history) async {
+  Future<List<_HomeShelf>> _loadCuratedShelves(
+    List<VideoHistory> history,
+  ) async {
     final cached = await _readCuratedShelvesCache();
     if (cached.isNotEmpty) return cached;
 
@@ -238,7 +245,8 @@ class _HomePageState extends State<HomePage> {
     if (_isBlockedSearchAuthor(video.author.toLowerCase())) return false;
     final text = '$title $description';
     final isVideoLike = _searchVideoLikeKeywords.any(text.contains);
-    final isTopicAuthor = author.endsWith('- topic') || author.endsWith('topic');
+    final isTopicAuthor =
+        author.endsWith('- topic') || author.endsWith('topic');
     return !isVideoLike && isTopicAuthor;
   }
 
@@ -275,12 +283,16 @@ class _HomePageState extends State<HomePage> {
                   (trackRaw) => _HomeTrack(
                     videoId: (trackRaw['videoId'] ?? '').toString(),
                     title: (trackRaw['title'] ?? '').toString(),
-                    artist: cleanArtistName((trackRaw['artist'] ?? '').toString()),
+                    artist: cleanArtistName(
+                      (trackRaw['artist'] ?? '').toString(),
+                    ),
                     thumbnailUrl: (trackRaw['thumbnailUrl'] ?? '').toString(),
                     isLocal: false,
                   ),
                 )
-                .where((track) => track.videoId.isNotEmpty && track.title.isNotEmpty)
+                .where(
+                  (track) => track.videoId.isNotEmpty && track.title.isNotEmpty,
+                )
                 .toList(growable: false);
             if (tracks.isEmpty) return null;
             return _HomeShelf(
@@ -849,7 +861,10 @@ class _HomePageState extends State<HomePage> {
     await _saveTrackToPlaylist(track, selectedName);
   }
 
-  Future<void> _saveTrackToPlaylist(_HomeTrack track, String playlistName) async {
+  Future<void> _saveTrackToPlaylist(
+    _HomeTrack track,
+    String playlistName,
+  ) async {
     final downloadService = context.read<DownloadService>();
     final videoManager = context.read<VideoPlayerManager>();
     final entry = VideoHistory(
@@ -882,164 +897,35 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<void> _showTrackOptionsMenu(_HomeTrack track) async {
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) {
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(26),
-              child: _AdaptiveBackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: CupertinoColors.systemGrey6
-                        .resolveFrom(sheetContext)
-                        .withValues(alpha: 0.82),
-                    borderRadius: BorderRadius.circular(26),
-                    border: Border.all(
-                      color: CupertinoColors.white.withValues(alpha: 0.24),
-                      width: 0.7,
-                    ),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(height: 8),
-                      Container(
-                        width: 42,
-                        height: 4,
-                        decoration: BoxDecoration(
-                          color: CupertinoColors.systemGrey3
-                              .resolveFrom(sheetContext)
-                              .withValues(alpha: 0.75),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Text(
-                                track.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: CupertinoTheme.of(sheetContext)
-                                    .textTheme
-                                    .navTitleTextStyle
-                                    .copyWith(fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            CupertinoButton(
-                              padding: EdgeInsets.zero,
-                              minimumSize: const Size(34, 34),
-                              onPressed: () => Navigator.of(sheetContext).pop(),
-                              child: Icon(
-                                CupertinoIcons.xmark_circle_fill,
-                                size: 24,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(sheetContext),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(10, 0, 10, 14),
-                        child: Column(
-                          children: [
-                            _GlassSheetActionRow(
-                              icon: CupertinoIcons.text_insert,
-                              label: 'Añadir como siguiente',
-                              onTap: () => Navigator.of(sheetContext).pop('next'),
-                            ),
-                            const SizedBox(height: 8),
-                            _GlassSheetActionRow(
-                              icon: CupertinoIcons.text_append,
-                              label: 'Añadir al final',
-                              onTap: () => Navigator.of(sheetContext).pop('end'),
-                            ),
-                            const SizedBox(height: 8),
-                            _GlassSheetActionRow(
-                              icon: CupertinoIcons.star_fill,
-                              label: 'Añadir a Favoritos',
-                              onTap: () =>
-                                  Navigator.of(sheetContext).pop('favorites'),
-                            ),
-                            const SizedBox(height: 8),
-                            _GlassSheetActionRow(
-                              icon: CupertinoIcons.music_note_list,
-                              label: 'Añadir a playlist',
-                              onTap: () =>
-                                  Navigator.of(sheetContext).pop('playlist'),
-                            ),
-                            const SizedBox(height: 8),
-                            _GlassSheetActionRow(
-                              icon: CupertinoIcons.square_arrow_up,
-                              label: 'Compartir',
-                              onTap: () =>
-                                  Navigator.of(sheetContext).pop('share'),
-                            ),
-                            const SizedBox(height: 8),
-                            _GlassSheetActionRow(
-                              icon: CupertinoIcons.person_crop_circle,
-                              label: 'Ir al artista',
-                              onTap: () =>
-                                  Navigator.of(sheetContext).pop('artist'),
-                            ),
-                            const SizedBox(height: 8),
-                            _GlassSheetActionRow(
-                              icon: CupertinoIcons.rectangle_stack_fill,
-                              label: 'Ir al álbum',
-                              onTap: () =>
-                                  Navigator.of(sheetContext).pop('album'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-
-    if (!mounted || action == null) return;
-    if (action == 'next') {
+  Future<void> _runTrackContextAction(
+    _HomeTrack track,
+    _TrackContextAction action,
+  ) async {
+    if (action == _TrackContextAction.addNext) {
       await _addTrackToQueue(track, insertMode: ManualQueueInsertMode.next);
       return;
     }
-    if (action == 'end') {
+    if (action == _TrackContextAction.addToEnd) {
       await _addTrackToQueue(track, insertMode: ManualQueueInsertMode.end);
       return;
     }
-    if (action == 'favorites') {
+    if (action == _TrackContextAction.addToFavorites) {
       await _saveTrackToPlaylist(track, PlaylistService.favoritesPlaylistName);
       return;
     }
-    if (action == 'playlist') {
+    if (action == _TrackContextAction.addToPlaylist) {
       await _addTrackToPlaylist(track);
       return;
     }
-    if (action == 'share') {
+    if (action == _TrackContextAction.share) {
       await _shareTrackDeepLink(track);
       return;
     }
-    if (action == 'artist') {
+    if (action == _TrackContextAction.openArtist) {
       await _openArtistFromTrack(track);
       return;
     }
-    if (action == 'album') {
+    if (action == _TrackContextAction.openAlbum) {
       await _openAlbumFromTrack(track);
     }
   }
@@ -1088,11 +974,7 @@ class _HomePageState extends State<HomePage> {
       context.read<AppTabState?>()?.setIndex(1);
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No se pudo abrir el perfil del artista.'),
-        ),
-      );
+      showIosNotice(context, 'No se pudo abrir el perfil del artista.');
     }
   }
 
@@ -1101,11 +983,7 @@ class _HomePageState extends State<HomePage> {
       final resolved = await _resolveAlbumFromSearchFallback(track);
       if (!mounted) return;
       if (resolved == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No se pudo identificar el álbum de esta canción.'),
-          ),
-        );
+        showIosNotice(context, 'No se pudo identificar el álbum de esta canción.');
         return;
       }
       await Navigator.of(context).push(
@@ -1122,9 +1000,7 @@ class _HomePageState extends State<HomePage> {
       );
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir el álbum.')),
-      );
+      showIosNotice(context, 'No se pudo abrir el álbum.');
     }
   }
 
@@ -1400,6 +1276,9 @@ class _HomePageState extends State<HomePage> {
                 physics: const AlwaysScrollableScrollPhysics(),
                 slivers: [
                   const SliverToBoxAdapter(child: SizedBox(height: 12)),
+                  const SliverToBoxAdapter(
+                    child: _HomeProfileNowPlayingHeader(),
+                  ),
                   _SectionHeaderSliver(
                     title: 'Sugerencias para ti',
                     subtitle: 'Mezcla de tu historial y descargas',
@@ -1422,7 +1301,7 @@ class _HomePageState extends State<HomePage> {
                       ),
                     ),
                   ),
-                if (content.mixes.isNotEmpty) ...[
+                  if (content.mixes.isNotEmpty) ...[
                     const SliverToBoxAdapter(child: SizedBox(height: 6)),
                     _SectionHeaderSliver(
                       title: 'Mixes para ti',
@@ -1445,14 +1324,15 @@ class _HomePageState extends State<HomePage> {
                             );
                           },
                         ),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
                   if (content.curatedShelves.isNotEmpty) ...[
                     const SliverToBoxAdapter(child: SizedBox(height: 6)),
                     _SectionHeaderSliver(
-                      title: 'Explorar en YouTube Music',
-                      subtitle: 'Quick picks, throwbacks y playlists en tendencia',
+                      title: 'Explorar en VM Music',
+                      subtitle:
+                          'Quick picks, throwbacks y playlists en tendencia',
                     ),
                     for (final shelf in content.curatedShelves) ...[
                       _SectionHeaderSliver(
@@ -1470,7 +1350,8 @@ class _HomePageState extends State<HomePage> {
                                 shelf.tracks,
                                 itemsPerColumn: 4,
                               ).length,
-                              separatorBuilder: (_, _) => const SizedBox(width: 12),
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(width: 12),
                               itemBuilder: (context, index) {
                                 final columnItems = _buildTrackColumns(
                                   shelf.tracks,
@@ -1479,15 +1360,16 @@ class _HomePageState extends State<HomePage> {
                                 return _StackedTrackColumn(
                                   items: columnItems,
                                   onTap: _playTrack,
-                                  onSwipeToQueueNext: (item) => _addTrackToQueue(
-                                    item,
-                                    insertMode: ManualQueueInsertMode.next,
-                                  ),
+                                  onSwipeToQueueNext: (item) =>
+                                      _addTrackToQueue(
+                                        item,
+                                        insertMode: ManualQueueInsertMode.next,
+                                      ),
                                   onSwipeToQueueEnd: (item) => _addTrackToQueue(
                                     item,
                                     insertMode: ManualQueueInsertMode.end,
                                   ),
-                                  onShowTrackMenu: _showTrackOptionsMenu,
+                                  onContextAction: _runTrackContextAction,
                                   allowSwipeToQueue: false,
                                   thinCards: _isThinStackShelf(shelf),
                                 );
@@ -1503,7 +1385,8 @@ class _HomePageState extends State<HomePage> {
                               padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
                               scrollDirection: Axis.horizontal,
                               itemCount: shelf.tracks.length,
-                              separatorBuilder: (_, _) => const SizedBox(width: 12),
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(width: 12),
                               itemBuilder: (context, index) {
                                 final item = shelf.tracks[index];
                                 return _HomeFeatureCard(
@@ -1542,7 +1425,7 @@ class _HomePageState extends State<HomePage> {
                               item,
                               insertMode: ManualQueueInsertMode.end,
                             ),
-                            onShowTrackMenu: _showTrackOptionsMenu,
+                            onContextAction: _runTrackContextAction,
                             allowSwipeToQueue: false,
                             thinCards: true,
                           );
@@ -1590,18 +1473,27 @@ class _HomePageState extends State<HomePage> {
                           itemCount: trending.length,
                           itemBuilder: (context, index) {
                             final item = trending[index];
-                            return _TrendingRowCard(
-                              item: item,
-                              onTap: () => _playTrack(item),
-                              onSwipeToQueueNext: () => _addTrackToQueue(
-                                item,
-                                insertMode: ManualQueueInsertMode.next,
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: SizedBox(
+                                height: 76,
+                                child: _CompactReplayCard(
+                                  item: item,
+                                  onTap: () => _playTrack(item),
+                                  onSwipeToQueueNext: () => _addTrackToQueue(
+                                    item,
+                                    insertMode: ManualQueueInsertMode.next,
+                                  ),
+                                  onSwipeToQueueEnd: () => _addTrackToQueue(
+                                    item,
+                                    insertMode: ManualQueueInsertMode.end,
+                                  ),
+                                  onContextAction: (action) =>
+                                      _runTrackContextAction(item, action),
+                                  allowSwipeToQueue: true,
+                                  thin: true,
+                                ),
                               ),
-                              onSwipeToQueueEnd: () => _addTrackToQueue(
-                                item,
-                                insertMode: ManualQueueInsertMode.end,
-                              ),
-                              onShowTrackMenu: () => _showTrackOptionsMenu(item),
                             );
                           },
                         ),
@@ -1615,6 +1507,748 @@ class _HomePageState extends State<HomePage> {
           },
         ),
       ),
+    );
+  }
+}
+
+class _HomeProfileNowPlayingHeader extends StatelessWidget {
+  const _HomeProfileNowPlayingHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final profile = context.watch<ProfileService>();
+    final currentTrackTitle = context.select<VideoPlayerManager, String?>(
+      (manager) => manager.trackTitle,
+    );
+    final currentTrackArtist = context.select<VideoPlayerManager, String?>(
+      (manager) => manager.trackArtist,
+    );
+    final isPlaying = context.select<VideoPlayerManager, bool>(
+      (manager) => manager.isPlaying,
+    );
+    final hasTrack = (currentTrackTitle ?? '').trim().isNotEmpty;
+    final titleText = hasTrack
+        ? currentTrackTitle!.trim()
+        : 'No estás reproduciendo nada ahora.';
+    final artistText = (currentTrackArtist ?? '').trim();
+    final bioText = profile.bio.trim().isEmpty ? 'Escribe algo...' : profile.bio.trim();
+    final photoPath = (profile.photoPath ?? '').trim();
+    final hasLocalPhoto = photoPath.isNotEmpty && File(photoPath).existsSync();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 130,
+              child: _HomeAnimatedNowPlayingNote(
+                titleText: titleText,
+                artistText: artistText,
+                hasTrack: hasTrack,
+                isPlaying: isPlaying,
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(left: 22, top: 2),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _HomeThoughtDot(size: 8),
+                  SizedBox(width: 3),
+                  _HomeThoughtDot(size: 6),
+                  SizedBox(width: 3),
+                  _HomeThoughtDot(size: 4),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 98,
+                      height: 98,
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Positioned(
+                            left: 0,
+                            top: 0,
+                            child: CircleAvatar(
+                              radius: 45,
+                              backgroundColor: CupertinoColors.tertiarySystemFill
+                                  .resolveFrom(context),
+                              backgroundImage: hasLocalPhoto
+                                  ? FileImage(File(photoPath))
+                                  : null,
+                              child: hasLocalPhoto
+                                  ? null
+                                  : const Icon(
+                                      CupertinoIcons.person_crop_circle_fill,
+                                      size: 34,
+                                    ),
+                            ),
+                          ),
+                          Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: Container(
+                              constraints: const BoxConstraints(maxWidth: 68),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 7,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: CupertinoColors
+                                    .secondarySystemGroupedBackground
+                                    .resolveFrom(context),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: CupertinoColors.separator
+                                      .resolveFrom(context)
+                                      .withValues(alpha: 0.22),
+                                  width: 0.6,
+                                ),
+                              ),
+                              child: _HomeReverseMarqueeText(
+                                text: bioText,
+                                style: TextStyle(
+                                  fontFamily: '.SF Pro Text',
+                                  fontSize: 10,
+                                  color: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      width: 90,
+                      child: Text(
+                        'Tú',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontFamily: '.SF Pro Text',
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: CupertinoColors.secondaryLabel.resolveFrom(
+                            context,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(width: 26),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      minimumSize: Size.zero,
+                      onPressed: () {
+                        _showQueueIosToast(
+                          context,
+                          message: 'Disponible muy pronto.',
+                          icon: CupertinoIcons.clock,
+                        );
+                      },
+                      child: Container(
+                        width: 90,
+                        height: 90,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                            context,
+                          ),
+                        ),
+                        child: Icon(
+                          CupertinoIcons.add,
+                          size: 26,
+                          color: CupertinoColors.label.resolveFrom(context),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    SizedBox(
+                      width: 90,
+                      child: Text(
+                        'Añadir Amigos',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontFamily: '.SF Pro Text',
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: CupertinoColors.secondaryLabel.resolveFrom(
+                            context,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeMiniSpectrum extends StatefulWidget {
+  final bool active;
+
+  const _HomeMiniSpectrum({required this.active});
+
+  @override
+  State<_HomeMiniSpectrum> createState() => _HomeMiniSpectrumState();
+}
+
+class _HomeMiniSpectrumState extends State<_HomeMiniSpectrum>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final barColor = CupertinoColors.systemPink.resolveFrom(context);
+    final idleColor = CupertinoColors.secondaryLabel.resolveFrom(context);
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final t = _controller.value * 2 * math.pi;
+        final bars = <double>[
+          4 + (math.sin(t + 0.1) + 1) * 6,
+          4 + (math.sin(t + 1.1) + 1) * 6,
+          4 + (math.sin(t + 2.0) + 1) * 6,
+          4 + (math.sin(t + 2.8) + 1) * 6,
+        ];
+        return SizedBox(
+          width: 14,
+          height: 14,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: List.generate(4, (index) {
+              final h = widget.active ? (bars[index] * 0.55) : 3.0;
+              return AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                curve: Curves.easeOutCubic,
+                width: 2,
+                height: h,
+                decoration: BoxDecoration(
+                  color: widget.active ? barColor : idleColor,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              );
+            }),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _HomeThoughtDot extends StatelessWidget {
+  final double size;
+
+  const _HomeThoughtDot({required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
+          context,
+        ),
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.2),
+          width: 0.5,
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeMarqueeText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+
+  const _HomeMarqueeText({required this.text, required this.style});
+
+  @override
+  State<_HomeMarqueeText> createState() => _HomeMarqueeTextState();
+}
+
+class _HomeMarqueeTextState extends State<_HomeMarqueeText>
+    with TickerProviderStateMixin {
+  AnimationController? _scrollController;
+  AnimationController? _fadeController;
+  double _overflow = 0;
+  String _lastText = '';
+  Duration _scrollDuration = const Duration(milliseconds: 4200);
+  double _travel = 0;
+  int _cycleEpoch = 0;
+  bool _cycleRunning = false;
+
+  @override
+  void dispose() {
+    _cycleEpoch++;
+    _scrollController?.dispose();
+    _fadeController?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HomeMarqueeText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text) {
+      _lastText = '';
+      _restartCycle();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth;
+        final painter = TextPainter(
+          text: TextSpan(text: widget.text, style: widget.style),
+          maxLines: 1,
+          textDirection: Directionality.of(context),
+        )..layout(minWidth: 0, maxWidth: double.infinity);
+
+        final textWidth = painter.width;
+        final textHeight = painter.height;
+        _overflow = (textWidth - maxWidth).clamp(0.0, double.infinity);
+        if (_overflow <= 1) {
+          _cycleEpoch++;
+          _cycleRunning = false;
+          _scrollController?.stop();
+          _fadeController?.stop();
+          _scrollController?.value = 0;
+          _fadeController?.value = 1;
+          return Text(
+            widget.text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: widget.style,
+          );
+        }
+
+        _ensureControllers();
+        final ms = ((_overflow / 26) * 1000).clamp(2200, 9000).round();
+        final duration = Duration(milliseconds: ms);
+        _travel = _overflow + 36.0;
+        if (_scrollDuration != duration) {
+          _scrollDuration = duration;
+          _restartCycle();
+        }
+        if (_lastText != widget.text) {
+          _lastText = widget.text;
+          _restartCycle();
+        }
+
+        _startCycleIfNeeded();
+        const gap = 36.0;
+        return ClipRect(
+          child: AnimatedBuilder(
+            animation: Listenable.merge([_scrollController!, _fadeController!]),
+            builder: (context, _) {
+              final eased = Curves.easeInOutCubic.transform(
+                _scrollController!.value,
+              );
+              return Transform.translate(
+                offset: Offset(-_travel * eased, 0),
+                child: SizedBox(
+                  height: textHeight,
+                  child: Opacity(
+                    opacity: _fadeController!.value,
+                    child: OverflowBox(
+                      minHeight: textHeight,
+                      maxHeight: textHeight,
+                      maxWidth: double.infinity,
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: textWidth,
+                            child: Text(
+                              widget.text,
+                              maxLines: 1,
+                              softWrap: false,
+                              style: widget.style,
+                              textAlign: TextAlign.left,
+                            ),
+                          ),
+                          const SizedBox(width: gap),
+                          SizedBox(
+                            width: textWidth,
+                            child: Text(
+                              widget.text,
+                              maxLines: 1,
+                              softWrap: false,
+                              style: widget.style,
+                              textAlign: TextAlign.left,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  void _ensureControllers() {
+    _scrollController ??= AnimationController(
+      vsync: this,
+      duration: _scrollDuration,
+      value: 0,
+    );
+    _fadeController ??= AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+      value: 1,
+    );
+  }
+
+  void _restartCycle() {
+    _cycleEpoch++;
+    _cycleRunning = false;
+    _scrollController?.stop();
+    _fadeController?.stop();
+    _scrollController?.value = 0;
+    _fadeController?.value = 1;
+  }
+
+  void _startCycleIfNeeded() {
+    if (_cycleRunning) return;
+    _cycleRunning = true;
+    final token = _cycleEpoch;
+    unawaited(_runCycle(token));
+  }
+
+  Future<void> _runCycle(int token) async {
+    while (mounted && token == _cycleEpoch && _overflow > 1) {
+      await Future<void>.delayed(const Duration(seconds: 15));
+      if (!mounted || token != _cycleEpoch || _overflow <= 1) return;
+
+      try {
+        await _scrollController!.animateTo(
+          1,
+          duration: _scrollDuration,
+          curve: Curves.easeInOutCubic,
+        );
+      } catch (_) {
+        return;
+      }
+      if (!mounted || token != _cycleEpoch) return;
+
+      try {
+        await _fadeController!.animateTo(
+          0,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+        );
+      } catch (_) {
+        return;
+      }
+      if (!mounted || token != _cycleEpoch) return;
+
+      _scrollController!.value = 0;
+
+      try {
+        await _fadeController!.animateTo(
+          1,
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeInCubic,
+        );
+      } catch (_) {
+        return;
+      }
+    }
+    if (token == _cycleEpoch) {
+      _cycleRunning = false;
+    }
+  }
+}
+
+class _HomeReverseMarqueeText extends StatefulWidget {
+  final String text;
+  final TextStyle style;
+
+  const _HomeReverseMarqueeText({required this.text, required this.style});
+
+  @override
+  State<_HomeReverseMarqueeText> createState() => _HomeReverseMarqueeTextState();
+}
+
+class _HomeReverseMarqueeTextState extends State<_HomeReverseMarqueeText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  double _overflow = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _syncAnimation(double maxWidth) {
+    final painter = TextPainter(
+      text: TextSpan(text: widget.text, style: widget.style),
+      maxLines: 1,
+      textDirection: TextDirection.ltr,
+    )..layout(minWidth: 0, maxWidth: double.infinity);
+    final nextOverflow = math.max(0.0, painter.width - maxWidth).toDouble();
+    if ((nextOverflow - _overflow).abs() < 0.5) return;
+    _overflow = nextOverflow;
+    if (_overflow <= 0.5) {
+      _controller.stop();
+      return;
+    }
+    final ms = (2200 + (_overflow * 28)).round().clamp(2200, 7000);
+    _controller.duration = Duration(milliseconds: ms);
+    _controller.repeat(reverse: true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        _syncAnimation(constraints.maxWidth);
+        if (_overflow <= 0.5) {
+          return Text(
+            widget.text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: widget.style,
+          );
+        }
+        return ClipRect(
+          child: AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) {
+              final x =
+                  -_overflow * Curves.easeInOut.transform(_controller.value);
+              return Transform.translate(
+                offset: Offset(x, 0),
+                child: Text(
+                  widget.text,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.visible,
+                  style: widget.style,
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _HomeAnimatedNowPlayingNote extends StatefulWidget {
+  final String titleText;
+  final String artistText;
+  final bool hasTrack;
+  final bool isPlaying;
+
+  const _HomeAnimatedNowPlayingNote({
+    required this.titleText,
+    required this.artistText,
+    required this.hasTrack,
+    required this.isPlaying,
+  });
+
+  @override
+  State<_HomeAnimatedNowPlayingNote> createState() =>
+      _HomeAnimatedNowPlayingNoteState();
+}
+
+class _HomeAnimatedNowPlayingNoteState
+    extends State<_HomeAnimatedNowPlayingNote>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _xAnimation;
+  late final Animation<double> _yAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3200),
+    );
+    _xAnimation = Tween<double>(begin: -6, end: 6).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOutSine),
+    );
+    _yAnimation = Tween<double>(
+      begin: -2.8,
+      end: 2.8,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+    _controller.repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final trackKey =
+        '${widget.titleText}|${widget.artistText}|${widget.hasTrack}';
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        return Transform.translate(
+          offset: Offset(_xAnimation.value, _yAnimation.value),
+          child: _HomeNoteBubble(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 320),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
+              transitionBuilder: (child, animation) {
+                final slide = Tween<Offset>(
+                  begin: const Offset(0.08, 0),
+                  end: Offset.zero,
+                ).animate(animation);
+                return FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(position: slide, child: child),
+                );
+              },
+              child: Row(
+                key: ValueKey<String>(trackKey),
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _HomeMarqueeText(
+                          text: widget.titleText,
+                          style: TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: CupertinoColors.label.resolveFrom(context),
+                          ),
+                        ),
+                        if (widget.hasTrack &&
+                            widget.artistText.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          _HomeMarqueeText(
+                            text: widget.artistText,
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontSize: 12,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(
+                                context,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  _HomeMiniSpectrum(
+                    active: widget.hasTrack && widget.isPlaying,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _HomeNoteBubble extends StatelessWidget {
+  final Widget child;
+
+  const _HomeNoteBubble({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final border = CupertinoColors.separator
+        .resolveFrom(context)
+        .withValues(alpha: 0.22);
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 176),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
+          context,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: border, width: 0.6),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 8),
+          ),
+          BoxShadow(
+            color: Colors.white.withValues(alpha: 0.06),
+            blurRadius: 6,
+            offset: const Offset(0, -1),
+          ),
+        ],
+      ),
+      child: child,
     );
   }
 }
@@ -2011,7 +2645,8 @@ class _StackedTrackColumn extends StatelessWidget {
   final Future<void> Function(_HomeTrack item) onTap;
   final Future<void> Function(_HomeTrack item) onSwipeToQueueNext;
   final Future<void> Function(_HomeTrack item) onSwipeToQueueEnd;
-  final Future<void> Function(_HomeTrack item) onShowTrackMenu;
+  final Future<void> Function(_HomeTrack item, _TrackContextAction action)
+  onContextAction;
   final bool allowSwipeToQueue;
   final bool thinCards;
 
@@ -2020,7 +2655,7 @@ class _StackedTrackColumn extends StatelessWidget {
     required this.onTap,
     required this.onSwipeToQueueNext,
     required this.onSwipeToQueueEnd,
-    required this.onShowTrackMenu,
+    required this.onContextAction,
     required this.allowSwipeToQueue,
     this.thinCards = false,
   });
@@ -2030,7 +2665,7 @@ class _StackedTrackColumn extends StatelessWidget {
     if (items.isEmpty) return const SizedBox.shrink();
     final clampedItems = items.take(4).toList(growable: false);
     return SizedBox(
-      width: 286,
+      width: 330,
       child: LayoutBuilder(
         builder: (context, constraints) {
           const spacing = 8.0;
@@ -2054,7 +2689,7 @@ class _StackedTrackColumn extends StatelessWidget {
                   onTap: () => onTap(item),
                   onSwipeToQueueNext: () => onSwipeToQueueNext(item),
                   onSwipeToQueueEnd: () => onSwipeToQueueEnd(item),
-                  onShowTrackMenu: () => onShowTrackMenu(item),
+                  onContextAction: (action) => onContextAction(item, action),
                   allowSwipeToQueue: allowSwipeToQueue,
                   thin: thinCards,
                 ),
@@ -2072,7 +2707,7 @@ class _CompactReplayCard extends StatelessWidget {
   final VoidCallback onTap;
   final Future<void> Function() onSwipeToQueueNext;
   final Future<void> Function() onSwipeToQueueEnd;
-  final VoidCallback onShowTrackMenu;
+  final Future<void> Function(_TrackContextAction action) onContextAction;
   final bool allowSwipeToQueue;
   final bool thin;
 
@@ -2081,7 +2716,7 @@ class _CompactReplayCard extends StatelessWidget {
     required this.onTap,
     required this.onSwipeToQueueNext,
     required this.onSwipeToQueueEnd,
-    required this.onShowTrackMenu,
+    required this.onContextAction,
     required this.allowSwipeToQueue,
     this.thin = false,
   });
@@ -2105,7 +2740,6 @@ class _CompactReplayCard extends StatelessWidget {
     final artistFontSize = thin ? 11.0 : 12.0;
     final titleArtistGap = thin ? 2.0 : 4.0;
     final thumbTextGap = thin ? 8.0 : 10.0;
-    final trailingGap = thin ? 6.0 : 8.0;
 
     final card = ClipRRect(
       borderRadius: BorderRadius.circular(cardRadius),
@@ -2127,7 +2761,8 @@ class _CompactReplayCard extends StatelessWidget {
               children: [
                 _AdaptiveThumb(item: item, size: thumbSize),
                 SizedBox(width: thumbTextGap),
-                Expanded(
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: thin ? 228 : 220),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -2158,13 +2793,16 @@ class _CompactReplayCard extends StatelessWidget {
                     ],
                   ),
                 ),
-                SizedBox(width: trailingGap),
-                _QueueAddButton(onPressed: onShowTrackMenu),
               ],
             ),
           ),
         ),
       ),
+    );
+
+    final contextMenuWrapped = _TrackContextMenu(
+      onAction: onContextAction,
+      child: card,
     );
 
     return allowSwipeToQueue
@@ -2175,107 +2813,155 @@ class _CompactReplayCard extends StatelessWidget {
               onNext: onSwipeToQueueNext,
               onEnd: onSwipeToQueueEnd,
             ),
-            child: card,
+            child: contextMenuWrapped,
           )
-        : card;
+        : contextMenuWrapped;
   }
 }
 
-class _TrendingRowCard extends StatelessWidget {
-  final _HomeTrack item;
-  final VoidCallback onTap;
-  final Future<void> Function() onSwipeToQueueNext;
-  final Future<void> Function() onSwipeToQueueEnd;
-  final VoidCallback onShowTrackMenu;
+enum _TrackContextAction {
+  addNext,
+  addToEnd,
+  addToFavorites,
+  addToPlaylist,
+  share,
+  openArtist,
+  openAlbum,
+}
 
-  const _TrendingRowCard({
-    required this.item,
-    required this.onTap,
-    required this.onSwipeToQueueNext,
-    required this.onSwipeToQueueEnd,
-    required this.onShowTrackMenu,
+class _TrackContextMenu extends StatelessWidget {
+  final Future<void> Function(_TrackContextAction action) onAction;
+  final Widget child;
+
+  const _TrackContextMenu({required this.onAction, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final gray = CupertinoColors.systemGrey.resolveFrom(context);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textColor = isDark ? CupertinoColors.white : CupertinoColors.black;
+    final actions = <Widget>[
+      CupertinoContextMenuAction(
+        onPressed: () {
+          Navigator.of(context).pop();
+          unawaited(onAction(_TrackContextAction.addNext));
+        },
+        child: _ContextMenuActionContent(
+          label: 'Añadir como siguiente',
+          icon: CupertinoIcons.text_insert,
+          textColor: textColor,
+          iconColor: gray,
+        ),
+      ),
+      CupertinoContextMenuAction(
+        onPressed: () {
+          Navigator.of(context).pop();
+          unawaited(onAction(_TrackContextAction.addToEnd));
+        },
+        child: _ContextMenuActionContent(
+          label: 'Añadir al final',
+          icon: CupertinoIcons.text_append,
+          textColor: textColor,
+          iconColor: gray,
+        ),
+      ),
+      CupertinoContextMenuAction(
+        onPressed: () {
+          Navigator.of(context).pop();
+          unawaited(onAction(_TrackContextAction.addToFavorites));
+        },
+        child: _ContextMenuActionContent(
+          label: 'Añadir a Favoritos',
+          icon: CupertinoIcons.star_fill,
+          textColor: textColor,
+          iconColor: gray,
+        ),
+      ),
+      CupertinoContextMenuAction(
+        onPressed: () {
+          Navigator.of(context).pop();
+          unawaited(onAction(_TrackContextAction.addToPlaylist));
+        },
+        child: _ContextMenuActionContent(
+          label: 'Añadir a playlist',
+          icon: CupertinoIcons.music_note_list,
+          textColor: textColor,
+          iconColor: gray,
+        ),
+      ),
+      CupertinoContextMenuAction(
+        onPressed: () {
+          Navigator.of(context).pop();
+          unawaited(onAction(_TrackContextAction.share));
+        },
+        child: _ContextMenuActionContent(
+          label: 'Compartir',
+          icon: CupertinoIcons.square_arrow_up,
+          textColor: textColor,
+          iconColor: gray,
+        ),
+      ),
+      CupertinoContextMenuAction(
+        onPressed: () {
+          Navigator.of(context).pop();
+          unawaited(onAction(_TrackContextAction.openArtist));
+        },
+        child: _ContextMenuActionContent(
+          label: 'Ir al artista',
+          icon: CupertinoIcons.person_crop_circle,
+          textColor: textColor,
+          iconColor: gray,
+        ),
+      ),
+      CupertinoContextMenuAction(
+        onPressed: () {
+          Navigator.of(context).pop();
+          unawaited(onAction(_TrackContextAction.openAlbum));
+        },
+        child: _ContextMenuActionContent(
+          label: 'Ir al álbum',
+          icon: CupertinoIcons.rectangle_stack_fill,
+          textColor: textColor,
+          iconColor: gray,
+        ),
+      ),
+    ];
+
+    return CupertinoContextMenu(
+      actions: actions,
+      enableHapticFeedback: true,
+      child: child,
+    );
+  }
+}
+
+class _ContextMenuActionContent extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color textColor;
+  final Color iconColor;
+
+  const _ContextMenuActionContent({
+    required this.label,
+    required this.icon,
+    required this.textColor,
+    required this.iconColor,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final cardColor = isDark
-        ? Colors.black
-        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
-    final cardBorder = isDark
-        ? Colors.white.withValues(alpha: 0.12)
-        : CupertinoColors.separator
-              .resolveFrom(context)
-              .withValues(alpha: 0.12);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Slidable(
-        key: ObjectKey(item),
-        startActionPane: _queueActionPane(
-          context,
-          onNext: onSwipeToQueueNext,
-          onEnd: onSwipeToQueueEnd,
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: Material(
-            color: cardColor,
-            surfaceTintColor: Colors.transparent,
-            child: InkWell(
-              onTap: onTap,
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: cardBorder, width: 0.6),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                child: Row(
-                  children: [
-                    _AdaptiveThumb(item: item, size: 64),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            item.title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontFamily: '.SF Pro Text',
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            item.artist,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontFamily: '.SF Pro Text',
-                              fontSize: 13,
-                              color: CupertinoColors.secondaryLabel.resolveFrom(
-                                context,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    _QueueAddButton(onPressed: onShowTrackMenu),
-                  ],
-                ),
-              ),
-            ),
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: textColor),
           ),
         ),
-      ),
+        Icon(icon, color: iconColor, size: 20),
+      ],
     );
   }
 }
@@ -2313,117 +2999,6 @@ class _AdaptiveThumb extends StatelessWidget {
       size: size,
       borderRadius: 10,
       fallback: fallback,
-    );
-  }
-}
-
-class _QueueAddButton extends StatelessWidget {
-  final VoidCallback onPressed;
-
-  const _QueueAddButton({required this.onPressed});
-
-  @override
-  Widget build(BuildContext context) {
-    return CupertinoButton(
-      padding: EdgeInsets.zero,
-      minimumSize: const Size(30, 30),
-      borderRadius: BorderRadius.circular(11),
-      onPressed: onPressed,
-      child: Icon(
-        CupertinoIcons.ellipsis_circle,
-        size: 22,
-        color: CupertinoColors.secondaryLabel.resolveFrom(context),
-      ),
-    );
-  }
-}
-
-class _AdaptiveBackdropFilter extends StatelessWidget {
-  final ImageFilter filter;
-  final Widget child;
-
-  const _AdaptiveBackdropFilter({required this.filter, required this.child});
-
-  @override
-  Widget build(BuildContext context) {
-    final appInForeground =
-        context.select<AppLifecycleService?, bool>((s) => s?.isForeground ?? true);
-    final dataSaverMode =
-        context.select<AppSettingsService?, bool>((s) => s?.dataSaverMode ?? false);
-    final disableBackdrop =
-        dataSaverMode ||
-        !appInForeground ||
-        defaultTargetPlatform == TargetPlatform.iOS;
-    if (disableBackdrop) return child;
-    return BackdropFilter(filter: filter, child: child);
-  }
-}
-
-class _GlassSheetActionRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _GlassSheetActionRow({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: _AdaptiveBackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-        child: Material(
-          color: Colors.white.withValues(alpha: 0.05),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(16),
-            onTap: onTap,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: CupertinoColors.white.withValues(alpha: 0.18),
-                  width: 0.6,
-                ),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Colors.white.withValues(alpha: 0.08),
-                    Colors.white.withValues(alpha: 0.02),
-                  ],
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(icon, size: 18),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      label,
-                      style: const TextStyle(
-                        fontFamily: '.SF Pro Text',
-                        fontWeight: FontWeight.w700,
-                        fontSize: 15,
-                      ),
-                    ),
-                  ),
-                  Icon(
-                    CupertinoIcons.chevron_right,
-                    size: 17,
-                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

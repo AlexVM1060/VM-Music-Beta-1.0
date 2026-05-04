@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui' show ImageFilter;
 
 import 'package:audio_session/audio_session.dart';
@@ -647,6 +648,7 @@ class _MainTabsState extends State<MainTabs> {
     return Stack(
       children: [
         Scaffold(
+          resizeToAvoidBottomInset: false,
           extendBody: true,
           backgroundColor: shellBackground,
           appBar: hideMainAppBar
@@ -769,9 +771,15 @@ class _CupertinoRootTabBar extends StatelessWidget {
     const items = <({IconData icon, String label})>[
       (icon: CupertinoIcons.home, label: 'Inicio'),
       (icon: CupertinoIcons.search, label: 'Buscar'),
-      (icon: CupertinoIcons.music_note_list, label: 'Biblioteca'),
+      (icon: CupertinoIcons.double_music_note, label: 'Biblioteca'),
       (icon: CupertinoIcons.person_crop_circle, label: 'Perfil'),
     ];
+    final photoPath = context.select<ProfileService, String?>(
+      (service) => service.photoPath,
+    );
+    final cleanPhotoPath = (photoPath ?? '').trim();
+    final hasLocalPhoto =
+        cleanPhotoPath.isNotEmpty && File(cleanPhotoPath).existsSync();
 
     final barContent = Container(
       padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
@@ -810,6 +818,21 @@ class _CupertinoRootTabBar extends StatelessWidget {
           return Expanded(
             child: _LiquidTabButton(
               icon: items[index].icon,
+              iconWidget: index == items.length - 1 && hasLocalPhoto
+                  ? ClipOval(
+                      child: Image.file(
+                        File(cleanPhotoPath),
+                        width: 22,
+                        height: 22,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => Icon(
+                          items[index].icon,
+                          size: 22,
+                          color: selected ? active : inactive,
+                        ),
+                      ),
+                    )
+                  : null,
               label: items[index].label,
               selected: selected,
               activeColor: active,
@@ -842,6 +865,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
 
 class _LiquidTabButton extends StatelessWidget {
   final IconData icon;
+  final Widget? iconWidget;
   final String label;
   final bool selected;
   final Color activeColor;
@@ -850,6 +874,7 @@ class _LiquidTabButton extends StatelessWidget {
 
   const _LiquidTabButton({
     required this.icon,
+    this.iconWidget,
     required this.label,
     required this.selected,
     required this.activeColor,
@@ -886,7 +911,12 @@ class _LiquidTabButton extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 22, color: selected ? activeColor : inactiveColor),
+            iconWidget ??
+                Icon(
+                  icon,
+                  size: 22,
+                  color: selected ? activeColor : inactiveColor,
+                ),
             const SizedBox(height: 3),
             Text(
               label,

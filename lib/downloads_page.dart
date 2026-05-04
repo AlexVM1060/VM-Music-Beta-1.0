@@ -1,12 +1,21 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:hive/hive.dart';
+import 'package:myapp/models/playlist.dart';
 import 'package:myapp/models/downloaded_video.dart';
+import 'package:myapp/playlist_detail_page.dart';
 import 'package:myapp/playlists_page.dart';
 import 'package:myapp/search_page.dart';
 import 'package:myapp/search_view_state.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/library_albums_service.dart';
+import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/ios_notice.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
 
@@ -20,20 +29,28 @@ class DownloadsPage extends StatefulWidget {
 }
 
 class _DownloadsPageState extends State<DownloadsPage> {
+  static const String _pinnedPlaylistsBoxName = 'library_pinned_playlists';
+  static const String _pinnedPlaylistsKey = 'names';
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
   _LibrarySection? _selectedSection;
   LibraryAlbum? _selectedLibraryAlbum;
+  Playlist? _selectedPlaylist;
+  bool _openedPlaylistFromPinnedShortcut = false;
   bool _isForwardTransition = true;
+  List<String> _pinnedPlaylistNames = const <String>[];
+  StreamSubscription<BoxEvent>? _pinnedPlaylistsSub;
 
   @override
   void initState() {
     super.initState();
     _searchController.addListener(_handleSearchChanged);
+    unawaited(_loadPinnedPlaylists());
   }
 
   @override
   void dispose() {
+    _pinnedPlaylistsSub?.cancel();
     _setLibraryAppBarHidden(false);
     _searchController.removeListener(_handleSearchChanged);
     _searchController.dispose();
@@ -45,6 +62,71 @@ class _DownloadsPageState extends State<DownloadsPage> {
     if (next == _searchQuery) return;
     setState(() {
       _searchQuery = next;
+    });
+  }
+
+  Future<Box<dynamic>> get _pinnedPlaylistsBox async =>
+      Hive.openBox<dynamic>(_pinnedPlaylistsBoxName);
+
+  Future<void> _loadPinnedPlaylists() async {
+    final box = await _pinnedPlaylistsBox;
+    _pinnedPlaylistsSub?.cancel();
+    _pinnedPlaylistsSub = box.watch(key: _pinnedPlaylistsKey).listen((_) {
+      unawaited(_loadPinnedPlaylists());
+    });
+    final raw = box.get(_pinnedPlaylistsKey);
+    final names = raw is List
+        ? raw.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList()
+        : <String>[];
+    if (!mounted) return;
+    setState(() {
+      _pinnedPlaylistNames = names;
+    });
+  }
+
+  Future<void> _pinPlaylistShortcut(Playlist playlist) async {
+    final name = playlist.name.trim();
+    if (name.isEmpty) return;
+    if (_pinnedPlaylistNames.any((p) => p.toLowerCase() == name.toLowerCase())) {
+      return;
+    }
+    final updated = <String>[name, ..._pinnedPlaylistNames];
+    setState(() {
+      _pinnedPlaylistNames = updated;
+    });
+    final box = await _pinnedPlaylistsBox;
+    await box.put(_pinnedPlaylistsKey, updated);
+  }
+
+  Future<void> _unpinPlaylistShortcut(String playlistName) async {
+    final normalized = playlistName.trim().toLowerCase();
+    final updated = _pinnedPlaylistNames
+        .where((name) => name.trim().toLowerCase() != normalized)
+        .toList(growable: false);
+    setState(() {
+      _pinnedPlaylistNames = updated;
+    });
+    final box = await _pinnedPlaylistsBox;
+    await box.put(_pinnedPlaylistsKey, updated);
+  }
+
+  Future<void> _openPinnedPlaylistByName(String playlistName) async {
+    final service = context.read<PlaylistService>();
+    final playlists = await service.getPlaylists();
+    Playlist? target;
+    for (final playlist in playlists) {
+      if (playlist.name.toLowerCase() == playlistName.toLowerCase()) {
+        target = playlist;
+        break;
+      }
+    }
+    if (!mounted || target == null) return;
+    _setLibraryAppBarHidden(true);
+    setState(() {
+      _isForwardTransition = true;
+      _selectedSection = _LibrarySection.playlist;
+      _selectedPlaylist = target;
+      _openedPlaylistFromPinnedShortcut = true;
     });
   }
 
@@ -123,7 +205,40 @@ class _DownloadsPageState extends State<DownloadsPage> {
   Widget _buildSectionContent() {
     switch (_selectedSection) {
       case _LibrarySection.playlist:
-        return PlaylistsPage(onBack: _goBackToLibraryList, useSafeArea: false);
+        if (_selectedPlaylist != null) {
+          final playlist = _selectedPlaylist!;
+          return _LibraryEdgeSwipeBack(
+            onBack: _closeEmbeddedPlaylist,
+            child: PlaylistDetailPage(
+              playlist: playlist,
+              onBack: _closeEmbeddedPlaylist,
+            ),
+          );
+        }
+        return PlaylistsPage(
+          onBack: _goBackToLibraryList,
+          useSafeArea: true,
+          onPinPlaylist: (playlist) {
+            unawaited(_pinPlaylistShortcut(playlist));
+          },
+          onUnpinPlaylist: (playlist) {
+            unawaited(_unpinPlaylistShortcut(playlist.name));
+          },
+          isPlaylistPinned: (playlist) {
+            final normalized = playlist.name.trim().toLowerCase();
+            return _pinnedPlaylistNames.any(
+              (name) => name.trim().toLowerCase() == normalized,
+            );
+          },
+          onOpenPlaylist: (playlist) {
+            _setLibraryAppBarHidden(true);
+            setState(() {
+              _isForwardTransition = true;
+              _selectedPlaylist = playlist;
+              _openedPlaylistFromPinnedShortcut = false;
+            });
+          },
+        );
       case _LibrarySection.albumes:
         if (_selectedLibraryAlbum != null) {
           final album = _selectedLibraryAlbum!;
@@ -159,6 +274,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
   }
 
   Widget _buildLibraryList() {
+    final accent = CupertinoColors.systemPink.resolveFrom(context);
     final sections = <({IconData icon, String title, _LibrarySection section})>[
       (
         icon: CupertinoIcons.music_note_list,
@@ -171,7 +287,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
         section: _LibrarySection.albumes,
       ),
       (
-        icon: CupertinoIcons.videocam,
+        icon: CupertinoIcons.play_rectangle,
         title: 'Videos',
         section: _LibrarySection.videos,
       ),
@@ -192,10 +308,18 @@ class _DownloadsPageState extends State<DownloadsPage> {
     final bottomReserve =
         tabBarReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
 
-    return ListView.separated(
-      padding: EdgeInsets.fromLTRB(12, 14, 12, 14 + bottomReserve),
-      itemBuilder: (context, index) {
-        final section = sections[index];
+    return FutureBuilder<List<Playlist>>(
+      future: context.read<PlaylistService>().getPlaylists(),
+      builder: (context, snapshot) {
+        final playlists = snapshot.data ?? const <Playlist>[];
+        final byName = <String, Playlist>{
+          for (final p in playlists) p.name.toLowerCase(): p,
+        };
+
+        final cards = <Widget>[
+          if (_pinnedPlaylistNames.isNotEmpty)
+            _buildPinnedPlaylistsStrip(byName: byName, accent: accent),
+          ...sections.map((section) {
         final isDark = Theme.of(context).brightness == Brightness.dark;
         final cardColor = isDark
             ? Colors.black
@@ -228,19 +352,22 @@ class _DownloadsPageState extends State<DownloadsPage> {
                 ),
                 child: Row(
                   children: [
-                    Icon(section.icon, size: 22),
+                    Icon(section.icon, size: 22, color: accent),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         section.title,
                         style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
+                            ?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: CupertinoColors.label.resolveFrom(context),
+                            ),
                       ),
                     ),
                     Icon(
                       CupertinoIcons.chevron_forward,
                       size: 16,
-                      color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                      color: accent,
                     ),
                   ],
                 ),
@@ -248,9 +375,259 @@ class _DownloadsPageState extends State<DownloadsPage> {
             ),
           ),
         );
+          }),
+        ];
+
+        return ListView.separated(
+          padding: EdgeInsets.fromLTRB(12, 14, 12, 14 + bottomReserve),
+          itemBuilder: (context, index) => cards[index],
+          separatorBuilder: (_, _) => const SizedBox(height: 8),
+          itemCount: cards.length,
+        );
       },
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemCount: sections.length,
+    );
+  }
+
+  Widget _buildPinnedPlaylistCard({
+    required String playlistName,
+    required Playlist? playlist,
+    required Color accent,
+    double cardWidth = 110,
+  }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardColor = isDark
+        ? Colors.black
+        : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
+    final border = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
+
+    final isFavorites = playlist != null
+        ? PlaylistService.isFavoritesPlaylistName(playlist.name)
+        : PlaylistService.isFavoritesPlaylistName(playlistName);
+    final subtitle = playlist == null
+        ? 'Playlist anclada'
+        : isFavorites
+        ? '${playlist.videos.length} canciones guardadas'
+        : '${playlist.videos.length} canciones';
+    final fallback = Container(
+      color: CupertinoColors.tertiarySystemFill.resolveFrom(context),
+      alignment: Alignment.center,
+      child: Icon(
+        isFavorites ? CupertinoIcons.star_fill : CupertinoIcons.music_note_list,
+        color: accent,
+      ),
+    );
+
+    Widget artwork = fallback;
+    var cover = playlist?.coverUrl?.trim() ?? '';
+    if (cover.isEmpty && playlist != null) {
+      for (final video in playlist.videos) {
+        final thumb = video.thumbnailUrl.trim();
+        if (thumb.isNotEmpty) {
+          cover = thumb;
+          break;
+        }
+      }
+    }
+    if (cover.isNotEmpty) {
+      if (cover.startsWith('/')) {
+        artwork = SquareThumbnail.file(
+          filePath: cover,
+          size: 64,
+          borderRadius: 10,
+          fallback: fallback,
+        );
+      } else {
+        artwork = SquareThumbnail.network(
+          imageUrl: cover,
+          size: 64,
+          borderRadius: 10,
+          fallback: fallback,
+        );
+      }
+    }
+
+    final tile = SizedBox(
+      width: cardWidth,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Material(
+          color: cardColor,
+          surfaceTintColor: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              unawaited(_openPinnedPlaylistByName(playlistName));
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: border, width: 0.6),
+              ),
+              padding: const EdgeInsets.all(8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Stack(
+                    children: [
+                      SizedBox(
+                        width: 94,
+                        height: 94,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: artwork,
+                        ),
+                      ),
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Container(
+                          padding: const EdgeInsets.all(5),
+                          decoration: BoxDecoration(
+                            color: accent,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            CupertinoIcons.pin_fill,
+                            size: 12,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    playlistName,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: '.SF Pro Text',
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: CupertinoColors.label.resolveFrom(context),
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: '.SF Pro Text',
+                      fontSize: 10,
+                      color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    return tile;
+  }
+
+  Widget _buildPinnedPlaylistsStrip({
+    required Map<String, Playlist> byName,
+    required Color accent,
+  }) {
+    final visiblePinned = _pinnedPlaylistNames.take(6).toList(growable: false);
+    final rowCount = ((visiblePinned.length + 2) ~/ 3).clamp(0, 2);
+    const horizontalPadding = 4.0;
+    const spacing = 10.0;
+    const fallbackCardWidth = 110.0;
+    const cardHeight = 144.0;
+    const bottomSafetyGap = 12.0;
+    final gridHeight = rowCount == 0
+        ? 0.0
+        : (rowCount * cardHeight) +
+            ((rowCount - 1) * spacing) +
+            bottomSafetyGap;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final available = constraints.maxWidth - (horizontalPadding * 2);
+        final computedWidth = (available - (spacing * 2)) / 3;
+        final cardWidth = computedWidth.isFinite && computedWidth > 60
+            ? computedWidth
+            : fallbackCardWidth;
+
+        return SizedBox(
+          height: gridHeight,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              horizontalPadding,
+              0,
+              horizontalPadding,
+              bottomSafetyGap,
+            ),
+            child: Stack(
+              children: [
+                for (var index = 0; index < visiblePinned.length; index++)
+                  AnimatedPositioned(
+                    key: ValueKey('pinned_pos_${visiblePinned[index]}'),
+                    duration: const Duration(milliseconds: 240),
+                    curve: Curves.easeOutCubic,
+                    left: (index % 3) * (cardWidth + spacing),
+                    top: (index ~/ 3) * (cardHeight + spacing),
+                    width: cardWidth,
+                    height: cardHeight,
+                    child: _PinnedShortcutDraggableCard(
+                      key: ValueKey('pinned_${visiblePinned[index]}'),
+                      playlistName: visiblePinned[index],
+                      cardWidth: cardWidth,
+                      child: _buildPinnedPlaylistCard(
+                        playlistName: visiblePinned[index],
+                        playlist: byName[visiblePinned[index].toLowerCase()],
+                        accent: accent,
+                        cardWidth: cardWidth,
+                      ),
+                      onOpen: () {
+                        unawaited(
+                          _openPinnedPlaylistByName(visiblePinned[index]),
+                        );
+                      },
+                      onUnpin: () {
+                        unawaited(_unpinPlaylistShortcut(visiblePinned[index]));
+                      },
+                      onReorder: (from, to) {
+                        final current = List<String>.from(_pinnedPlaylistNames);
+                        final fromIndex = current.indexOf(from);
+                        final toIndex = current.indexOf(to);
+                        if (fromIndex < 0 ||
+                            toIndex < 0 ||
+                            fromIndex == toIndex) {
+                          return;
+                        }
+                        final moved = current.removeAt(fromIndex);
+                        current.insert(toIndex, moved);
+                        HapticFeedback.selectionClick();
+                        setState(() {
+                          _pinnedPlaylistNames = current;
+                        });
+                        unawaited(
+                          _pinnedPlaylistsBox.then(
+                            (box) => box.put(_pinnedPlaylistsKey, current),
+                          ),
+                        );
+                      },
+                      canReorder: (from, to) {
+                        final current = _pinnedPlaylistNames;
+                        final fromIndex = current.indexOf(from);
+                        final toIndex = current.indexOf(to);
+                        return fromIndex >= 0 &&
+                            toIndex >= 0 &&
+                            fromIndex != toIndex;
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -268,7 +645,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
-        _buildSectionHeader(title),
+        _buildSectionHeader(title, topPadding: _albumsHeaderTopPadding(context)),
         const SizedBox(height: 120),
         const Center(child: Text('Disponible próximamente.')),
         SizedBox(height: bottomReserve),
@@ -449,7 +826,10 @@ class _DownloadsPageState extends State<DownloadsPage> {
 
     return Column(
       children: [
-        _buildSectionHeader('Descargas'),
+        _buildSectionHeader(
+          'Descargas',
+          topPadding: _albumsHeaderTopPadding(context),
+        ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
           child: CupertinoSearchTextField(
@@ -491,6 +871,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
   }
 
   Widget _buildSectionHeader(String title, {double topPadding = 10}) {
+    final themedLabel = CupertinoColors.label.resolveFrom(context);
     return Padding(
       padding: EdgeInsets.fromLTRB(8, topPadding, 8, 0),
       child: Row(
@@ -501,7 +882,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
             onPressed: _goBackToLibraryList,
             child: Icon(
               CupertinoIcons.chevron_left,
-              color: CupertinoColors.label.resolveFrom(context),
+              color: themedLabel,
             ),
           ),
           const SizedBox(width: 4),
@@ -511,7 +892,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
               fontFamily: '.SF Pro Display',
               fontSize: 24,
               fontWeight: FontWeight.w700,
-              color: CupertinoColors.label.resolveFrom(context),
+              color: themedLabel,
             ),
           ),
         ],
@@ -524,9 +905,24 @@ class _DownloadsPageState extends State<DownloadsPage> {
     setState(() {
       _isForwardTransition = false;
       _selectedLibraryAlbum = null;
+      _selectedPlaylist = null;
+      _openedPlaylistFromPinnedShortcut = false;
       _selectedSection = null;
       _searchController.clear();
       _searchQuery = '';
+    });
+  }
+
+  void _closeEmbeddedPlaylist() {
+    if (_openedPlaylistFromPinnedShortcut) {
+      _goBackToLibraryList();
+      return;
+    }
+    _setLibraryAppBarHidden(false);
+    setState(() {
+      _isForwardTransition = false;
+      _selectedPlaylist = null;
+      _openedPlaylistFromPinnedShortcut = false;
     });
   }
 
@@ -538,7 +934,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
   }
 
   void _openLibrarySection(_LibrarySection section) {
-    _setLibraryAppBarHidden(section == _LibrarySection.albumes);
+    _setLibraryAppBarHidden(true);
     setState(() {
       _isForwardTransition = true;
       _selectedSection = section;
@@ -618,12 +1014,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
                       .resolvePlayableDownloadedVideo(song.videoId);
                   if (!context.mounted) return;
                   if (local == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text(
-                          'No se encontró el archivo local de esta descarga.',
-                        ),
-                      ),
+                    showIosNotice(
+                      context,
+                      'No se encontró el archivo local de esta descarga.',
                     );
                     return;
                   }
@@ -716,10 +1109,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
                         onPressed: () async {
                           await downloadService.deleteVideo(song.videoId);
                           if (!context.mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Canción eliminada de descargas.'),
-                            ),
+                          showIosNotice(
+                            context,
+                            'Canción eliminada de descargas.',
                           );
                         },
                       ),
@@ -729,6 +1121,163 @@ class _DownloadsPageState extends State<DownloadsPage> {
               ),
             ),
           ),
+        );
+      },
+    );
+  }
+}
+
+class _PinnedShortcutDraggableCard extends StatefulWidget {
+  final String playlistName;
+  final double cardWidth;
+  final Widget child;
+  final VoidCallback onOpen;
+  final VoidCallback onUnpin;
+  final void Function(String from, String to) onReorder;
+  final bool Function(String from, String to)? canReorder;
+
+  const _PinnedShortcutDraggableCard({
+    super.key,
+    required this.playlistName,
+    required this.cardWidth,
+    required this.child,
+    required this.onOpen,
+    required this.onUnpin,
+    required this.onReorder,
+    this.canReorder,
+  });
+
+  @override
+  State<_PinnedShortcutDraggableCard> createState() =>
+      _PinnedShortcutDraggableCardState();
+}
+
+class _PinnedShortcutDraggableCardState extends State<_PinnedShortcutDraggableCard> {
+  bool _isDragging = false;
+  double _jigglePhase = -1.0;
+  Timer? _jiggleTimer;
+  String? _lastHoverSource;
+
+  void _setDragging(bool value, {double? phase}) {
+    if (!mounted) return;
+    setState(() {
+      _isDragging = value;
+      if (phase != null) _jigglePhase = phase;
+    });
+  }
+
+  void _startJiggle() {
+    _jiggleTimer?.cancel();
+    _jiggleTimer = Timer.periodic(
+      const Duration(milliseconds: 110),
+      (timer) {
+      if (!mounted || !_isDragging) return;
+      setState(() {
+        _jigglePhase = _jigglePhase > 0 ? -1.0 : 1.0;
+      });
+      },
+    );
+  }
+
+  void _stopJiggle() {
+    _jiggleTimer?.cancel();
+    _jiggleTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _jigglePhase = 0.0;
+    });
+  }
+
+  @override
+  void dispose() {
+    _jiggleTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DragTarget<String>(
+      onWillAcceptWithDetails: (details) =>
+          details.data.trim().isNotEmpty &&
+          details.data != widget.playlistName,
+      onMove: (details) {
+        final from = details.data;
+        final to = widget.playlistName;
+        if (from == to) return;
+        if (!(widget.canReorder?.call(from, to) ?? true)) return;
+        if (_lastHoverSource == from) return;
+        _lastHoverSource = from;
+        widget.onReorder(from, to);
+      },
+      onLeave: (_) {
+        _lastHoverSource = null;
+      },
+      onAcceptWithDetails: (details) {
+        _lastHoverSource = null;
+        widget.onReorder(details.data, widget.playlistName);
+      },
+      builder: (context, candidateData, rejectedData) {
+        final highlighted = candidateData.isNotEmpty;
+        final jiggleAngle = _isDragging ? (_jigglePhase * 0.012) : 0.0;
+        final card = AnimatedRotation(
+          duration: const Duration(milliseconds: 100),
+          turns: jiggleAngle / (2 * 3.141592653589793),
+          child: AnimatedScale(
+            duration: const Duration(milliseconds: 150),
+            scale: highlighted ? 0.96 : 1.0,
+            child: widget.child,
+          ),
+        );
+
+        final interactiveCard = Draggable<String>(
+          data: widget.playlistName,
+          onDragStarted: () {
+            _setDragging(true, phase: 1.0);
+            HapticFeedback.lightImpact();
+            _startJiggle();
+          },
+          onDragEnd: (details) {
+            _setDragging(false);
+            _stopJiggle();
+          },
+          onDraggableCanceled: (velocity, offset) {
+            _setDragging(false);
+            _stopJiggle();
+          },
+          onDragCompleted: () {
+            _setDragging(false);
+            _stopJiggle();
+          },
+          feedback: Material(
+            type: MaterialType.transparency,
+            child: Opacity(
+              opacity: 0.92,
+              child: SizedBox(width: widget.cardWidth, child: widget.child),
+            ),
+          ),
+          childWhenDragging: Opacity(opacity: 0.35, child: card),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onOpen,
+            child: card,
+          ),
+        );
+
+        if (!Platform.isIOS) return interactiveCard;
+        return CupertinoContextMenu(
+          enableHapticFeedback: true,
+          actions: [
+            CupertinoContextMenuAction(
+              isDestructiveAction: true,
+              trailingIcon: CupertinoIcons.pin_slash_fill,
+              onPressed: () {
+                Navigator.of(context).pop();
+                widget.onUnpin();
+              },
+              child: const Text('Desanclar Playlist'),
+            ),
+          ],
+          child: interactiveCard,
         );
       },
     );

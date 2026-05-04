@@ -14,5 +14,13 @@ class Playlist extends HiveObject {
   @HiveField(2)
   final String? coverUrl;
 
-  Playlist({required this.name, this.videos = const [], this.coverUrl});
+  @HiveField(3)
+  final String? description;
+
+  Playlist({
+    required this.name,
+    this.videos = const [],
+    this.coverUrl,
+    this.description,
+  });
 }

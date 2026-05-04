@@ -1,13 +1,17 @@
 import 'dart:io';
+import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:myapp/account_settings_page.dart';
 import 'package:myapp/models/playlist.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/playlist_detail_page.dart';
 import 'package:myapp/playlists_page.dart';
+import 'package:myapp/profile_edit_page.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
@@ -25,6 +29,8 @@ class AccountPage extends StatefulWidget {
 }
 
 class _AccountPageState extends State<AccountPage> {
+  static const String _pinnedPlaylistsBoxName = 'library_pinned_playlists';
+  static const String _pinnedPlaylistsKey = 'names';
   late Future<List<Playlist>> _playlistsFuture;
   late Future<List<VideoHistory>> _historyFuture;
   final ImagePicker _picker = ImagePicker();
@@ -34,11 +40,14 @@ class _AccountPageState extends State<AccountPage> {
   bool _showAllPlaylists = false;
   Playlist? _selectedPlaylist;
   int _playlistTransitionDirection = 1;
+  List<String> _pinnedPlaylistNames = const <String>[];
+  StreamSubscription<BoxEvent>? _pinnedPlaylistsSub;
 
   @override
   void initState() {
     super.initState();
     _refreshData();
+    _loadPinnedPlaylists();
   }
 
   void _refreshData() {
@@ -46,68 +55,50 @@ class _AccountPageState extends State<AccountPage> {
     _historyFuture = context.read<HistoryService>().getHistory();
   }
 
-  Future<void> _editProfile(ProfileService profile) async {
-    final nameController = TextEditingController(text: profile.name);
-    final usernameController = TextEditingController(
-      text: profile.username.startsWith('@')
-          ? profile.username.substring(1)
-          : profile.username,
-    );
-    final bioController = TextEditingController(text: profile.bio);
+  Future<Box<dynamic>> get _pinnedPlaylistsBox async =>
+      Hive.openBox<dynamic>(_pinnedPlaylistsBoxName);
 
-    await showCupertinoModalPopup<void>(
-      context: context,
-      builder: (dialogContext) => CupertinoActionSheet(
-        title: const Text('Editar perfil'),
-        message: Material(
-          color: Colors.transparent,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: Column(
-              children: [
-                CupertinoTextField(
-                  controller: nameController,
-                  placeholder: 'Nombre',
-                ),
-                const SizedBox(height: 8),
-                CupertinoTextField(
-                  controller: usernameController,
-                  placeholder: 'Nombre de usuario',
-                  prefix: const Padding(
-                    padding: EdgeInsets.only(left: 10),
-                    child: Text('@'),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                CupertinoTextField(
-                  controller: bioController,
-                  placeholder: 'Biografia',
-                  minLines: 3,
-                  maxLines: 4,
-                ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          CupertinoActionSheetAction(
-            onPressed: () async {
-              Navigator.of(dialogContext).pop();
-              await profile.updateProfile(
-                name: nameController.text,
-                username: usernameController.text,
-                bio: bioController.text,
-              );
-            },
-            child: const Text('Guardar cambios'),
-          ),
-        ],
-        cancelButton: CupertinoActionSheetAction(
-          onPressed: () => Navigator.of(dialogContext).pop(),
-          child: const Text('Cancelar'),
-        ),
-      ),
+  Future<void> _loadPinnedPlaylists() async {
+    final box = await _pinnedPlaylistsBox;
+    _pinnedPlaylistsSub?.cancel();
+    _pinnedPlaylistsSub = box.watch(key: _pinnedPlaylistsKey).listen((_) {
+      unawaited(_loadPinnedPlaylists());
+    });
+    final raw = box.get(_pinnedPlaylistsKey);
+    final names = raw is List
+        ? raw
+              .map((e) => e.toString().trim())
+              .where((e) => e.isNotEmpty)
+              .toList()
+        : <String>[];
+    if (!mounted) return;
+    setState(() {
+      _pinnedPlaylistNames = names;
+    });
+  }
+
+  bool _isPlaylistPinned(Playlist playlist) {
+    final normalized = playlist.name.trim().toLowerCase();
+    return _pinnedPlaylistNames.any(
+      (name) => name.trim().toLowerCase() == normalized,
     );
+  }
+
+  Future<void> _togglePinnedPlaylist(Playlist playlist) async {
+    final normalized = playlist.name.trim().toLowerCase();
+    final alreadyPinned = _pinnedPlaylistNames.any(
+      (name) => name.trim().toLowerCase() == normalized,
+    );
+    final updated = alreadyPinned
+        ? _pinnedPlaylistNames
+              .where((name) => name.trim().toLowerCase() != normalized)
+              .toList(growable: false)
+        : <String>[playlist.name, ..._pinnedPlaylistNames];
+    setState(() {
+      _pinnedPlaylistNames = updated;
+    });
+    final box = await _pinnedPlaylistsBox;
+    await box.put(_pinnedPlaylistsKey, updated);
   }
 
   Future<void> _changePhoto(ProfileService profile) async {
@@ -240,6 +231,7 @@ class _AccountPageState extends State<AccountPage> {
 
   @override
   void dispose() {
+    _pinnedPlaylistsSub?.cancel();
     _noteController.dispose();
     _noteFocusNode.dispose();
     super.dispose();
@@ -314,6 +306,13 @@ class _AccountPageState extends State<AccountPage> {
                     key: const ValueKey('profile_all_playlists'),
                     child: PlaylistsPage(
                       onOpenPlaylist: _openPlaylistInline,
+                      onPinPlaylist: (playlist) {
+                        _togglePinnedPlaylist(playlist);
+                      },
+                      onUnpinPlaylist: (playlist) {
+                        _togglePinnedPlaylist(playlist);
+                      },
+                      isPlaylistPinned: _isPlaylistPinned,
                       onBack: _closeAllPlaylists,
                       useSafeArea: false,
                     ),
@@ -372,8 +371,15 @@ class _AccountPageState extends State<AccountPage> {
                                         CupertinoButton(
                                           padding: EdgeInsets.zero,
                                           minimumSize: const Size(34, 34),
-                                          onPressed: () =>
-                                              _editProfile(profile),
+                                          onPressed: () {
+                                            Navigator.of(context).push(
+                                              CupertinoPageRoute<void>(
+                                                builder: (_) => ProfileEditPage(
+                                                  profile: profile,
+                                                ),
+                                              ),
+                                            );
+                                          },
                                           child: const Icon(
                                             CupertinoIcons.pencil,
                                           ),
@@ -553,11 +559,11 @@ class _AccountPageState extends State<AccountPage> {
                                                                       ),
                                                                       Row(
                                                                         mainAxisAlignment:
-                                                                            MainAxisAlignment.spaceBetween,
+                                                                            MainAxisAlignment.end,
                                                                         children: [
                                                                           CupertinoButton(
                                                                             padding: const EdgeInsets.symmetric(
-                                                                              horizontal: 8,
+                                                                              horizontal: 6,
                                                                               vertical: 2,
                                                                             ),
                                                                             minimumSize: const Size(
@@ -566,25 +572,16 @@ class _AccountPageState extends State<AccountPage> {
                                                                             ),
                                                                             onPressed:
                                                                                 _cancelInlineNoteEdit,
-                                                                            child: Row(
-                                                                              mainAxisSize: MainAxisSize.min,
-                                                                              children: const [
-                                                                                Icon(
-                                                                                  CupertinoIcons.xmark_circle_fill,
-                                                                                  size: 16,
-                                                                                ),
-                                                                                SizedBox(
-                                                                                  width: 4,
-                                                                                ),
-                                                                                Text(
-                                                                                  'Cancelar',
-                                                                                ),
-                                                                              ],
+                                                                            child: Icon(
+                                                                              CupertinoIcons.xmark_circle_fill,
+                                                                              size: 18,
+                                                                              color: CupertinoColors.systemRed,
                                                                             ),
                                                                           ),
+                                                                          const SizedBox(width: 2),
                                                                           CupertinoButton(
                                                                             padding: const EdgeInsets.symmetric(
-                                                                              horizontal: 8,
+                                                                              horizontal: 6,
                                                                               vertical: 2,
                                                                             ),
                                                                             minimumSize: const Size(
@@ -594,20 +591,10 @@ class _AccountPageState extends State<AccountPage> {
                                                                             onPressed: () => _saveInlineNote(
                                                                               profile,
                                                                             ),
-                                                                            child: Row(
-                                                                              mainAxisSize: MainAxisSize.min,
-                                                                              children: const [
-                                                                                Icon(
-                                                                                  CupertinoIcons.checkmark_circle_fill,
-                                                                                  size: 16,
-                                                                                ),
-                                                                                SizedBox(
-                                                                                  width: 4,
-                                                                                ),
-                                                                                Text(
-                                                                                  'Guardar',
-                                                                                ),
-                                                                              ],
+                                                                            child: Icon(
+                                                                              CupertinoIcons.checkmark_circle_fill,
+                                                                              size: 18,
+                                                                              color: CupertinoColors.systemBlue,
                                                                             ),
                                                                           ),
                                                                         ],
@@ -620,22 +607,21 @@ class _AccountPageState extends State<AccountPage> {
                                                                       _startInlineNoteEdit(
                                                                         profile,
                                                                       ),
-                                                                  child: _NoteBubble(
-                                                                    child: Text(
-                                                                      bioText,
-                                                                      textAlign:
-                                                                          TextAlign
-                                                                              .center,
-                                                                      style: TextStyle(
-                                                                        fontFamily:
-                                                                            '.SF Pro Text',
-                                                                        fontSize:
-                                                                            14,
-                                                                        color: CupertinoColors
-                                                                            .label
-                                                                            .resolveFrom(
-                                                                              context,
-                                                                            ),
+                                                                  child: _FloatingNoteDrift(
+                                                                    child: _NoteBubble(
+                                                                      child: Text(
+                                                                        bioText,
+                                                                        textAlign:
+                                                                            TextAlign.center,
+                                                                        style: TextStyle(
+                                                                          fontFamily:
+                                                                              '.SF Pro Text',
+                                                                          fontSize:
+                                                                              14,
+                                                                          color: CupertinoColors.label.resolveFrom(
+                                                                            context,
+                                                                          ),
+                                                                        ),
                                                                       ),
                                                                     ),
                                                                   ),
@@ -843,6 +829,12 @@ class _AccountPageState extends State<AccountPage> {
                                             onTap: () =>
                                                 _openPlaylistInline(playlist),
                                             fallbackBuilder: _coverFallback,
+                                            isPinned: _isPlaylistPinned(
+                                              playlist,
+                                            ),
+                                            onTogglePinned: () {
+                                              _togglePinnedPlaylist(playlist);
+                                            },
                                           );
                                         },
                                       ),
@@ -902,11 +894,15 @@ class _AppleCard extends StatelessWidget {
 class _ProfilePlaylistFeatureCard extends StatelessWidget {
   final Playlist playlist;
   final VoidCallback onTap;
+  final bool isPinned;
+  final VoidCallback onTogglePinned;
   final Widget Function(BuildContext, bool) fallbackBuilder;
 
   const _ProfilePlaylistFeatureCard({
     required this.playlist,
     required this.onTap,
+    required this.isPinned,
+    required this.onTogglePinned,
     required this.fallbackBuilder,
   });
 
@@ -928,7 +924,7 @@ class _ProfilePlaylistFeatureCard extends StatelessWidget {
         ? '${playlist.videos.length} canciones guardadas'
         : '${playlist.videos.length} canciones';
 
-    return SizedBox(
+    final tile = SizedBox(
       width: 162,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
@@ -1010,6 +1006,23 @@ class _ProfilePlaylistFeatureCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+    if (!Platform.isIOS) return tile;
+    return CupertinoContextMenu(
+      enableHapticFeedback: true,
+      actions: [
+        CupertinoContextMenuAction(
+          trailingIcon: isPinned
+              ? CupertinoIcons.pin_slash_fill
+              : CupertinoIcons.pin_fill,
+          onPressed: () {
+            Navigator.of(context).pop();
+            onTogglePinned();
+          },
+          child: Text(isPinned ? 'Desanclar Playlist' : 'Anclar Playlist'),
+        ),
+      ],
+      child: tile,
     );
   }
 
@@ -1112,6 +1125,59 @@ class _NoteBubble extends StatelessWidget {
         ],
       ),
       child: child,
+    );
+  }
+}
+
+class _FloatingNoteDrift extends StatefulWidget {
+  final Widget child;
+
+  const _FloatingNoteDrift({required this.child});
+
+  @override
+  State<_FloatingNoteDrift> createState() => _FloatingNoteDriftState();
+}
+
+class _FloatingNoteDriftState extends State<_FloatingNoteDrift>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _xAnimation;
+  late final Animation<double> _yAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3200),
+    );
+    _xAnimation = Tween<double>(begin: -6, end: 6).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOutSine),
+    );
+    _yAnimation = Tween<double>(
+      begin: -2.8,
+      end: 2.8,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+    _controller.repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final wave = 0.9 + (0.1 * math.sin(_controller.value * 2 * math.pi));
+        return Transform.translate(
+          offset: Offset(_xAnimation.value * wave, _yAnimation.value * wave),
+          child: widget.child,
+        );
+      },
     );
   }
 }

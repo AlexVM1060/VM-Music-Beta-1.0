@@ -3,10 +3,11 @@ import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart' show ScaffoldMessenger, SnackBar, Theme;
+import 'package:flutter/material.dart' show Theme;
 import 'package:myapp/services/apple_music_library_service.dart';
 import 'package:myapp/services/apple_music_playlist_migration_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/widgets/ios_notice.dart';
 import 'package:provider/provider.dart';
 
 class AppleMusicMigrationPage extends StatefulWidget {
@@ -174,11 +175,7 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
     _showSnackBar('Migración lista: $imported/$total canciones importadas.');
   }
 
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
-  }
+  void _showSnackBar(String message) => showIosNotice(context, message);
 
   Uint8List? _decodeArtwork(String? rawBase64) {
     final input = (rawBase64 ?? '').trim();

@@ -23,6 +23,7 @@ import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/artwork_subject_cutout_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/ios_notice.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:palette_generator/palette_generator.dart';
@@ -182,21 +183,35 @@ class _MiniPlayer extends StatefulWidget {
 
 class _MiniPlayerState extends State<_MiniPlayer> {
   double _dragLift = 0.0;
+  double _dragDrop = 0.0;
   double _horizontalDragDx = 0.0;
+  double _verticalDragDy = 0.0;
   Offset? _videoMiniOffset;
   bool _isDraggingVideoMini = false;
   bool _isOpening = false;
+  bool _isClosingWithSwipe = false;
   bool _isSwitchingTrack = false;
   static const double _maxDragLift = 52.0;
+  static const double _maxDragDrop = 90.0;
   static const double _miniSwipeDistanceThreshold = 36;
   static const double _miniSwipeVelocityThreshold = 320;
+  static const double _miniCloseSwipeDistanceThreshold = 30;
+  static const double _miniCloseSwipeVelocityThreshold = 340;
 
   double get _dragProgress => (_dragLift / _maxDragLift).clamp(0.0, 1.0);
+  double get _dragDropProgress => (_dragDrop / _maxDragDrop).clamp(0.0, 1.0);
 
   void _setDragLift(double value) {
     if (!mounted) return;
     setState(() {
       _dragLift = value.clamp(0.0, _maxDragLift);
+    });
+  }
+
+  void _setDragDrop(double value) {
+    if (!mounted) return;
+    setState(() {
+      _dragDrop = value.clamp(0.0, _maxDragDrop);
     });
   }
 
@@ -210,6 +225,19 @@ class _MiniPlayerState extends State<_MiniPlayer> {
     widget.manager.maximize();
     _isOpening = false;
     _setDragLift(0.0);
+    _setDragDrop(0.0);
+  }
+
+  Future<void> _closeWithSwipeAnimation() async {
+    if (_isClosingWithSwipe) return;
+    _isClosingWithSwipe = true;
+    HapticFeedback.lightImpact();
+    _setDragLift(0.0);
+    _setDragDrop(_maxDragDrop);
+    await Future<void>.delayed(const Duration(milliseconds: 210));
+    if (!mounted) return;
+    await widget.manager.close();
+    _isClosingWithSwipe = false;
   }
 
   bool _shouldTriggerMiniSwipe(DragEndDetails details) {
@@ -265,6 +293,8 @@ class _MiniPlayerState extends State<_MiniPlayer> {
     final dynamicShadowOpacity = 0.08 + (0.12 * progress);
     final dynamicShadowBlur = 22 + (18 * progress);
     final dynamicShadowYOffset = 8 - (4 * progress);
+    final dropProgress = _dragDropProgress;
+    final fadeOpacity = (1.0 - (dropProgress * 0.75)).clamp(0.0, 1.0);
 
     // If we're playing a video in foreground (video fallback), show a
     // compact video mini-player in the bottom-right with pause and close.
@@ -499,36 +529,62 @@ class _MiniPlayerState extends State<_MiniPlayer> {
           onHorizontalDragCancel: () {
             _horizontalDragDx = 0;
           },
+          onVerticalDragStart: (_) {
+            _verticalDragDy = 0;
+          },
           onVerticalDragUpdate: (details) {
-            if (_isOpening) return;
+            if (_isOpening || _isClosingWithSwipe) return;
+            _verticalDragDy += details.delta.dy;
             if (details.delta.dy < 0) {
               _setDragLift(_dragLift + ((-details.delta.dy) * 1.15));
+              if (_dragDrop > 0) {
+                _setDragDrop(_dragDrop - ((-details.delta.dy) * 1.35));
+              }
             } else if (_dragLift > 0) {
               _setDragLift(_dragLift - (details.delta.dy * 1.25));
+            } else {
+              _setDragDrop(_dragDrop + (details.delta.dy * 1.2));
             }
           },
           onVerticalDragEnd: (details) {
-            if (_isOpening) return;
+            if (_isOpening || _isClosingWithSwipe) return;
             final velocity = details.primaryVelocity ?? 0;
+            final shouldClose =
+                velocity > _miniCloseSwipeVelocityThreshold ||
+                _verticalDragDy > _miniCloseSwipeDistanceThreshold;
+            if (shouldClose) {
+              _verticalDragDy = 0;
+              unawaited(_closeWithSwipeAnimation());
+              return;
+            }
             final shouldOpen = velocity < -340 || _dragProgress > 0.36;
             if (shouldOpen) {
+              _verticalDragDy = 0;
               unawaited(_openWithGestureAnimation());
               return;
             }
+            _verticalDragDy = 0;
             _setDragLift(0.0);
+            _setDragDrop(0.0);
           },
           onVerticalDragCancel: () {
             if (_isOpening) return;
+            _verticalDragDy = 0;
             _setDragLift(0.0);
+            _setDragDrop(0.0);
           },
           child: AnimatedSlide(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutBack,
-            offset: Offset(0, -(0.32 * progress)),
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutCubic,
+            offset: Offset(0, -(0.32 * progress) + (0.68 * dropProgress)),
             child: AnimatedScale(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOutBack,
-              scale: 1 + (0.03 * progress),
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutCubic,
+              scale: 1 + (0.03 * progress) - (0.05 * dropProgress),
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutQuad,
+                opacity: fadeOpacity,
               child: ClipRRect(
                 clipBehavior: Clip.antiAlias,
                 borderRadius: BorderRadius.circular(dynamicRadius),
@@ -643,6 +699,7 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                   ),
                 ),
               ),
+              ),
             ),
           ),
         ),
@@ -753,6 +810,10 @@ class _FullPlayerState extends State<_FullPlayer> {
   bool _wasLyricsLayout = false;
   Color _albumBackgroundTint = const Color(0xFF1A2030);
   String? _lastPaletteArtworkUrl;
+  String? _favoritedVideoId;
+  int _favoritePulseNonce = 0;
+  String? _lastFavoriteSyncedVideoId;
+  int _favoriteSyncRequestId = 0;
 
   VideoPlayerManager get manager => widget.manager;
 
@@ -823,6 +884,37 @@ class _FullPlayerState extends State<_FullPlayer> {
     while (_backgroundPaletteCache.length > _maxPaletteCacheEntries) {
       _backgroundPaletteCache.remove(_backgroundPaletteCache.keys.first);
     }
+  }
+
+  Future<void> _syncFavoriteStateForVideo(
+    PlaylistService playlistService,
+    String? videoId,
+  ) async {
+    final cleanId = (videoId ?? '').trim();
+    if (cleanId.isEmpty) {
+      if (!mounted || _favoritedVideoId == null) return;
+      setState(() {
+        _favoritedVideoId = null;
+      });
+      return;
+    }
+    if (_lastFavoriteSyncedVideoId == cleanId) return;
+    _lastFavoriteSyncedVideoId = cleanId;
+    final requestId = ++_favoriteSyncRequestId;
+    final playlists = await playlistService.getPlaylists();
+    if (!mounted || requestId != _favoriteSyncRequestId) return;
+    final favorites = playlists.firstWhere(
+      (playlist) => PlaylistService.isFavoritesPlaylistName(playlist.name),
+      orElse: () =>
+          app_models.Playlist(name: PlaylistService.favoritesPlaylistName),
+    );
+    final isInFavorites = favorites.videos.any(
+      (video) => video.videoId.trim() == cleanId,
+    );
+    if (!mounted || requestId != _favoriteSyncRequestId) return;
+    setState(() {
+      _favoritedVideoId = isInFavorites ? cleanId : null;
+    });
   }
 
   Widget _buildAlbumBlurBackground(
@@ -1096,8 +1188,12 @@ class _FullPlayerState extends State<_FullPlayer> {
         final settings = context.watch<AppSettingsService?>();
         final playlistService = context.read<PlaylistService>();
         final videoId = manager.currentVideoId;
+        unawaited(_syncFavoriteStateForVideo(playlistService, videoId));
         final canDownload = videoId != null && !manager.isLocal;
         final canAddToPlaylist = videoId != null;
+        final isCurrentTrackFavorited =
+            (manager.currentVideoId ?? '').isNotEmpty &&
+            manager.currentVideoId == _favoritedVideoId;
         final thermalSaverMode = manager.isLowPowerModeEnabled;
         final animatedCoverEnabled =
             (settings?.animatedCutoutCovers ?? true) && !thermalSaverMode;
@@ -1313,7 +1409,7 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                           manager: manager,
                                                         ),
                                                     onAddToFavorites: () =>
-                                                        _addCurrentTrackToFavorites(
+                                                        _handleToggleFavorites(
                                                           context: context,
                                                           playlistService:
                                                               playlistService,
@@ -1321,6 +1417,10 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                               downloadService,
                                                           manager: manager,
                                                         ),
+                                                    favoriteButtonActive:
+                                                        isCurrentTrackFavorited,
+                                                    favoritePulseNonce:
+                                                        _favoritePulseNonce,
                                                   )
                                                 : canShowEmbeddedVideo
                                                 ? _EmbeddedNowPlayingVideoHero(
@@ -1352,7 +1452,7 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                           manager: manager,
                                                         ),
                                                     onAddToFavorites: () =>
-                                                        _addCurrentTrackToFavorites(
+                                                        _handleToggleFavorites(
                                                           context: context,
                                                           playlistService:
                                                               playlistService,
@@ -1360,6 +1460,10 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                               downloadService,
                                                           manager: manager,
                                                         ),
+                                                    favoriteButtonActive:
+                                                        isCurrentTrackFavorited,
+                                                    favoritePulseNonce:
+                                                        _favoritePulseNonce,
                                                   )
                                                 : _DefaultNowPlayingHero(
                                                     key: const ValueKey(
@@ -1386,7 +1490,7 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                           manager: manager,
                                                         ),
                                                     onAddToFavorites: () =>
-                                                        _addCurrentTrackToFavorites(
+                                                        _handleToggleFavorites(
                                                           context: context,
                                                           playlistService:
                                                               playlistService,
@@ -1394,6 +1498,10 @@ class _FullPlayerState extends State<_FullPlayer> {
                                                               downloadService,
                                                           manager: manager,
                                                         ),
+                                                    favoriteButtonActive:
+                                                        isCurrentTrackFavorited,
+                                                    favoritePulseNonce:
+                                                        _favoritePulseNonce,
                                                   ),
                                           ),
                                         ),
@@ -1574,9 +1682,7 @@ class _FullPlayerState extends State<_FullPlayer> {
     if (!context.mounted) return;
 
     if (playlists.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No hay playlists disponibles.')),
-      );
+      showIosNotice(context, 'No hay playlists disponibles.');
       return;
     }
 
@@ -1669,6 +1775,50 @@ class _FullPlayerState extends State<_FullPlayer> {
       message: 'Añadida a Favoritos',
       icon: CupertinoIcons.star_fill,
     );
+  }
+
+  Future<void> _handleToggleFavorites({
+    required BuildContext context,
+    required PlaylistService playlistService,
+    required DownloadService downloadService,
+    required VideoPlayerManager manager,
+  }) async {
+    final currentVideoId = manager.currentVideoId;
+    if (currentVideoId == null || currentVideoId.trim().isEmpty) return;
+    final cleanId = currentVideoId.trim();
+    final isAlreadyFavorite = _favoritedVideoId == cleanId;
+    if (isAlreadyFavorite) {
+      final playlists = await playlistService.getPlaylists();
+      final favorites = playlists.firstWhere(
+        (playlist) => PlaylistService.isFavoritesPlaylistName(playlist.name),
+        orElse: () =>
+            app_models.Playlist(name: PlaylistService.favoritesPlaylistName),
+      );
+      await playlistService.removeVideoFromPlaylist(favorites.name, cleanId);
+      if (!context.mounted) return;
+      _showIosTopToast(
+        context,
+        message: 'Eliminada de Favoritos',
+        icon: CupertinoIcons.star_lefthalf_fill,
+      );
+      if (!mounted) return;
+      setState(() {
+        _favoritedVideoId = null;
+      });
+      return;
+    }
+
+    await _addCurrentTrackToFavorites(
+      context: context,
+      playlistService: playlistService,
+      downloadService: downloadService,
+      manager: manager,
+    );
+    if (!mounted) return;
+    setState(() {
+      _favoritedVideoId = cleanId;
+      _favoritePulseNonce++;
+    });
   }
 
   void _showIosTopToast(
@@ -1866,9 +2016,7 @@ class _FullPlayerState extends State<_FullPlayer> {
     final currentVideoId = (manager.currentVideoId ?? '').trim();
     final rawArtist = manager.trackArtist?.trim();
     if (currentVideoId.isEmpty && (rawArtist == null || rawArtist.isEmpty)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se encontró el nombre del artista.')),
-      );
+      showIosNotice(context, 'No se encontró el nombre del artista.');
       _isOpeningArtistProfile = false;
       return;
     }
@@ -1906,11 +2054,7 @@ class _FullPlayerState extends State<_FullPlayer> {
           channelName == null ||
           channelName.trim().isEmpty) {
         if (!context.mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No se encontró un perfil para este artista.'),
-          ),
-        );
+        showIosNotice(context, 'No se encontró un perfil para este artista.');
         return;
       }
 
@@ -1931,11 +2075,7 @@ class _FullPlayerState extends State<_FullPlayer> {
         stackTrace: s,
       );
       if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No se pudo abrir el perfil del artista.'),
-        ),
-      );
+      showIosNotice(context, 'No se pudo abrir el perfil del artista.');
     } finally {
       yt.close();
       _isOpeningArtistProfile = false;
@@ -2371,6 +2511,8 @@ class _DefaultNowPlayingHero extends StatelessWidget {
   final bool canAddToPlaylist;
   final VoidCallback onAddToPlaylist;
   final VoidCallback onAddToFavorites;
+  final bool favoriteButtonActive;
+  final int favoritePulseNonce;
 
   const _DefaultNowPlayingHero({
     super.key,
@@ -2381,6 +2523,8 @@ class _DefaultNowPlayingHero extends StatelessWidget {
     required this.canAddToPlaylist,
     required this.onAddToPlaylist,
     required this.onAddToFavorites,
+    required this.favoriteButtonActive,
+    required this.favoritePulseNonce,
   });
 
   @override
@@ -2513,6 +2657,8 @@ class _DefaultNowPlayingHero extends StatelessWidget {
               _InlineArtistActionButton(
                 icon: CupertinoIcons.star_fill,
                 onPressed: onAddToFavorites,
+                isActiveFavorite: favoriteButtonActive,
+                pulseNonce: favoritePulseNonce,
               ),
             ],
           ],
@@ -2531,6 +2677,8 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
   final bool canAddToPlaylist;
   final VoidCallback onAddToPlaylist;
   final VoidCallback onAddToFavorites;
+  final bool favoriteButtonActive;
+  final int favoritePulseNonce;
 
   const _EmbeddedNowPlayingVideoHero({
     super.key,
@@ -2542,6 +2690,8 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
     required this.canAddToPlaylist,
     required this.onAddToPlaylist,
     required this.onAddToFavorites,
+    required this.favoriteButtonActive,
+    required this.favoritePulseNonce,
   });
 
   @override
@@ -2669,6 +2819,8 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
               _InlineArtistActionButton(
                 icon: CupertinoIcons.star_fill,
                 onPressed: onAddToFavorites,
+                isActiveFavorite: favoriteButtonActive,
+                pulseNonce: favoritePulseNonce,
               ),
             ],
           ],
@@ -3011,6 +3163,8 @@ class _CompactNowPlayingHeader extends StatelessWidget {
   final bool canAddToPlaylist;
   final VoidCallback onAddToPlaylist;
   final VoidCallback onAddToFavorites;
+  final bool favoriteButtonActive;
+  final int favoritePulseNonce;
 
   const _CompactNowPlayingHeader({
     super.key,
@@ -3021,6 +3175,8 @@ class _CompactNowPlayingHeader extends StatelessWidget {
     required this.canAddToPlaylist,
     required this.onAddToPlaylist,
     required this.onAddToFavorites,
+    required this.favoriteButtonActive,
+    required this.favoritePulseNonce,
   });
 
   @override
@@ -3130,6 +3286,8 @@ class _CompactNowPlayingHeader extends StatelessWidget {
                             icon: CupertinoIcons.star_fill,
                             onPressed: onAddToFavorites,
                             compact: true,
+                            isActiveFavorite: favoriteButtonActive,
+                            pulseNonce: favoritePulseNonce,
                           ),
                         ],
                       ],
@@ -3145,40 +3303,98 @@ class _CompactNowPlayingHeader extends StatelessWidget {
   }
 }
 
-class _InlineArtistActionButton extends StatelessWidget {
+class _InlineArtistActionButton extends StatefulWidget {
   final IconData icon;
   final VoidCallback onPressed;
   final bool compact;
+  final bool isActiveFavorite;
+  final int pulseNonce;
 
   const _InlineArtistActionButton({
     required this.icon,
     required this.onPressed,
     this.compact = false,
+    this.isActiveFavorite = false,
+    this.pulseNonce = 0,
   });
 
   @override
+  State<_InlineArtistActionButton> createState() =>
+      _InlineArtistActionButtonState();
+}
+
+class _InlineArtistActionButtonState extends State<_InlineArtistActionButton>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+    );
+    _scale = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.0, end: 1.22)
+            .chain(CurveTween(curve: Curves.easeOutCubic)),
+        weight: 45,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.22, end: 1.0)
+            .chain(CurveTween(curve: Curves.easeInOutCubic)),
+        weight: 55,
+      ),
+    ]).animate(_controller);
+  }
+
+  @override
+  void didUpdateWidget(covariant _InlineArtistActionButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.pulseNonce != oldWidget.pulseNonce) {
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final size = compact ? 26.0 : 30.0;
-    final iconSize = compact ? 14.0 : 16.0;
-    return CupertinoButton(
-      padding: EdgeInsets.zero,
-      minimumSize: Size(size, size),
-      onPressed: onPressed,
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: Colors.transparent,
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: CupertinoColors.white.withValues(alpha: 0.24),
-            width: 0.6,
+    final size = widget.compact ? 26.0 : 30.0;
+    final iconSize = widget.compact ? 14.0 : 16.0;
+    final active = widget.isActiveFavorite;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return Transform.scale(scale: _scale.value, child: child);
+      },
+      child: CupertinoButton(
+        padding: EdgeInsets.zero,
+        minimumSize: Size(size, size),
+        onPressed: widget.onPressed,
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            color: active ? CupertinoColors.white : Colors.transparent,
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: active
+                  ? CupertinoColors.white
+                  : CupertinoColors.white.withValues(alpha: 0.24),
+              width: 0.6,
+            ),
           ),
-        ),
-        child: Icon(
-          icon,
-          size: iconSize,
-          color: CupertinoColors.white,
+          child: Icon(
+            widget.icon,
+            size: iconSize,
+            color: active ? CupertinoColors.black : CupertinoColors.white,
+          ),
         ),
       ),
     );
@@ -3846,7 +4062,7 @@ class _QueueRow extends StatelessWidget {
       case 'remove':
         unawaited(HapticFeedback.mediumImpact());
         manager.removeQueueItem(item);
-        _showQueueSnackBar(context, 'Quitada de la cola');
+        _showQueueSnackBar(context, 'Eliminada de la cola');
         return;
     }
   }
@@ -3916,51 +4132,7 @@ class _QueueRow extends StatelessWidget {
   }
 
   void _showQueueSnackBar(BuildContext context, String message) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        behavior: SnackBarBehavior.floating,
-        elevation: 0,
-        backgroundColor: Colors.transparent,
-        margin: EdgeInsets.only(
-          left: 14,
-          right: 14,
-          bottom: MediaQuery.of(context).padding.bottom + 102,
-        ),
-        content: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: _PerformanceBackdrop(
-            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: isDark
-                    ? const Color(0xFF0D0F13).withValues(alpha: 0.84)
-                    : Colors.white.withValues(alpha: 0.86),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: isDark
-                      ? Colors.white.withValues(alpha: 0.14)
-                      : Colors.black.withValues(alpha: 0.08),
-                  width: 0.6,
-                ),
-              ),
-              child: Text(
-                message,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontFamily: '.SF Pro Text',
-                  fontWeight: FontWeight.w600,
-                  fontSize: 14,
-                  color: isDark ? Colors.white : Colors.black,
-                  decoration: TextDecoration.none,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
+    showIosNotice(context, message, duration: const Duration(milliseconds: 1500));
   }
 }
 

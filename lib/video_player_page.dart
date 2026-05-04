@@ -12,6 +12,7 @@ import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/ios_notice.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -132,9 +133,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         setState(() {
           _isLoading = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Error al reproducir el video.')),
-        );
+        showIosNotice(context, 'Error al reproducir el video.');
         _manager.close();
       }
     }
@@ -224,9 +223,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         setState(() {
           _isLoading = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al cambiar de calidad: $e')),
-        );
+        showIosNotice(context, 'Error al cambiar de calidad: $e');
       }
       rethrow;
     }
@@ -534,9 +531,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                           videoManager: _manager,
                         );
                         if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Añadido a favoritos')),
-                        );
+                        showIosNotice(context, 'Añadido a favoritos');
                       },
                     ),
                     IconButton(
@@ -546,12 +541,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                         if (_muxedStreamInfos.isNotEmpty) {
                           _showQualityOptions(context);
                         } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text(
-                                'No hay otras calidades disponibles.',
-                              ),
-                            ),
+                          showIosNotice(
+                            context,
+                            'No hay otras calidades disponibles.',
                           );
                         }
                       },

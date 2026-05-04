@@ -2089,9 +2089,18 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     return uri;
   }
 
-  Future<Uri?> _resolveQueueItemCacheUri(String videoId) async {
+  Future<Uri?> _resolveQueueItemCacheUri(
+    String videoId, {
+    int? preferredBackendIndex,
+  }) async {
+    // Si estamos reproduciendo video, no precargamos la cola de canciones
+    // ni consultamos backend para los siguientes items.
+    if (_usingHiddenVideo) return null;
     try {
-      final resolved = await _ytResolverService.resolveVideo(videoId);
+      final resolved = await _ytResolverService.resolveVideo(
+        videoId,
+        preferredBackendIndex: preferredBackendIndex,
+      );
       final resolverCandidates = <String?>[
         resolved?.audioUrl,
         resolved?.muxedUrl,
@@ -2113,24 +2122,35 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     } catch (_) {}
 
-    final backend = await _resolveDownloadSourceViaBackend(videoId);
+    final backend = await _resolveDownloadSourceViaBackend(
+      videoId,
+      preferredBackendIndex: preferredBackendIndex,
+    );
     final backendUri = _validHttpUri(backend?.sourceUrl);
     if (backendUri != null) return backendUri;
     return null;
   }
 
-  Future<void> _prefetchQueueItemInSongCache(PlaybackQueueItem item) async {
+  Future<void> _prefetchQueueItemInSongCache(
+    PlaybackQueueItem item, {
+    int? preferredBackendIndex,
+  }) async {
+    if (_usingHiddenVideo) return;
     if (item.isLocal) return;
     final videoId = item.videoId.trim();
     if (videoId.isEmpty) return;
     final cached = await SongStreamCacheService.resolveFreshFilePath(videoId);
     if (cached != null && cached.isNotEmpty) return;
-    final uri = await _resolveQueueItemCacheUri(videoId);
+    final uri = await _resolveQueueItemCacheUri(
+      videoId,
+      preferredBackendIndex: preferredBackendIndex,
+    );
     if (uri == null) return;
     await _warmSongCacheFromUri(videoId: videoId, uri: uri);
   }
 
   void _prefetchNextQueueSongCacheBatch() {
+    if (_usingHiddenVideo) return;
     final queueSnapshot = <PlaybackQueueItem>[
       ..._manualPlaybackQueue,
       ..._playbackQueue,
@@ -2144,17 +2164,30 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (batch.length >= _queueSongCacheBatchSize) break;
     }
     if (batch.isEmpty) return;
+    final backendCount = _ytResolverService.backendCount;
+    final backendOrder = backendCount > 0
+        ? (List<int>.generate(backendCount, (i) => i)..shuffle())
+        : const <int>[];
+    var backendCursor = 0;
     for (final item in batch) {
       final id = item.videoId.trim();
       _queueSongCachePrefetchedIds.add(id);
       _queueSongCachePrefetchedOrder.add(id);
-      unawaited(_prefetchQueueItemInSongCache(item));
+      final preferredBackendIndex = backendOrder.isEmpty
+          ? null
+          : backendOrder[backendCursor++ % backendOrder.length];
+      unawaited(
+        _prefetchQueueItemInSongCache(
+          item,
+          preferredBackendIndex: preferredBackendIndex,
+        ),
+      );
     }
   }
 
   void _maybePrefetchQueueSongCacheBatchOnTrackStart() {
     final currentId = _currentVideoId?.trim() ?? '';
-    if (currentId.isEmpty || _isLocal) return;
+    if (currentId.isEmpty || _isLocal || _usingHiddenVideo) return;
     if (_queueSongCachePrefetchedOrder.isEmpty) {
       _prefetchNextQueueSongCacheBatch();
       return;
@@ -2324,15 +2357,19 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<DownloadSourceInfo?> _resolveDownloadSourceViaBackend(
-    String videoId,
-  ) async {
+    String videoId, {
+    int? preferredBackendIndex,
+  }) async {
     if (!_ytResolverService.isConfigured) {
       log('[backend-resolver] disabled: service not configured');
       return null;
     }
     log('[backend-resolver] resolving source for videoId=$videoId');
     try {
-      final resolved = await _ytResolverService.resolveVideo(videoId);
+      final resolved = await _ytResolverService.resolveVideo(
+        videoId,
+        preferredBackendIndex: preferredBackendIndex,
+      );
       if (resolved == null) {
         log('[backend-resolver] no source returned for videoId=$videoId');
         return null;

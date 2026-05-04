@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/ios_notice.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
@@ -105,9 +106,7 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
         setState(() {
           _isLoading = false;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al reproducir el video: $e')),
-        );
+        showIosNotice(context, 'Error al reproducir el video: $e');
         _manager.close();
       }
     }
