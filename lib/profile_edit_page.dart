@@ -220,7 +220,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     await showCupertinoModalPopup<void>(
       context: context,
       builder: (dialogContext) => CupertinoActionSheet(
-        title: const Text('Selecciona un marco'),
+        title: const Text('Selecciona un Sticker'),
         message: SizedBox(
           height: 220,
           child: frames.isEmpty
@@ -267,7 +267,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
               await widget.profile.updateFrameUrl(null);
               await _syncProfilePhotoToSupabase();
             },
-            child: const Text('Quitar marco'),
+            child: const Text('Quitar Sticker'),
           ),
         ],
         cancelButton: CupertinoActionSheetAction(

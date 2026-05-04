@@ -201,7 +201,7 @@ class _AccountPageState extends State<AccountPage> {
     await showCupertinoModalPopup<void>(
       context: context,
       builder: (dialogContext) => CupertinoActionSheet(
-        title: const Text('Selecciona un marco'),
+        title: const Text('Selecciona un Sticker'),
         message: SizedBox(
           height: 220,
           child: frames.isEmpty
