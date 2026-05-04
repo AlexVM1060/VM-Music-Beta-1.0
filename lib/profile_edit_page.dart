@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:myapp/services/profile_frames_service.dart';
 import 'package:myapp/services/profile_service.dart';
 import 'package:myapp/services/social_service.dart';
 import 'package:myapp/video_player_manager.dart';
@@ -25,7 +26,20 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   final ImagePicker _picker = ImagePicker();
   bool _isSaving = false;
   bool _isPublishing = false;
+  bool _isLoadingFrames = false;
+  String? _framesStatusMessage;
   late bool _isPublicProfileEnabled;
+
+  String _stripQuery(String url) {
+    final idx = url.indexOf('?');
+    if (idx < 0) return url;
+    return url.substring(0, idx);
+  }
+
+  String _cacheBustUrl(String url) {
+    final sep = url.contains('?') ? '&' : '?';
+    return '$url${sep}v=${DateTime.now().millisecondsSinceEpoch}';
+  }
 
   @override
   void initState() {
@@ -186,6 +200,80 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     }
   }
 
+  Future<void> _pickFrame() async {
+    if (_isLoadingFrames) return;
+    setState(() => _isLoadingFrames = true);
+    List<String> frames = const [];
+    try {
+      frames = await ProfileFramesService.fetchFrameUrls();
+    } catch (e) {
+      frames = const [];
+      _framesStatusMessage = 'Error marcos: $e';
+    } finally {
+      if (mounted) setState(() => _isLoadingFrames = false);
+    }
+    if (!mounted) return;
+    await showCupertinoModalPopup<void>(
+      context: context,
+      builder: (dialogContext) => CupertinoActionSheet(
+        title: const Text('Selecciona un marco'),
+        message: SizedBox(
+          height: 220,
+          child: frames.isEmpty
+              ? const Center(child: Text('No hay marcos disponibles'))
+              : GridView.builder(
+                  itemCount: frames.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                  ),
+                  itemBuilder: (_, index) {
+                    final url = frames[index];
+                    final current = (widget.profile.frameUrl ?? '').trim();
+                    final isSelected = _stripQuery(current) == _stripQuery(url);
+                    return GestureDetector(
+                      onTap: () async {
+                        Navigator.of(dialogContext).pop();
+                        await widget.profile.updateFrameUrl(_cacheBustUrl(url));
+                        await _syncProfilePhotoToSupabase();
+                      },
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isSelected
+                                ? CupertinoColors.activeBlue
+                                : CupertinoColors.systemGrey4,
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
+                        padding: const EdgeInsets.all(6),
+                        child: Image.network(url, fit: BoxFit.contain),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          CupertinoActionSheetAction(
+            isDestructiveAction: true,
+            onPressed: () async {
+              Navigator.of(dialogContext).pop();
+              await widget.profile.updateFrameUrl(null);
+              await _syncProfilePhotoToSupabase();
+            },
+            child: const Text('Quitar marco'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('Cerrar'),
+        ),
+      ),
+    );
+  }
+
   Future<void> _onTogglePublicProfile(bool enabled) async {
     if (_isPublishing || _isSaving) return;
     setState(() {
@@ -210,6 +298,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   @override
   Widget build(BuildContext context) {
     final photoPath = (widget.profile.photoPath ?? '').trim();
+    final frameUrl = (widget.profile.frameUrl ?? '').trim();
     final hasLocalPhoto = photoPath.isNotEmpty && File(photoPath).existsSync();
     final cardColor = CupertinoColors.secondarySystemGroupedBackground
         .resolveFrom(context);
@@ -253,19 +342,74 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                         alignment: Alignment.center,
                         child: GestureDetector(
                           onTap: _changePhoto,
-                          child: CircleAvatar(
-                            radius: 54,
-                            backgroundColor: CupertinoColors.tertiarySystemFill
-                                .resolveFrom(context),
-                            backgroundImage: hasLocalPhoto
-                                ? FileImage(File(photoPath))
-                                : null,
-                            child: hasLocalPhoto
-                                ? null
-                                : const Icon(
-                                    CupertinoIcons.person_crop_circle_fill,
-                                    size: 48,
+                          child: SizedBox(
+                            width: 108,
+                            height: 108,
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                CircleAvatar(
+                                  radius: 54,
+                                  backgroundColor: CupertinoColors
+                                      .tertiarySystemFill
+                                      .resolveFrom(context),
+                                  backgroundImage: hasLocalPhoto
+                                      ? FileImage(File(photoPath))
+                                      : null,
+                                  child: hasLocalPhoto
+                                      ? null
+                                      : const Icon(
+                                          CupertinoIcons
+                                              .person_crop_circle_fill,
+                                          size: 48,
+                                        ),
+                                ),
+                                Positioned(
+                                  left: -2,
+                                  bottom: -6,
+                                  child: GestureDetector(
+                                    onTap: _isLoadingFrames ? null : _pickFrame,
+                                    child: SizedBox(
+                                      width: 42,
+                                      height: 42,
+                                      child: frameUrl.isNotEmpty
+                                          ? Container(
+                                              padding: const EdgeInsets.all(1),
+                                              child: Image.network(
+                                                frameUrl,
+                                                key: ValueKey(frameUrl),
+                                                fit: BoxFit.contain,
+                                              ),
+                                            )
+                                          : Container(
+                                              decoration: BoxDecoration(
+                                                color: CupertinoColors.systemGrey5
+                                                    .resolveFrom(context),
+                                                shape: BoxShape.circle,
+                                                border: Border.all(
+                                                  color: CupertinoColors
+                                                      .systemBackground
+                                                      .resolveFrom(context),
+                                                  width: 1.2,
+                                                ),
+                                              ),
+                                              child: _isLoadingFrames
+                                                  ? const CupertinoActivityIndicator(
+                                                      radius: 9,
+                                                    )
+                                                  : Icon(
+                                                      CupertinoIcons.sparkles,
+                                                      size: 20,
+                                                      color: CupertinoColors
+                                                          .label
+                                                          .resolveFrom(context),
+                                                    ),
+                                            ),
+                                    ),
                                   ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -302,6 +446,19 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
               ],
             ),
             const SizedBox(height: 22),
+            if ((_framesStatusMessage ?? '').isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, bottom: 6),
+                child: Text(
+                  _framesStatusMessage!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                  ),
+                ),
+              ),
+            const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.only(left: 6, bottom: 8),
               child: Text(

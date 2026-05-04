@@ -1659,6 +1659,7 @@ class _HomeProfileNowPlayingHeaderState
         a.name == b.name &&
         a.username == b.username &&
         (a.photoUrl ?? '') == (b.photoUrl ?? '') &&
+        (a.frameUrl ?? '') == (b.frameUrl ?? '') &&
         a.note == b.note &&
         a.currentSong == b.currentSong &&
         a.currentArtist == b.currentArtist &&
@@ -1707,6 +1708,7 @@ class _HomeProfileNowPlayingHeaderState
         ? 'Escribe algo...'
         : profile.bio.trim();
     final photoPath = (profile.photoPath ?? '').trim();
+    final frameUrl = (profile.frameUrl ?? '').trim();
     final hasLocalPhoto = photoPath.isNotEmpty && File(photoPath).existsSync();
 
     return Padding(
@@ -1732,6 +1734,7 @@ class _HomeProfileNowPlayingHeaderState
                 imageProvider: hasLocalPhoto
                     ? FileImage(File(photoPath))
                     : null,
+                frameImageUrl: frameUrl.isEmpty ? null : frameUrl,
               ),
               const SizedBox(width: 26),
               ..._followingUsers.map((friend) {
@@ -1761,6 +1764,9 @@ class _HomeProfileNowPlayingHeaderState
                         ? '@${friend.username}'
                         : friend.name.trim(),
                     imageProvider: _friendImageProvider(friend),
+                    frameImageUrl: (friend.frameUrl ?? '').trim().isEmpty
+                        ? null
+                        : friend.frameUrl!.trim(),
                   ),
                 );
               }),
@@ -1807,6 +1813,7 @@ class _HomeSocialPreviewCard extends StatelessWidget {
   final String noteText;
   final String footerText;
   final ImageProvider<Object>? imageProvider;
+  final String? frameImageUrl;
 
   const _HomeSocialPreviewCard({
     super.key,
@@ -1814,6 +1821,7 @@ class _HomeSocialPreviewCard extends StatelessWidget {
     required this.noteText,
     required this.footerText,
     required this.imageProvider,
+    required this.frameImageUrl,
   });
 
   @override
@@ -1875,6 +1883,24 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                   ),
                 ),
               ),
+              if ((frameImageUrl ?? '').trim().isNotEmpty)
+                Positioned(
+                  left: -2,
+                  bottom: -3,
+                  child: IgnorePointer(
+                    child: _HomeFloatingFrameDrift(
+                      child: SizedBox(
+                        width: 36,
+                        height: 36,
+                        child: Image.network(
+                          frameImageUrl!,
+                          key: ValueKey<String>(frameImageUrl!),
+                          fit: BoxFit.contain,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               Positioned(
                 right: 0,
                 bottom: 0,
@@ -1972,6 +1998,57 @@ class _HomeAddFriendCard extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _HomeFloatingFrameDrift extends StatefulWidget {
+  final Widget child;
+
+  const _HomeFloatingFrameDrift({required this.child});
+
+  @override
+  State<_HomeFloatingFrameDrift> createState() => _HomeFloatingFrameDriftState();
+}
+
+class _HomeFloatingFrameDriftState extends State<_HomeFloatingFrameDrift>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late final Animation<double> _xAnimation;
+  late final Animation<double> _yAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3200),
+    )..repeat(reverse: true);
+    _xAnimation = Tween<double>(begin: -3.5, end: 3.5).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOutSine),
+    );
+    _yAnimation = Tween<double>(begin: -2.0, end: 2.0).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final wave = 0.9 + (0.1 * math.sin(_controller.value * 2 * math.pi));
+        return Transform.translate(
+          offset: Offset(_xAnimation.value * wave, _yAnimation.value * wave),
+          child: widget.child,
+        );
+      },
     );
   }
 }

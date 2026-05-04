@@ -7,6 +7,7 @@ class ProfileService extends ChangeNotifier {
   static const String _usernameKey = 'username';
   static const String _bioKey = 'bio';
   static const String _photoPathKey = 'photo_path';
+  static const String _frameUrlKey = 'frame_url';
   static const String _followersKey = 'followers_count';
   static const String _isPublicProfileKey = 'is_public_profile';
 
@@ -17,6 +18,7 @@ class ProfileService extends ChangeNotifier {
   String _username = '@usuario';
   String _bio = 'Escribe una biografia para tu perfil.';
   String? _photoPath;
+  String? _frameUrl;
   int _followersCount = 0;
   bool _isPublicProfile = false;
 
@@ -25,6 +27,7 @@ class ProfileService extends ChangeNotifier {
   String get username => _username;
   String get bio => _bio;
   String? get photoPath => _photoPath;
+  String? get frameUrl => _frameUrl;
   int get followersCount => _followersCount;
   bool get isPublicProfile => _isPublicProfile;
 
@@ -42,6 +45,8 @@ class ProfileService extends ChangeNotifier {
         : _bio;
     final rawPhoto = (_box!.get(_photoPathKey) as String?)?.trim();
     _photoPath = (rawPhoto == null || rawPhoto.isEmpty) ? null : rawPhoto;
+    final rawFrame = (_box!.get(_frameUrlKey) as String?)?.trim();
+    _frameUrl = (rawFrame == null || rawFrame.isEmpty) ? null : rawFrame;
     _followersCount = (_box!.get(_followersKey) as int?) ?? 0;
     _isPublicProfile = (_box!.get(_isPublicProfileKey) as bool?) ?? false;
     _isReady = true;
@@ -85,6 +90,21 @@ class ProfileService extends ChangeNotifier {
     } else {
       _photoPath = clean;
       await box.put(_photoPathKey, clean);
+    }
+    notifyListeners();
+  }
+
+  Future<void> updateFrameUrl(String? url) async {
+    final box = _box;
+    if (box == null) return;
+
+    final clean = url?.trim();
+    if (clean == null || clean.isEmpty) {
+      _frameUrl = null;
+      await box.delete(_frameUrlKey);
+    } else {
+      _frameUrl = clean;
+      await box.put(_frameUrlKey, clean);
     }
     notifyListeners();
   }

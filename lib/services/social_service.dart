@@ -10,6 +10,7 @@ class SocialUser {
   final String name;
   final String username;
   final String? photoUrl;
+  final String? frameUrl;
   final String note;
   final String currentSong;
   final String currentArtist;
@@ -21,6 +22,7 @@ class SocialUser {
     required this.name,
     required this.username,
     required this.photoUrl,
+    required this.frameUrl,
     required this.note,
     required this.currentSong,
     required this.currentArtist,
@@ -36,6 +38,9 @@ class SocialUser {
       photoUrl: (map['photo_url'] as String?)?.trim().isEmpty == true
           ? null
           : map['photo_url'] as String?,
+      frameUrl: (map['frame_url'] as String?)?.trim().isEmpty == true
+          ? null
+          : map['frame_url'] as String?,
       note: (map['note_profile'] ?? '').toString(),
       currentSong: (map['current_song'] ?? '').toString(),
       currentArtist: (map['current_artist'] ?? '').toString(),
@@ -92,6 +97,9 @@ class SocialService extends ChangeNotifier {
       'name': profile.name.trim(),
       'username': username,
       'photo_url': photoUrl,
+      'frame_url': (profile.frameUrl ?? '').trim().isEmpty
+          ? null
+          : profile.frameUrl!.trim(),
       'note_profile': profile.bio.trim(),
       'current_song': currentSong.trim(),
       'current_artist': currentArtist.trim(),
@@ -116,6 +124,9 @@ class SocialService extends ChangeNotifier {
         'id': userId,
         'name': profile.name.trim(),
         'username': username,
+        'frame_url': (profile.frameUrl ?? '').trim().isEmpty
+            ? null
+            : profile.frameUrl!.trim(),
         'note_profile': profile.bio.trim(),
         'current_song': currentSong.trim(),
         'current_artist': currentArtist.trim(),

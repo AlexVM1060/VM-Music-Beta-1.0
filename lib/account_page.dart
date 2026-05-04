@@ -12,6 +12,7 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/playlist_detail_page.dart';
 import 'package:myapp/playlists_page.dart';
 import 'package:myapp/profile_edit_page.dart';
+import 'package:myapp/services/profile_frames_service.dart';
 import 'package:myapp/services/history_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
@@ -38,6 +39,7 @@ class _AccountPageState extends State<AccountPage> {
   final TextEditingController _noteController = TextEditingController();
   final FocusNode _noteFocusNode = FocusNode();
   bool _isEditingNoteInline = false;
+  bool _isLoadingFrames = false;
   bool _showAllPlaylists = false;
   Playlist? _selectedPlaylist;
   int _playlistTransitionDirection = 1;
@@ -169,6 +171,90 @@ class _AccountPageState extends State<AccountPage> {
     } catch (_) {
       // Mejor esfuerzo: no bloqueamos cambio de foto por red/supabase.
     }
+  }
+
+  String _stripQuery(String url) {
+    final idx = url.indexOf('?');
+    if (idx < 0) return url;
+    return url.substring(0, idx);
+  }
+
+  String _cacheBustUrl(String url) {
+    final sep = url.contains('?') ? '&' : '?';
+    return '$url${sep}v=${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  Future<void> _pickFrame(ProfileService profile) async {
+    if (_isLoadingFrames) return;
+    setState(() => _isLoadingFrames = true);
+    List<String> frames = const [];
+    try {
+      frames = await ProfileFramesService.fetchFrameUrls();
+    } catch (_) {
+      frames = const [];
+    } finally {
+      if (mounted) setState(() => _isLoadingFrames = false);
+    }
+    if (!mounted) return;
+    await showCupertinoModalPopup<void>(
+      context: context,
+      builder: (dialogContext) => CupertinoActionSheet(
+        title: const Text('Selecciona un marco'),
+        message: SizedBox(
+          height: 220,
+          child: frames.isEmpty
+              ? const Center(child: Text('No hay marcos disponibles'))
+              : GridView.builder(
+                  itemCount: frames.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    mainAxisSpacing: 8,
+                    crossAxisSpacing: 8,
+                  ),
+                  itemBuilder: (_, index) {
+                    final url = frames[index];
+                    final current = (profile.frameUrl ?? '').trim();
+                    final isSelected = _stripQuery(current) == _stripQuery(url);
+                    return GestureDetector(
+                      onTap: () async {
+                        Navigator.of(dialogContext).pop();
+                        await profile.updateFrameUrl(_cacheBustUrl(url));
+                        await _syncProfileToSupabase(profile);
+                      },
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isSelected
+                                ? CupertinoColors.activeBlue
+                                : CupertinoColors.systemGrey4,
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
+                        padding: const EdgeInsets.all(6),
+                        child: Image.network(url, fit: BoxFit.contain),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          CupertinoActionSheetAction(
+            isDestructiveAction: true,
+            onPressed: () async {
+              Navigator.of(dialogContext).pop();
+              await profile.updateFrameUrl(null);
+              await _syncProfileToSupabase(profile);
+            },
+            child: const Text('Quitar marco'),
+          ),
+        ],
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('Cerrar'),
+        ),
+      ),
+    );
   }
 
   void _startInlineNoteEdit(ProfileService profile) {
@@ -449,59 +535,127 @@ class _AccountPageState extends State<AccountPage> {
                                     ),
                                     child: Column(
                                       children: [
-                                        SizedBox(
-                                          width: 260,
-                                          height: 188,
-                                          child: Stack(
-                                            clipBehavior: Clip.none,
-                                            children: [
-                                              Align(
-                                                alignment:
-                                                    Alignment.bottomCenter,
-                                                child: GestureDetector(
-                                                  onTap: () =>
-                                                      _changePhoto(profile),
-                                                  child: CircleAvatar(
-                                                    radius: 82,
-                                                    backgroundColor:
-                                                        CupertinoColors
-                                                            .tertiarySystemFill
-                                                            .resolveFrom(
-                                                              context,
+                                        Builder(
+                                          builder: (context) {
+                                            final frameUrl =
+                                                (profile.frameUrl ?? '').trim();
+                                            return SizedBox(
+                                              width: 260,
+                                              height: 188,
+                                              child: Stack(
+                                                clipBehavior: Clip.none,
+                                                children: [
+                                                  Align(
+                                                    alignment:
+                                                        Alignment.bottomCenter,
+                                                    child: GestureDetector(
+                                                      onTap: () =>
+                                                          _changePhoto(profile),
+                                                      child: SizedBox(
+                                                        width: 164,
+                                                        height: 164,
+                                                        child: Stack(
+                                                          children: [
+                                                            CircleAvatar(
+                                                              radius: 82,
+                                                              backgroundColor:
+                                                                  CupertinoColors
+                                                                      .tertiarySystemFill
+                                                                      .resolveFrom(
+                                                                        context,
+                                                                      ),
+                                                              backgroundImage:
+                                                                  (profile.photoPath !=
+                                                                              null &&
+                                                                          profile
+                                                                              .photoPath!
+                                                                              .isNotEmpty &&
+                                                                          File(
+                                                                            profile.photoPath!,
+                                                                          ).existsSync())
+                                                                      ? FileImage(
+                                                                          File(
+                                                                            profile.photoPath!,
+                                                                          ),
+                                                                        )
+                                                                      : null,
+                                                              child:
+                                                                  (profile.photoPath ==
+                                                                              null ||
+                                                                          profile
+                                                                              .photoPath!
+                                                                              .isEmpty)
+                                                                      ? const Icon(
+                                                                          CupertinoIcons
+                                                                              .person_crop_circle_fill,
+                                                                          size:
+                                                                              78,
+                                                                        )
+                                                                      : null,
                                                             ),
-                                                    backgroundImage:
-                                                        (profile.photoPath !=
-                                                                null &&
-                                                            profile
-                                                                .photoPath!
-                                                                .isNotEmpty &&
-                                                            File(
-                                                              profile
-                                                                  .photoPath!,
-                                                            ).existsSync())
-                                                        ? FileImage(
-                                                            File(
-                                                              profile
-                                                                  .photoPath!,
+                                                            Positioned(
+                                                              left: 4,
+                                                              bottom: -2,
+                                                              child: GestureDetector(
+                                                                onTap: _isLoadingFrames
+                                                                    ? null
+                                                                    : () => _pickFrame(profile),
+                                                                child: _FloatingNoteDrift(
+                                                                  child: SizedBox(
+                                                                    width: 60,
+                                                                    height: 60,
+                                                                    child: frameUrl
+                                                                            .isNotEmpty
+                                                                        ? Container(
+                                                                            padding:
+                                                                                const EdgeInsets.all(
+                                                                                  1,
+                                                                                ),
+                                                                            child:
+                                                                                Image.network(
+                                                                              frameUrl,
+                                                                              key: ValueKey(
+                                                                                frameUrl,
+                                                                              ),
+                                                                              fit:
+                                                                                  BoxFit.contain,
+                                                                            ),
+                                                                          )
+                                                                        : Container(
+                                                                            decoration: BoxDecoration(
+                                                                              color: CupertinoColors.systemGrey5.resolveFrom(
+                                                                                context,
+                                                                              ),
+                                                                              shape: BoxShape.circle,
+                                                                              border: Border.all(
+                                                                                color: CupertinoColors.systemBackground.resolveFrom(
+                                                                                  context,
+                                                                                ),
+                                                                                width: 1.2,
+                                                                              ),
+                                                                            ),
+                                                                            child: _isLoadingFrames
+                                                                                ? const CupertinoActivityIndicator(
+                                                                                    radius: 12,
+                                                                                  )
+                                                                                : Icon(
+                                                                                    CupertinoIcons.sparkles,
+                                                                                    size: 24,
+                                                                                    color: CupertinoColors.label.resolveFrom(
+                                                                                      context,
+                                                                                    ),
+                                                                                  ),
+                                                                          ),
+                                                                  ),
+                                                                ),
+                                                              ),
                                                             ),
-                                                          )
-                                                        : null,
-                                                    child:
-                                                        (profile.photoPath ==
-                                                                null ||
-                                                            profile
-                                                                .photoPath!
-                                                                .isEmpty)
-                                                        ? const Icon(
-                                                            CupertinoIcons
-                                                                .person_crop_circle_fill,
-                                                            size: 78,
-                                                          )
-                                                        : null,
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ),
                                                   ),
-                                                ),
-                                              ),
-                                              AnimatedAlign(
+                                                  AnimatedAlign(
                                                 duration: const Duration(
                                                   milliseconds: 620,
                                                 ),
@@ -709,9 +863,11 @@ class _AccountPageState extends State<AccountPage> {
                                                     ),
                                                   ),
                                                 ),
+                                                  ),
+                                                ],
                                               ),
-                                            ],
-                                          ),
+                                            );
+                                          },
                                         ),
                                         const SizedBox(height: 14),
                                         Text(
