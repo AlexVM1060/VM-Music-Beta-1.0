@@ -4,11 +4,11 @@
   "minimumSupportedVersion": "0.4.7",
   "force": false,
   "title": "Nueva versión disponible",
-  "message": "Lun 4. de may. 04:20 p.m.\nLos resultados de las busquedas ahora son 'más precisas'\nAhora puedes escuchar la cancion que esta reproduciendo tu amigo dando clic en su foto de perfil'\n\nLas Sugerencias para ti han mejorado\nTambien se muestran Albumes Sugeridos en el Inicio\n\nAhora puedes anclar playlists en la biblioteca\n\nPuedes mantener preesionado sobre varios items, como canciones y playlists\n\nTu nota y la reproduccion actual ahora aparecen en el inicio\n\nEl reproductor ha sido rediseñado\n\nCorrección de errores y mejoras de rendimiento",
+  "message": "Lun 4. de may. 06:36 p.m.\nLos resultados de las busquedas ahora son 'más precisas'\nAhora puedes escuchar la cancion que esta reproduciendo tu amigo dando clic en su foto de perfil'\n\nLas Sugerencias para ti han mejorado\nTambien se muestran Albumes Sugeridos en el Inicio\n\nAhora puedes anclar playlists en la biblioteca\n\nPuedes mantener preesionado sobre varios items, como canciones y playlists\n\nTu nota y la reproduccion actual ahora aparecen en el inicio\n\nEl reproductor ha sido rediseñado\n\nCorrección de errores y mejoras de rendimiento",
   "actions": [
     {
       "label": "Actualizar - Rene",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/6a87cee23f4a.plist",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/53c7c6c852fd.plist",
       "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/6ec486e42c00.plist"
     }
   ]
