@@ -21,7 +21,8 @@ class ProfileFramesService {
               lower.endsWith('.png') ||
               lower.endsWith('.webp') ||
               lower.endsWith('.jpg') ||
-              lower.endsWith('.jpeg');
+              lower.endsWith('.jpeg') ||
+              lower.endsWith('.gif');
           if (!isImage) continue;
           final objectPath = path.isEmpty ? name : '$path/$name';
           urls.add(client.storage.from(bucket).getPublicUrl(objectPath));

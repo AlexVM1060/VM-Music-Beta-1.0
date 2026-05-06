@@ -415,13 +415,13 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Future<_HomeShelf> _buildSuggestedAlbumsShelf(List<VideoHistory> history) async {
+  Future<_HomeShelf> _buildSuggestedAlbumsShelf(
+    List<VideoHistory> history,
+  ) async {
     final topArtists = _extractTopArtists(history);
     final queries = <String>[
       'youtube music albums for you',
-      ...topArtists
-          .take(5)
-          .map((artist) => '$artist album youtube music'),
+      ...topArtists.take(5).map((artist) => '$artist album youtube music'),
       ...topArtists
           .take(3)
           .map((artist) => '$artist full album official audio'),
@@ -1975,22 +1975,89 @@ class _HomeProfileNowPlayingHeader extends StatefulWidget {
 
 class _HomeProfileNowPlayingHeaderState
     extends State<_HomeProfileNowPlayingHeader> {
+  static const List<String> _noteReactionEmojis = <String>[
+    '🔥',
+    '❤️',
+    '👍🏻',
+    '😭',
+    '😯',
+    '🍅',
+  ];
   List<SocialUser> _followingUsers = const <SocialUser>[];
   final YoutubeExplode _yt = YoutubeExplode();
   final AudioPlayer _friendPreviewPlayer = AudioPlayer();
   final YtResolverService _ytResolverService = YtResolverService();
   RealtimeChannel? _friendRealtimeChannel;
+  RealtimeChannel? _reactionNotificationChannel;
+  Timer? _reactionNotificationPollTimer;
+  DateTime _lastReactionNotificationCheckUtc = DateTime.now().toUtc();
   Set<String> _followingIds = <String>{};
   Timer? _friendRefreshTimer;
   final Map<String, String> _friendPhotoUrlById = <String, String>{};
   final Map<String, ImageProvider<Object>> _friendImageById =
       <String, ImageProvider<Object>>{};
-  final Map<String, String> _friendPreviewVideoIdByFriendId = <String, String>{};
+  final Map<String, String> _friendPreviewVideoIdByFriendId =
+      <String, String>{};
   final Map<String, String> _friendPreviewUrlByFriendId = <String, String>{};
+  Map<String, MusicNoteReactionSummary> _noteReactionByUserId =
+      const <String, MusicNoteReactionSummary>{};
+  bool _isSendingReaction = false;
   bool _resumeMainPlayerAfterPreview = false;
-  final ValueNotifier<bool> _isFriendPreviewLoading = ValueNotifier<bool>(false);
+  final ValueNotifier<bool> _isFriendPreviewLoading = ValueNotifier<bool>(
+    false,
+  );
   int _friendPreviewRequestEpoch = 0;
   StreamSubscription<PlayerState>? _friendPreviewStateSub;
+  final Map<String, String> _reactorDisplayNameCache = <String, String>{};
+  final Set<String> _handledReactionNotificationIds = <String>{};
+
+  String _songKeyForTrack({
+    required String? videoId,
+    required String? song,
+    required String? artist,
+  }) {
+    return SocialService.buildMusicNoteSongKey(
+      videoId: videoId,
+      song: song,
+      artist: artist,
+    );
+  }
+
+  String _reactionMapKey({required String userId, required String songKey}) {
+    return SocialService.buildMusicNoteReactionMapKey(
+      targetUserId: userId,
+      songKey: songKey,
+    );
+  }
+
+  void _notifyIfMyReactionCountIncreased({
+    required Map<String, MusicNoteReactionSummary> previous,
+    required Map<String, MusicNoteReactionSummary> next,
+  }) {
+    if (!mounted) return;
+    final social = context.read<SocialService>();
+    final manager = context.read<VideoPlayerManager>();
+    final myId = (social.myUserId ?? '').trim();
+    if (myId.isEmpty) return;
+    final mySongKey = _songKeyForTrack(
+      videoId: manager.currentVideoId,
+      song: manager.trackTitle,
+      artist: manager.trackArtist,
+    );
+    if (mySongKey.isEmpty) return;
+    final key = _reactionMapKey(userId: myId, songKey: mySongKey);
+    final prevCount = previous[key]?.count ?? 0;
+    final nextSummary = next[key];
+    final nextCount = nextSummary?.count ?? 0;
+    if (nextCount <= prevCount) return;
+    final emoji = (nextSummary?.topEmoji ?? '').trim();
+    final suffix = emoji.isEmpty ? '' : ' $emoji';
+    _showQueueIosToast(
+      context,
+      message: 'Nueva reacción en tu canción$suffix',
+      icon: CupertinoIcons.bell_fill,
+    );
+  }
 
   void _setFriendPreviewLoading(bool value) {
     if (_isFriendPreviewLoading.value == value) return;
@@ -2042,14 +2109,176 @@ class _HomeProfileNowPlayingHeaderState
         _setFriendPreviewLoading(false);
       }
     });
+    unawaited(_attachReactionNotificationListener());
+    _reactionNotificationPollTimer = Timer.periodic(
+      const Duration(seconds: 6),
+      (_) {
+        unawaited(_pollReactionNotifications());
+      },
+    );
     unawaited(_loadFollowingPreview());
+  }
+
+  Future<void> _attachReactionNotificationListener() async {
+    try {
+      final social = context.read<SocialService>();
+      await social.ensureReady();
+      if (!mounted) return;
+      final myId = (social.myUserId ?? '').trim();
+      if (myId.isEmpty) return;
+
+      _reactionNotificationChannel?.unsubscribe();
+      _reactionNotificationChannel =
+          Supabase.instance.client.channel('music-note-reactions:$myId')
+            ..onPostgresChanges(
+              event: PostgresChangeEvent.insert,
+              schema: 'public',
+              table: 'music_note_reactions',
+              callback: (payload) {
+                unawaited(_handleReactionNotification(payload.newRecord));
+              },
+            )
+            ..onPostgresChanges(
+              event: PostgresChangeEvent.update,
+              schema: 'public',
+              table: 'music_note_reactions',
+              callback: (payload) {
+                unawaited(_handleReactionNotification(payload.newRecord));
+              },
+            )
+            ..subscribe();
+    } catch (_) {
+      // Mejor esfuerzo: si falla realtime, no bloqueamos la UI.
+    }
+  }
+
+  Future<void> _handleReactionNotification(Map<String, dynamic> row) async {
+    if (!mounted) return;
+    final social = context.read<SocialService>();
+    final myId = (social.myUserId ?? '').trim();
+    if (myId.isEmpty) return;
+    final targetUserId = (row['target_user_id'] ?? '').toString().trim();
+    if (targetUserId != myId) return;
+    final reactorId = (row['reactor_id'] ?? '').toString().trim();
+    if (reactorId.isEmpty || reactorId == myId) return;
+    final emoji = (row['emoji'] ?? '').toString().trim();
+    if (emoji.isEmpty) return;
+
+    final reactorName = await _resolveReactorDisplayName(reactorId);
+    if (!mounted) return;
+    _showQueueIosToast(
+      context,
+      message: '$reactorName reaccionó $emoji a tu canción',
+      icon: CupertinoIcons.bell_fill,
+    );
+  }
+
+  Future<void> _pollReactionNotifications() async {
+    if (!mounted) return;
+    try {
+      final social = context.read<SocialService>();
+      await social.ensureReady();
+      if (!mounted) return;
+      final myId = (social.myUserId ?? '').trim();
+      if (myId.isEmpty) return;
+      final nowUtc = DateTime.now().toUtc();
+      final fromIso = _lastReactionNotificationCheckUtc.toIso8601String();
+
+      final rows = await Supabase.instance.client
+          .from('music_note_reactions')
+          .select('reactor_id, target_user_id, emoji, updated_at, song_key')
+          .eq('target_user_id', myId)
+          .gt('updated_at', fromIso)
+          .order('updated_at', ascending: true)
+          .limit(30);
+
+      _lastReactionNotificationCheckUtc = nowUtc;
+      if (!mounted) return;
+      if (rows.isEmpty) return;
+
+      for (final raw in rows) {
+        final row = Map<String, dynamic>.from(raw);
+        final reactorId = (row['reactor_id'] ?? '').toString().trim();
+        final targetUserId = (row['target_user_id'] ?? '').toString().trim();
+        final emoji = (row['emoji'] ?? '').toString().trim();
+        final updatedAt = (row['updated_at'] ?? '').toString().trim();
+        final songKey = (row['song_key'] ?? '').toString().trim();
+        if (reactorId.isEmpty ||
+            targetUserId.isEmpty ||
+            emoji.isEmpty ||
+            updatedAt.isEmpty) {
+          continue;
+        }
+        if (reactorId == myId || targetUserId != myId) continue;
+        final dedupeKey = '$reactorId|$targetUserId|$songKey|$emoji|$updatedAt';
+        if (_handledReactionNotificationIds.contains(dedupeKey)) continue;
+        _handledReactionNotificationIds.add(dedupeKey);
+        final reactorName = await _resolveReactorDisplayName(reactorId);
+        if (!mounted) return;
+        _showQueueIosToast(
+          context,
+          message: '$reactorName reaccionó $emoji a tu canción',
+          icon: CupertinoIcons.bell_fill,
+        );
+      }
+    } catch (_) {
+      // Mejor esfuerzo.
+    }
+  }
+
+  Future<String> _resolveReactorDisplayName(String reactorId) async {
+    final cleanId = reactorId.trim();
+    if (cleanId.isEmpty) return 'Alguien';
+    final cached = _reactorDisplayNameCache[cleanId];
+    if (cached != null && cached.isNotEmpty) return cached;
+    try {
+      final rows = await Supabase.instance.client
+          .from('users')
+          .select('name, username')
+          .eq('id', cleanId)
+          .limit(1);
+      if (rows.isEmpty) return 'Alguien';
+      final row = Map<String, dynamic>.from(rows.first as Map);
+      final name = (row['name'] ?? '').toString().trim();
+      final username = (row['username'] ?? '').toString().trim();
+      final display = name.isNotEmpty
+          ? name
+          : (username.isNotEmpty ? '@$username' : 'Alguien');
+      _reactorDisplayNameCache[cleanId] = display;
+      return display;
+    } catch (_) {
+      return 'Alguien';
+    }
   }
 
   Future<void> _loadFollowingPreview() async {
     try {
       final social = context.read<SocialService>();
+      final manager = context.read<VideoPlayerManager>();
       await social.ensureReady();
       final following = await social.getFollowingUsers();
+      final myId = (social.myUserId ?? '').trim();
+      final reactionTargetSongKeyByUserId = <String, String>{};
+      for (final user in following) {
+        final songKey = _songKeyForTrack(
+          videoId: user.currentVideoId,
+          song: user.currentSong,
+          artist: user.currentArtist,
+        );
+        if (songKey.isEmpty) continue;
+        reactionTargetSongKeyByUserId[user.id] = songKey;
+      }
+      final mySongKey = _songKeyForTrack(
+        videoId: manager.currentVideoId,
+        song: manager.trackTitle,
+        artist: manager.trackArtist,
+      );
+      if (myId.isNotEmpty && mySongKey.isNotEmpty) {
+        reactionTargetSongKeyByUserId[myId] = mySongKey;
+      }
+      final reactionByUserId = await social.getMusicNoteReactionSummaries(
+        targetSongKeyByUserId: reactionTargetSongKeyByUserId,
+      );
       if (!mounted) return;
       _attachRealtimeToFriends(following);
       _pruneFriendImageCache(following.map((u) => u.id).toSet());
@@ -2058,11 +2287,21 @@ class _HomeProfileNowPlayingHeaderState
       final hasIdChanges =
           nextIds.length != _followingIds.length ||
           !nextIds.containsAll(_followingIds);
-      if (!hasListChanges && !hasIdChanges) return;
+      final hasReactionChanges = !_sameReactionSummaryMap(
+        _noteReactionByUserId,
+        reactionByUserId,
+      );
+      if (!hasListChanges && !hasIdChanges && !hasReactionChanges) return;
+      final previousReactionMap = _noteReactionByUserId;
       setState(() {
         _followingUsers = following;
         _followingIds = nextIds;
+        _noteReactionByUserId = reactionByUserId;
       });
+      _notifyIfMyReactionCountIncreased(
+        previous: previousReactionMap,
+        next: reactionByUserId,
+      );
     } catch (_) {
       if (!mounted) return;
       _detachFriendRealtime();
@@ -2070,6 +2309,7 @@ class _HomeProfileNowPlayingHeaderState
       setState(() {
         _followingUsers = const <SocialUser>[];
         _followingIds = <String>{};
+        _noteReactionByUserId = const <String, MusicNoteReactionSummary>{};
       });
     }
   }
@@ -2109,7 +2349,9 @@ class _HomeProfileNowPlayingHeaderState
           if (index == -1) return;
           final current = _followingUsers[index];
           if (_sameSocialUser(current, updated)) return;
-          unawaited(_invalidateFriendPreviewCacheIfSongChanged(current, updated));
+          unawaited(
+            _invalidateFriendPreviewCacheIfSongChanged(current, updated),
+          );
           setState(() {
             final next = List<SocialUser>.from(
               _followingUsers,
@@ -2127,11 +2369,36 @@ class _HomeProfileNowPlayingHeaderState
   Future<void> _refreshFriendsFromServer(Set<String> ids) async {
     try {
       if (ids.isEmpty) return;
+      final social = context.read<SocialService>();
+      final manager = context.read<VideoPlayerManager>();
       final rows = await Supabase.instance.client
           .from('users')
           .select()
           .inFilter('id', ids.toList(growable: false));
-      if (!mounted || rows.isEmpty) return;
+      final myId = (social.myUserId ?? '').trim();
+      final reactionTargetSongKeyByUserId = <String, String>{};
+      final mySongKey = _songKeyForTrack(
+        videoId: manager.currentVideoId,
+        song: manager.trackTitle,
+        artist: manager.trackArtist,
+      );
+      if (myId.isNotEmpty && mySongKey.isNotEmpty) {
+        reactionTargetSongKeyByUserId[myId] = mySongKey;
+      }
+      for (final row in rows) {
+        final user = SocialUser.fromMap(Map<String, dynamic>.from(row));
+        final songKey = _songKeyForTrack(
+          videoId: user.currentVideoId,
+          song: user.currentSong,
+          artist: user.currentArtist,
+        );
+        if (songKey.isEmpty) continue;
+        reactionTargetSongKeyByUserId[user.id] = songKey;
+      }
+      final reactionByUserId = await social.getMusicNoteReactionSummaries(
+        targetSongKeyByUserId: reactionTargetSongKeyByUserId,
+      );
+      if (!mounted) return;
       final byId = <String, SocialUser>{};
       for (final row in rows) {
         final user = SocialUser.fromMap(Map<String, dynamic>.from(row));
@@ -2145,10 +2412,20 @@ class _HomeProfileNowPlayingHeaderState
         unawaited(_invalidateFriendPreviewCacheIfSongChanged(user, refreshed));
         next.add(refreshed);
       }
-      if (!changed) return;
+      final hasReactionChanges = !_sameReactionSummaryMap(
+        _noteReactionByUserId,
+        reactionByUserId,
+      );
+      if (!changed && !hasReactionChanges) return;
+      final previousReactionMap = _noteReactionByUserId;
       setState(() {
         _followingUsers = List<SocialUser>.unmodifiable(next);
+        _noteReactionByUserId = reactionByUserId;
       });
+      _notifyIfMyReactionCountIncreased(
+        previous: previousReactionMap,
+        next: reactionByUserId,
+      );
     } catch (_) {
       // Fallback silencioso.
     }
@@ -2187,10 +2464,30 @@ class _HomeProfileNowPlayingHeaderState
     return true;
   }
 
+  bool _sameReactionSummaryMap(
+    Map<String, MusicNoteReactionSummary> a,
+    Map<String, MusicNoteReactionSummary> b,
+  ) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      final other = b[entry.key];
+      if (other == null) return false;
+      if (entry.value.topEmoji != other.topEmoji ||
+          entry.value.count != other.count ||
+          (entry.value.myEmoji ?? '') != (other.myEmoji ?? '')) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   void _pruneFriendImageCache(Set<String> validIds) {
     _friendPhotoUrlById.removeWhere((id, _) => !validIds.contains(id));
     _friendImageById.removeWhere((id, _) => !validIds.contains(id));
-    _friendPreviewVideoIdByFriendId.removeWhere((id, _) => !validIds.contains(id));
+    _friendPreviewVideoIdByFriendId.removeWhere(
+      (id, _) => !validIds.contains(id),
+    );
     _friendPreviewUrlByFriendId.removeWhere((id, _) => !validIds.contains(id));
   }
 
@@ -2214,6 +2511,13 @@ class _HomeProfileNowPlayingHeaderState
     unawaited(_friendPreviewPlayer.dispose());
     _yt.close();
     _detachFriendRealtime();
+    _reactionNotificationPollTimer?.cancel();
+    _reactionNotificationPollTimer = null;
+    final reactionChannel = _reactionNotificationChannel;
+    _reactionNotificationChannel = null;
+    if (reactionChannel != null) {
+      Supabase.instance.client.removeChannel(reactionChannel);
+    }
     super.dispose();
   }
 
@@ -2260,7 +2564,8 @@ class _HomeProfileNowPlayingHeaderState
       }
 
       if (!kIsWeb) {
-        final cachedFilePath = await SongStreamCacheService.resolveFreshFilePath(id);
+        final cachedFilePath =
+            await SongStreamCacheService.resolveFreshFilePath(id);
         if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
         if (cachedFilePath != null && cachedFilePath.isNotEmpty) {
           await _friendPreviewPlayer.stop();
@@ -2280,7 +2585,8 @@ class _HomeProfileNowPlayingHeaderState
           if (trimmed.isEmpty) continue;
           final uri = Uri.tryParse(trimmed);
           if (uri == null) continue;
-          if (uri.hasScheme && (uri.scheme == 'http' || uri.scheme == 'https')) {
+          if (uri.hasScheme &&
+              (uri.scheme == 'http' || uri.scheme == 'https')) {
             return trimmed;
           }
         }
@@ -2341,7 +2647,8 @@ class _HomeProfileNowPlayingHeaderState
         final url =
             pickValidUrl(<String?>[muxed, audio, generic])?.trim() ?? '';
         if (url.isEmpty) return null;
-        final isVideo = url == muxed || (url == generic && resolved.isVideoSource);
+        final isVideo =
+            url == muxed || (url == generic && resolved.isVideoSource);
         if (!isAllowedForPlatform(url, isVideo: isVideo)) return null;
         return url;
       }
@@ -2385,7 +2692,8 @@ class _HomeProfileNowPlayingHeaderState
           MuxedStreamInfo? bestMuxed;
           for (final stream in manifest.muxed) {
             if (bestMuxed == null ||
-                stream.bitrate.bitsPerSecond > bestMuxed.bitrate.bitsPerSecond) {
+                stream.bitrate.bitsPerSecond >
+                    bestMuxed.bitrate.bitsPerSecond) {
               bestMuxed = stream;
             }
           }
@@ -2632,6 +2940,9 @@ class _HomeProfileNowPlayingHeaderState
     required String footerText,
     required ImageProvider<Object>? imageProvider,
     required String? frameImageUrl,
+    VoidCallback? onTapAvatar,
+    String? noteReactionText,
+    VoidCallback? onTapNoteReaction,
     String? autoplayVideoId,
     String? autoplayFriendId,
     VoidCallback? onAddNextFromTitleMenu,
@@ -2644,10 +2955,7 @@ class _HomeProfileNowPlayingHeaderState
     final previewId = (autoplayVideoId ?? '').trim();
     if (previewId.isNotEmpty) {
       unawaited(
-        _playFriendPreviewAudio(
-          friendId: autoplayFriendId,
-          videoId: previewId,
-        ),
+        _playFriendPreviewAudio(friendId: autoplayFriendId, videoId: previewId),
       );
     }
     try {
@@ -2695,6 +3003,9 @@ class _HomeProfileNowPlayingHeaderState
                           onOpenArtistFromTitleMenu: onOpenArtistFromTitleMenu,
                           onOpenAlbumFromTitleMenu: onOpenAlbumFromTitleMenu,
                           noteText: noteText,
+                          noteReactionText: noteReactionText,
+                          onTapNoteReaction: onTapNoteReaction,
+                          onTapAvatar: onTapAvatar,
                           footerText: footerText,
                           imageProvider: imageProvider,
                           frameImageUrl: frameImageUrl,
@@ -2750,6 +3061,198 @@ class _HomeProfileNowPlayingHeaderState
     }
   }
 
+  Future<void> _refreshReactionSummaries() async {
+    try {
+      final social = context.read<SocialService>();
+      final manager = context.read<VideoPlayerManager>();
+      await social.ensureReady();
+      final myId = (social.myUserId ?? '').trim();
+      final targetSongKeyByUserId = <String, String>{};
+      for (final friend in _followingUsers) {
+        final songKey = _songKeyForTrack(
+          videoId: friend.currentVideoId,
+          song: friend.currentSong,
+          artist: friend.currentArtist,
+        );
+        if (songKey.isEmpty) continue;
+        targetSongKeyByUserId[friend.id] = songKey;
+      }
+      final mySongKey = _songKeyForTrack(
+        videoId: manager.currentVideoId,
+        song: manager.trackTitle,
+        artist: manager.trackArtist,
+      );
+      if (myId.isNotEmpty && mySongKey.isNotEmpty) {
+        targetSongKeyByUserId[myId] = mySongKey;
+      }
+      if (targetSongKeyByUserId.isEmpty) return;
+      final next = await social.getMusicNoteReactionSummaries(
+        targetSongKeyByUserId: targetSongKeyByUserId,
+      );
+      if (!mounted) return;
+      if (_sameReactionSummaryMap(_noteReactionByUserId, next)) return;
+      final previousReactionMap = _noteReactionByUserId;
+      setState(() {
+        _noteReactionByUserId = next;
+      });
+      _notifyIfMyReactionCountIncreased(
+        previous: previousReactionMap,
+        next: next,
+      );
+    } catch (_) {
+      // Mejor esfuerzo.
+    }
+  }
+
+  Future<void> _reactToMusicNote(
+    String targetUserId,
+    String targetSongKey,
+    String emoji,
+  ) async {
+    if (_isSendingReaction) return;
+    setState(() => _isSendingReaction = true);
+    try {
+      final social = context.read<SocialService>();
+      await social.reactToMusicNote(
+        targetUserId: targetUserId,
+        targetSongKey: targetSongKey,
+        emoji: emoji,
+      );
+      unawaited(HapticFeedback.selectionClick());
+      await _refreshReactionSummaries();
+    } catch (_) {
+      if (!mounted) return;
+      showIosNotice(
+        context,
+        'No se pudo enviar la reacción. Verifica tu tabla music_note_reactions en Supabase.',
+      );
+    } finally {
+      if (mounted) setState(() => _isSendingReaction = false);
+    }
+  }
+
+  Future<void> _showMusicReactionPicker(
+    String targetUserId,
+    String targetSongKey,
+  ) async {
+    final target = targetUserId.trim();
+    final songKey = targetSongKey.trim();
+    if (target.isEmpty || songKey.isEmpty) return;
+    await showCupertinoModalPopup<void>(
+      context: context,
+      builder: (popupContext) => CupertinoActionSheet(
+        title: const Text('Reaccionar a nota musical'),
+        message: Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          alignment: WrapAlignment.center,
+          children: _noteReactionEmojis
+              .map(
+                (emoji) => CupertinoButton(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  minimumSize: const Size(32, 32),
+                  onPressed: () async {
+                    Navigator.of(popupContext).pop();
+                    await _reactToMusicNote(target, songKey, emoji);
+                  },
+                  child: Text(emoji, style: const TextStyle(fontSize: 27)),
+                ),
+              )
+              .toList(growable: false),
+        ),
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.of(popupContext).pop(),
+          child: const Text('Cancelar'),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showMyReactionDetails({
+    required String myUserId,
+    required String mySongKey,
+  }) async {
+    final social = context.read<SocialService>();
+    List<MusicNoteReactionDetail> details = const <MusicNoteReactionDetail>[];
+    try {
+      details = await social.getMusicNoteReactionDetails(
+        targetUserId: myUserId,
+        targetSongKey: mySongKey,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      showIosNotice(context, 'No se pudo cargar la lista de reacciones.');
+      return;
+    }
+    if (!mounted) return;
+    await showCupertinoModalPopup<void>(
+      context: context,
+      builder: (popupContext) => CupertinoActionSheet(
+        title: const Text('Reacciones a tu nota'),
+        message: details.isEmpty
+            ? const Text('Aún no hay reacciones para esta canción.')
+            : SizedBox(
+                height: 220,
+                child: ListView.separated(
+                  itemCount: details.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 6),
+                  itemBuilder: (_, index) {
+                    final item = details[index];
+                    final displayName = item.reactorName.trim().isEmpty
+                        ? '@${item.reactorUsername}'
+                        : item.reactorName.trim();
+                    final username = item.reactorUsername.trim().isEmpty
+                        ? ''
+                        : '@${item.reactorUsername.trim()}';
+                    return Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                          popupContext,
+                        ),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        children: [
+                          Text(
+                            item.emoji,
+                            style: const TextStyle(fontSize: 22),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              username.isEmpty
+                                  ? displayName
+                                  : '$displayName · $username',
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                color: CupertinoColors.label.resolveFrom(
+                                  popupContext,
+                                ),
+                                decoration: TextDecoration.none,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+        cancelButton: CupertinoActionSheetAction(
+          onPressed: () => Navigator.of(popupContext).pop(),
+          child: const Text('Cerrar'),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final profile = context.watch<ProfileService>();
@@ -2770,9 +3273,7 @@ class _HomeProfileNowPlayingHeaderState
         (currentVideoId ?? '').trim().isNotEmpty;
     final safeTrackTitle = (currentTrackTitle ?? '').trim();
     final titleText = hasTrack
-        ? (safeTrackTitle.isNotEmpty
-              ? safeTrackTitle
-              : 'Reproduciendo ahora')
+        ? (safeTrackTitle.isNotEmpty ? safeTrackTitle : 'Reproduciendo ahora')
         : 'No estas reproduciendo nada ahora.';
     final artistText = (currentTrackArtist ?? '').trim();
     final bioText = profile.bio.trim().isEmpty
@@ -2781,6 +3282,21 @@ class _HomeProfileNowPlayingHeaderState
     final photoPath = (profile.photoPath ?? '').trim();
     final frameUrl = (profile.frameUrl ?? '').trim();
     final hasLocalPhoto = photoPath.isNotEmpty && File(photoPath).existsSync();
+    final myId = (context.read<SocialService>().myUserId ?? '').trim();
+    final mySongKey = _songKeyForTrack(
+      videoId: currentVideoId,
+      song: currentTrackTitle,
+      artist: currentTrackArtist,
+    );
+    final myReactionSummary = (myId.isEmpty || mySongKey.isEmpty)
+        ? null
+        : _noteReactionByUserId[_reactionMapKey(
+            userId: myId,
+            songKey: mySongKey,
+          )];
+    final myReactionText = myReactionSummary == null
+        ? null
+        : '${myReactionSummary.topEmoji} ${myReactionSummary.count}';
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
@@ -2818,7 +3334,9 @@ class _HomeProfileNowPlayingHeaderState
                         title: titleText,
                         artist: artistText,
                         thumbnailUrl:
-                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            context
+                                .read<VideoPlayerManager>()
+                                .trackThumbnailUrl ??
                             '',
                         insertMode: ManualQueueInsertMode.next,
                       )
@@ -2829,7 +3347,9 @@ class _HomeProfileNowPlayingHeaderState
                         title: titleText,
                         artist: artistText,
                         thumbnailUrl:
-                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            context
+                                .read<VideoPlayerManager>()
+                                .trackThumbnailUrl ??
                             '',
                         insertMode: ManualQueueInsertMode.end,
                       )
@@ -2841,7 +3361,9 @@ class _HomeProfileNowPlayingHeaderState
                         title: titleText,
                         artist: artistText,
                         thumbnailUrl:
-                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            context
+                                .read<VideoPlayerManager>()
+                                .trackThumbnailUrl ??
                             '',
                       )
                     : null,
@@ -2851,12 +3373,16 @@ class _HomeProfileNowPlayingHeaderState
                         title: titleText,
                         artist: artistText,
                         thumbnailUrl:
-                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            context
+                                .read<VideoPlayerManager>()
+                                .trackThumbnailUrl ??
                             '',
                       )
                     : null,
                 onOpenArtistFromTitleMenu: hasTrack
-                    ? () => _openArtistFromNowPlaying((currentVideoId ?? '').trim())
+                    ? () => _openArtistFromNowPlaying(
+                        (currentVideoId ?? '').trim(),
+                      )
                     : null,
                 onOpenAlbumFromTitleMenu: hasTrack
                     ? () => _openAlbumFromNowPlaying(
@@ -2864,11 +3390,20 @@ class _HomeProfileNowPlayingHeaderState
                         title: titleText,
                         artist: artistText,
                         thumbnailUrl:
-                            context.read<VideoPlayerManager>().trackThumbnailUrl ??
+                            context
+                                .read<VideoPlayerManager>()
+                                .trackThumbnailUrl ??
                             '',
                       )
                     : null,
                 noteText: bioText,
+                noteReactionText: myReactionText,
+                onTapNoteReaction: (myId.isEmpty || mySongKey.isEmpty)
+                    ? null
+                    : () => _showMyReactionDetails(
+                        myUserId: myId,
+                        mySongKey: mySongKey,
+                      ),
                 footerText: 'Tu',
                 imageProvider: hasLocalPhoto
                     ? FileImage(File(photoPath))
@@ -2898,7 +3433,8 @@ class _HomeProfileNowPlayingHeaderState
                           videoId: (currentVideoId ?? '').trim(),
                           title: titleText,
                           artist: artistText,
-                          thumbnailUrl: context
+                          thumbnailUrl:
+                              context
                                   .read<VideoPlayerManager>()
                                   .trackThumbnailUrl ??
                               '',
@@ -2910,7 +3446,8 @@ class _HomeProfileNowPlayingHeaderState
                           videoId: (currentVideoId ?? '').trim(),
                           title: titleText,
                           artist: artistText,
-                          thumbnailUrl: context
+                          thumbnailUrl:
+                              context
                                   .read<VideoPlayerManager>()
                                   .trackThumbnailUrl ??
                               '',
@@ -2923,7 +3460,8 @@ class _HomeProfileNowPlayingHeaderState
                           videoId: (currentVideoId ?? '').trim(),
                           title: titleText,
                           artist: artistText,
-                          thumbnailUrl: context
+                          thumbnailUrl:
+                              context
                                   .read<VideoPlayerManager>()
                                   .trackThumbnailUrl ??
                               '',
@@ -2934,7 +3472,8 @@ class _HomeProfileNowPlayingHeaderState
                           videoId: (currentVideoId ?? '').trim(),
                           title: titleText,
                           artist: artistText,
-                          thumbnailUrl: context
+                          thumbnailUrl:
+                              context
                                   .read<VideoPlayerManager>()
                                   .trackThumbnailUrl ??
                               '',
@@ -2950,15 +3489,25 @@ class _HomeProfileNowPlayingHeaderState
                           videoId: (currentVideoId ?? '').trim(),
                           title: titleText,
                           artist: artistText,
-                          thumbnailUrl: context
+                          thumbnailUrl:
+                              context
                                   .read<VideoPlayerManager>()
                                   .trackThumbnailUrl ??
                               '',
                         )
                       : null,
                   noteText: bioText,
+                  noteReactionText: myReactionText,
+                  onTapNoteReaction: (myId.isEmpty || mySongKey.isEmpty)
+                      ? null
+                      : () => _showMyReactionDetails(
+                          myUserId: myId,
+                          mySongKey: mySongKey,
+                        ),
                   footerText: 'Tu',
-                  imageProvider: hasLocalPhoto ? FileImage(File(photoPath)) : null,
+                  imageProvider: hasLocalPhoto
+                      ? FileImage(File(photoPath))
+                      : null,
                   frameImageUrl: frameUrl.isEmpty ? null : frameUrl,
                 ),
               ),
@@ -2970,6 +3519,20 @@ class _HomeProfileNowPlayingHeaderState
                 final friendFrameUrl = friendFrameUrlRaw.isEmpty
                     ? null
                     : friendFrameUrlRaw;
+                final friendSongKey = _songKeyForTrack(
+                  videoId: friend.currentVideoId,
+                  song: friend.currentSong,
+                  artist: friend.currentArtist,
+                );
+                final friendReactionSummary = friendSongKey.isEmpty
+                    ? null
+                    : _noteReactionByUserId[_reactionMapKey(
+                        userId: friend.id,
+                        songKey: friendSongKey,
+                      )];
+                final friendReactionText = friendReactionSummary == null
+                    ? null
+                    : '${friendReactionSummary.topEmoji} ${friendReactionSummary.count}';
                 final friendHasTrack =
                     friendSong.isNotEmpty ||
                     (friend.currentVideoId ?? '').trim().isNotEmpty;
@@ -3054,6 +3617,13 @@ class _HomeProfileNowPlayingHeaderState
                     noteText: friend.note.trim().isEmpty
                         ? 'Escribe algo...'
                         : friend.note.trim(),
+                    noteReactionText: friendReactionText,
+                    onTapNoteReaction: friendSongKey.isEmpty
+                        ? null
+                        : () => _showMusicReactionPicker(
+                            friend.id,
+                            friendSongKey,
+                          ),
                     footerText: friend.name.trim().isEmpty
                         ? '@${friend.username}'
                         : friend.name.trim(),
@@ -3097,7 +3667,8 @@ class _HomeProfileNowPlayingHeaderState
                           : null,
                       onAddToFavoritesFromTitleMenu: friendHasTrack
                           ? () => _saveNowPlayingToPlaylist(
-                              playlistName: PlaylistService.favoritesPlaylistName,
+                              playlistName:
+                                  PlaylistService.favoritesPlaylistName,
                               videoId: (friend.currentVideoId ?? '').trim(),
                               title: friendTitleText,
                               artist: friendArtist,
@@ -3131,6 +3702,13 @@ class _HomeProfileNowPlayingHeaderState
                       noteText: friend.note.trim().isEmpty
                           ? 'Escribe algo...'
                           : friend.note.trim(),
+                      noteReactionText: friendReactionText,
+                      onTapNoteReaction: friendSongKey.isEmpty
+                          ? null
+                          : () => _showMusicReactionPicker(
+                              friend.id,
+                              friendSongKey,
+                            ),
                       footerText: friend.name.trim().isEmpty
                           ? '@${friend.username}'
                           : friend.name.trim(),
@@ -3190,6 +3768,9 @@ class _HomeSocialPreviewCard extends StatelessWidget {
   final VoidCallback? onOpenArtistFromTitleMenu;
   final VoidCallback? onOpenAlbumFromTitleMenu;
   final String noteText;
+  final String? noteReactionText;
+  final VoidCallback? onTapNoteReaction;
+  final VoidCallback? onTapAvatar;
   final String footerText;
   final ImageProvider<Object>? imageProvider;
   final String? frameImageUrl;
@@ -3207,6 +3788,9 @@ class _HomeSocialPreviewCard extends StatelessWidget {
     this.onOpenArtistFromTitleMenu,
     this.onOpenAlbumFromTitleMenu,
     required this.noteText,
+    this.noteReactionText,
+    this.onTapNoteReaction,
+    this.onTapAvatar,
     required this.footerText,
     required this.imageProvider,
     required this.frameImageUrl,
@@ -3224,266 +3808,371 @@ class _HomeSocialPreviewCard extends StatelessWidget {
       behavior: HitTestBehavior.translucent,
       onTap: onTap,
       child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SizedBox(
-          width: 130 * scale,
-          height: _titleAreaHeight * scale,
-          child: Padding(
-            padding: EdgeInsets.only(top: scale > 1.0 ? 18 * scale : 0),
-            child: onPlayNowFromTitleMenu == null
-                ? Align(alignment: Alignment.topCenter, child: titleNote)
-                : CupertinoContextMenu(
-                    actions: [
-                      CupertinoContextMenuAction(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          unawaited(HapticFeedback.selectionClick());
-                          onPlayNowFromTitleMenu?.call();
-                        },
-                        child: _ContextMenuActionContent(
-                          label: 'Reproducir ahora',
-                          icon: CupertinoIcons.play_fill,
-                          textColor: CupertinoColors.label.resolveFrom(context),
-                          iconColor: CupertinoColors.systemGrey.resolveFrom(
-                            context,
-                          ),
-                        ),
-                      ),
-                      if (onAddNextFromTitleMenu != null)
-                        CupertinoContextMenuAction(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            unawaited(HapticFeedback.selectionClick());
-                            onAddNextFromTitleMenu?.call();
-                          },
-                          child: _ContextMenuActionContent(
-                            label: 'Añadir como siguiente',
-                            icon: CupertinoIcons.text_insert,
-                            textColor: CupertinoColors.label.resolveFrom(
-                              context,
-                            ),
-                            iconColor: CupertinoColors.systemGrey.resolveFrom(
-                              context,
-                            ),
-                          ),
-                        ),
-                      if (onAddToEndFromTitleMenu != null)
-                        CupertinoContextMenuAction(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            unawaited(HapticFeedback.selectionClick());
-                            onAddToEndFromTitleMenu?.call();
-                          },
-                          child: _ContextMenuActionContent(
-                            label: 'Añadir al final',
-                            icon: CupertinoIcons.text_append,
-                            textColor: CupertinoColors.label.resolveFrom(
-                              context,
-                            ),
-                            iconColor: CupertinoColors.systemGrey.resolveFrom(
-                              context,
-                            ),
-                          ),
-                        ),
-                      if (onAddToFavoritesFromTitleMenu != null)
-                        CupertinoContextMenuAction(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            unawaited(HapticFeedback.selectionClick());
-                            onAddToFavoritesFromTitleMenu?.call();
-                          },
-                          child: _ContextMenuActionContent(
-                            label: 'Añadir a Favoritos',
-                            icon: CupertinoIcons.star_fill,
-                            textColor: CupertinoColors.label.resolveFrom(
-                              context,
-                            ),
-                            iconColor: CupertinoColors.systemGrey.resolveFrom(
-                              context,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            width: 130 * scale,
+            height: _titleAreaHeight * scale,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Padding(
+                  padding: EdgeInsets.only(top: scale > 1.0 ? 18 * scale : 0),
+                  child: onPlayNowFromTitleMenu == null
+                      ? Align(
+                          alignment: Alignment.topCenter,
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.translucent,
+                            onTap: onTapNoteReaction,
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                titleNote,
+                                if ((noteReactionText ?? '').trim().isNotEmpty)
+                                  Positioned(
+                                    right: -8 * scale,
+                                    bottom: -10 * scale,
+                                    child: GestureDetector(
+                                      behavior: HitTestBehavior.translucent,
+                                      onTap: onTapNoteReaction,
+                                      child: Container(
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal: 6 * scale,
+                                          vertical: 2.5 * scale,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: CupertinoColors
+                                              .systemBackground
+                                              .resolveFrom(context),
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
+                                          border: Border.all(
+                                            color: CupertinoColors.separator
+                                                .resolveFrom(context)
+                                                .withValues(alpha: 0.32),
+                                            width: 0.6,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          noteReactionText!.trim(),
+                                          style: TextStyle(
+                                            fontSize: 10 * scale,
+                                            fontWeight: FontWeight.w600,
+                                            color: CupertinoColors.label
+                                                .resolveFrom(context),
+                                            decoration: TextDecoration.none,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                           ),
-                        ),
-                      if (onAddToPlaylistFromTitleMenu != null)
-                        CupertinoContextMenuAction(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            unawaited(HapticFeedback.selectionClick());
-                            onAddToPlaylistFromTitleMenu?.call();
-                          },
-                          child: _ContextMenuActionContent(
-                            label: 'Añadir a playlist',
-                            icon: CupertinoIcons.music_note_list,
-                            textColor: CupertinoColors.label.resolveFrom(
-                              context,
-                            ),
-                            iconColor: CupertinoColors.systemGrey.resolveFrom(
-                              context,
-                            ),
-                          ),
-                        ),
-                      if (onOpenArtistFromTitleMenu != null)
-                        CupertinoContextMenuAction(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            unawaited(HapticFeedback.selectionClick());
-                            onOpenArtistFromTitleMenu?.call();
-                          },
-                          child: _ContextMenuActionContent(
-                            label: 'Ir al artista',
-                            icon: CupertinoIcons.person_crop_circle,
-                            textColor: CupertinoColors.label.resolveFrom(
-                              context,
-                            ),
-                            iconColor: CupertinoColors.systemGrey.resolveFrom(
-                              context,
-                            ),
-                          ),
-                        ),
-                      if (onOpenAlbumFromTitleMenu != null)
-                        CupertinoContextMenuAction(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            unawaited(HapticFeedback.selectionClick());
-                            onOpenAlbumFromTitleMenu?.call();
-                          },
-                          child: _ContextMenuActionContent(
-                            label: 'Ir al álbum',
-                            icon: CupertinoIcons.rectangle_stack_fill,
-                            textColor: CupertinoColors.label.resolveFrom(
-                              context,
-                            ),
-                            iconColor: CupertinoColors.systemGrey.resolveFrom(
-                              context,
-                            ),
-                          ),
-                        ),
-                    ],
-                    child: Align(
-                      alignment: Alignment.topCenter,
-                      child: titleNote,
-                    ),
-                  ),
-          ),
-        ),
-        Padding(
-          padding: EdgeInsets.only(left: 22 * scale, top: 2 * scale),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _HomeThoughtDot(size: 8 * scale),
-              SizedBox(width: 3 * scale),
-              _HomeThoughtDot(size: 6 * scale),
-              SizedBox(width: 3 * scale),
-              _HomeThoughtDot(size: 4 * scale),
-            ],
-          ),
-        ),
-        SizedBox(height: 6 * scale),
-        SizedBox(
-          width: 98 * scale,
-          height: 98 * scale,
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              Positioned(
-                left: 0,
-                top: 0,
-                child: SizedBox(
-                  width: 90 * scale,
-                  height: 90 * scale,
-                  child: ClipOval(
-                    child: ColoredBox(
-                      color: CupertinoColors.tertiarySystemFill.resolveFrom(
-                        context,
-                      ),
-                      child: imageProvider == null
-                          ? const Icon(
-                              CupertinoIcons.person_crop_circle_fill,
-                              size: 34,
-                            )
-                          : Image(
-                              image: imageProvider as ImageProvider<Object>,
-                              fit: BoxFit.cover,
-                              gaplessPlayback: true,
-                              errorBuilder: (_, _, _) => const Icon(
-                                CupertinoIcons.person_crop_circle_fill,
-                                size: 34,
+                        )
+                      : CupertinoContextMenu(
+                          actions: [
+                            CupertinoContextMenuAction(
+                              onPressed: () {
+                                Navigator.of(context).pop();
+                                unawaited(HapticFeedback.selectionClick());
+                                onPlayNowFromTitleMenu?.call();
+                              },
+                              child: _ContextMenuActionContent(
+                                label: 'Reproducir ahora',
+                                icon: CupertinoIcons.play_fill,
+                                textColor: CupertinoColors.label.resolveFrom(
+                                  context,
+                                ),
+                                iconColor: CupertinoColors.systemGrey
+                                    .resolveFrom(context),
                               ),
                             ),
-                    ),
-                  ),
+                            if (onAddNextFromTitleMenu != null)
+                              CupertinoContextMenuAction(
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  unawaited(HapticFeedback.selectionClick());
+                                  onAddNextFromTitleMenu?.call();
+                                },
+                                child: _ContextMenuActionContent(
+                                  label: 'Añadir como siguiente',
+                                  icon: CupertinoIcons.text_insert,
+                                  textColor: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
+                                  iconColor: CupertinoColors.systemGrey
+                                      .resolveFrom(context),
+                                ),
+                              ),
+                            if (onAddToEndFromTitleMenu != null)
+                              CupertinoContextMenuAction(
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  unawaited(HapticFeedback.selectionClick());
+                                  onAddToEndFromTitleMenu?.call();
+                                },
+                                child: _ContextMenuActionContent(
+                                  label: 'Añadir al final',
+                                  icon: CupertinoIcons.text_append,
+                                  textColor: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
+                                  iconColor: CupertinoColors.systemGrey
+                                      .resolveFrom(context),
+                                ),
+                              ),
+                            if (onAddToFavoritesFromTitleMenu != null)
+                              CupertinoContextMenuAction(
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  unawaited(HapticFeedback.selectionClick());
+                                  onAddToFavoritesFromTitleMenu?.call();
+                                },
+                                child: _ContextMenuActionContent(
+                                  label: 'Añadir a Favoritos',
+                                  icon: CupertinoIcons.star_fill,
+                                  textColor: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
+                                  iconColor: CupertinoColors.systemGrey
+                                      .resolveFrom(context),
+                                ),
+                              ),
+                            if (onAddToPlaylistFromTitleMenu != null)
+                              CupertinoContextMenuAction(
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  unawaited(HapticFeedback.selectionClick());
+                                  onAddToPlaylistFromTitleMenu?.call();
+                                },
+                                child: _ContextMenuActionContent(
+                                  label: 'Añadir a playlist',
+                                  icon: CupertinoIcons.music_note_list,
+                                  textColor: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
+                                  iconColor: CupertinoColors.systemGrey
+                                      .resolveFrom(context),
+                                ),
+                              ),
+                            if (onOpenArtistFromTitleMenu != null)
+                              CupertinoContextMenuAction(
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  unawaited(HapticFeedback.selectionClick());
+                                  onOpenArtistFromTitleMenu?.call();
+                                },
+                                child: _ContextMenuActionContent(
+                                  label: 'Ir al artista',
+                                  icon: CupertinoIcons.person_crop_circle,
+                                  textColor: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
+                                  iconColor: CupertinoColors.systemGrey
+                                      .resolveFrom(context),
+                                ),
+                              ),
+                            if (onOpenAlbumFromTitleMenu != null)
+                              CupertinoContextMenuAction(
+                                onPressed: () {
+                                  Navigator.of(context).pop();
+                                  unawaited(HapticFeedback.selectionClick());
+                                  onOpenAlbumFromTitleMenu?.call();
+                                },
+                                child: _ContextMenuActionContent(
+                                  label: 'Ir al álbum',
+                                  icon: CupertinoIcons.rectangle_stack_fill,
+                                  textColor: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
+                                  iconColor: CupertinoColors.systemGrey
+                                      .resolveFrom(context),
+                                ),
+                              ),
+                          ],
+                          child: Align(
+                            alignment: Alignment.topCenter,
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.translucent,
+                              onTap: onTapNoteReaction,
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  titleNote,
+                                  if ((noteReactionText ?? '')
+                                      .trim()
+                                      .isNotEmpty)
+                                    Positioned(
+                                      right: -8 * scale,
+                                      bottom: -10 * scale,
+                                      child: GestureDetector(
+                                        behavior: HitTestBehavior.translucent,
+                                        onTap: onTapNoteReaction,
+                                        child: Container(
+                                          padding: EdgeInsets.symmetric(
+                                            horizontal: 6 * scale,
+                                            vertical: 2.5 * scale,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: CupertinoColors
+                                                .systemBackground
+                                                .resolveFrom(context),
+                                            borderRadius: BorderRadius.circular(
+                                              999,
+                                            ),
+                                            border: Border.all(
+                                              color: CupertinoColors.separator
+                                                  .resolveFrom(context)
+                                                  .withValues(alpha: 0.32),
+                                              width: 0.6,
+                                            ),
+                                          ),
+                                          child: Text(
+                                            noteReactionText!.trim(),
+                                            style: TextStyle(
+                                              fontSize: 10 * scale,
+                                              fontWeight: FontWeight.w600,
+                                              color: CupertinoColors.label
+                                                  .resolveFrom(context),
+                                              decoration: TextDecoration.none,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
                 ),
-              ),
-              if (resolvedFrameImageUrl != null)
+              ],
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.only(left: 22 * scale, top: 2 * scale),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _HomeThoughtDot(size: 8 * scale),
+                SizedBox(width: 3 * scale),
+                _HomeThoughtDot(size: 6 * scale),
+                SizedBox(width: 3 * scale),
+                _HomeThoughtDot(size: 4 * scale),
+              ],
+            ),
+          ),
+          SizedBox(height: 6 * scale),
+          SizedBox(
+            width: 98 * scale,
+            height: 98 * scale,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
                 Positioned(
-                  left: -2 * scale,
-                  bottom: -3 * scale,
-                  child: IgnorePointer(
-                    child: _HomeFloatingFrameDrift(
-                      child: SizedBox(
-                        width: 36 * scale,
-                        height: 36 * scale,
-                        child: Image.network(
-                          resolvedFrameImageUrl,
-                          key: ValueKey<String>(resolvedFrameImageUrl),
-                          fit: BoxFit.contain,
+                  left: 0,
+                  top: 0,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onTap: onTapAvatar,
+                    child: SizedBox(
+                      width: 90 * scale,
+                      height: 90 * scale,
+                      child: ClipOval(
+                        child: ColoredBox(
+                          color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                            context,
+                          ),
+                          child: imageProvider == null
+                              ? const Icon(
+                                  CupertinoIcons.person_crop_circle_fill,
+                                  size: 34,
+                                )
+                              : Image(
+                                  image: imageProvider as ImageProvider<Object>,
+                                  fit: BoxFit.cover,
+                                  gaplessPlayback: true,
+                                  errorBuilder: (_, _, _) => const Icon(
+                                    CupertinoIcons.person_crop_circle_fill,
+                                    size: 34,
+                                  ),
+                                ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  constraints: BoxConstraints(maxWidth: 68 * scale),
-                  padding: EdgeInsets.symmetric(
-                    horizontal: 7 * scale,
-                    vertical: 4 * scale,
-                  ),
-                  decoration: BoxDecoration(
-                    color: CupertinoColors.secondarySystemGroupedBackground
-                        .resolveFrom(context),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                      color: CupertinoColors.separator
-                          .resolveFrom(context)
-                          .withValues(alpha: 0.22),
-                      width: 0.6,
+                if (resolvedFrameImageUrl != null)
+                  Positioned(
+                    left: -2 * scale,
+                    bottom: -3 * scale,
+                    child: IgnorePointer(
+                      child: _HomeFloatingFrameDrift(
+                        child: SizedBox(
+                          width: 36 * scale,
+                          height: 36 * scale,
+                          child: Image.network(
+                            resolvedFrameImageUrl,
+                            key: ValueKey<String>(resolvedFrameImageUrl),
+                            fit: BoxFit.contain,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                  child: _HomeReverseMarqueeText(
-                    text: noteText,
-                    style: TextStyle(
-                      fontFamily: '.SF Pro Text',
-                      fontSize: 10 * scale,
-                      color: CupertinoColors.label.resolveFrom(context),
-                      decoration: TextDecoration.none,
+                Positioned(
+                  right: 0,
+                  bottom: 0,
+                  child: Container(
+                    constraints: BoxConstraints(maxWidth: 68 * scale),
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 7 * scale,
+                      vertical: 4 * scale,
+                    ),
+                    decoration: BoxDecoration(
+                      color: CupertinoColors.secondarySystemGroupedBackground
+                          .resolveFrom(context),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: CupertinoColors.separator
+                            .resolveFrom(context)
+                            .withValues(alpha: 0.22),
+                        width: 0.6,
+                      ),
+                    ),
+                    child: _HomeReverseMarqueeText(
+                      text: noteText,
+                      style: TextStyle(
+                        fontFamily: '.SF Pro Text',
+                        fontSize: 10 * scale,
+                        color: CupertinoColors.label.resolveFrom(context),
+                        decoration: TextDecoration.none,
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
-          ),
-        ),
-        SizedBox(height: 6 * scale),
-        SizedBox(
-          width: 90 * scale,
-          child: Text(
-            footerText,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              fontFamily: '.SF Pro Text',
-              fontSize: 12 * scale,
-              fontWeight: FontWeight.w600,
-              color: CupertinoColors.secondaryLabel.resolveFrom(context),
-              decoration: TextDecoration.none,
+              ],
             ),
           ),
-        ),
-      ],
-    ),
+          SizedBox(height: 6 * scale),
+          SizedBox(
+            width: 90 * scale,
+            child: Text(
+              footerText,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontFamily: '.SF Pro Text',
+                fontSize: 12 * scale,
+                fontWeight: FontWeight.w600,
+                color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                decoration: TextDecoration.none,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -3543,7 +4232,8 @@ class _HomeFloatingFrameDrift extends StatefulWidget {
   const _HomeFloatingFrameDrift({required this.child});
 
   @override
-  State<_HomeFloatingFrameDrift> createState() => _HomeFloatingFrameDriftState();
+  State<_HomeFloatingFrameDrift> createState() =>
+      _HomeFloatingFrameDriftState();
 }
 
 class _HomeFloatingFrameDriftState extends State<_HomeFloatingFrameDrift>
@@ -3562,9 +4252,10 @@ class _HomeFloatingFrameDriftState extends State<_HomeFloatingFrameDrift>
     _xAnimation = Tween<double>(begin: -3.5, end: 3.5).animate(
       CurvedAnimation(parent: _controller, curve: Curves.easeInOutSine),
     );
-    _yAnimation = Tween<double>(begin: -2.0, end: 2.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
-    );
+    _yAnimation = Tween<double>(
+      begin: -2.0,
+      end: 2.0,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
   }
 
   @override

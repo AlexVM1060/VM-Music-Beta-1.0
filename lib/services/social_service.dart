@@ -46,8 +46,8 @@ class SocialUser {
       note: (map['note_profile'] ?? '').toString(),
       currentSong: (map['current_song'] ?? '').toString(),
       currentArtist: (map['current_artist'] ?? '').toString(),
-      currentVideoId: (map['current_video_id'] as String?)?.trim().isEmpty ==
-              true
+      currentVideoId:
+          (map['current_video_id'] as String?)?.trim().isEmpty == true
           ? null
           : map['current_video_id'] as String?,
       isPlaying: map['is_playing'] == true,
@@ -56,9 +56,36 @@ class SocialUser {
   }
 }
 
+class MusicNoteReactionSummary {
+  final String topEmoji;
+  final int count;
+  final String? myEmoji;
+
+  const MusicNoteReactionSummary({
+    required this.topEmoji,
+    required this.count,
+    required this.myEmoji,
+  });
+}
+
+class MusicNoteReactionDetail {
+  final String reactorId;
+  final String reactorName;
+  final String reactorUsername;
+  final String emoji;
+
+  const MusicNoteReactionDetail({
+    required this.reactorId,
+    required this.reactorName,
+    required this.reactorUsername,
+    required this.emoji,
+  });
+}
+
 class SocialService extends ChangeNotifier {
   bool _isReady = false;
   static const String _profilePhotosBucket = 'profile-photos';
+  static const String _musicNoteReactionsTable = 'music_note_reactions';
 
   bool get isReady => _isReady;
   SupabaseClient get _db {
@@ -70,7 +97,26 @@ class SocialService extends ChangeNotifier {
       );
     }
   }
+
   String? get myUserId => _db.auth.currentUser?.id;
+
+  static String buildMusicNoteSongKey({
+    required String? videoId,
+    required String? song,
+    required String? artist,
+  }) {
+    final cleanVideoId = (videoId ?? '').trim();
+    if (cleanVideoId.isNotEmpty) return 'yt:$cleanVideoId';
+    final cleanSong = (song ?? '').trim().toLowerCase();
+    final cleanArtist = (artist ?? '').trim().toLowerCase();
+    if (cleanSong.isEmpty && cleanArtist.isEmpty) return '';
+    return 'meta:$cleanSong|$cleanArtist';
+  }
+
+  static String buildMusicNoteReactionMapKey({
+    required String targetUserId,
+    required String songKey,
+  }) => '${targetUserId.trim()}|${songKey.trim()}';
 
   Future<void> ensureReady() async {
     if (_isReady) return;
@@ -130,25 +176,22 @@ class SocialService extends ChangeNotifier {
     if (userId == null) return;
     final username = profile.username.trim().replaceFirst('@', '');
 
-    await _db.from('users').upsert(
-      {
-        'id': userId,
-        'name': profile.name.trim(),
-        'username': username,
-        'frame_url': (profile.frameUrl ?? '').trim().isEmpty
-            ? null
-            : profile.frameUrl!.trim(),
-        'note_profile': profile.bio.trim(),
-        'current_song': currentSong.trim(),
-        'current_artist': currentArtist.trim(),
-        'current_video_id': (currentVideoId ?? '').trim().isEmpty
-            ? null
-            : currentVideoId!.trim(),
-        'is_playing': isPlaying,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      },
-      onConflict: 'id',
-    );
+    await _db.from('users').upsert({
+      'id': userId,
+      'name': profile.name.trim(),
+      'username': username,
+      'frame_url': (profile.frameUrl ?? '').trim().isEmpty
+          ? null
+          : profile.frameUrl!.trim(),
+      'note_profile': profile.bio.trim(),
+      'current_song': currentSong.trim(),
+      'current_artist': currentArtist.trim(),
+      'current_video_id': (currentVideoId ?? '').trim().isEmpty
+          ? null
+          : currentVideoId!.trim(),
+      'is_playing': isPlaying,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, onConflict: 'id');
   }
 
   Future<String?> _uploadProfilePhotoIfAvailable({
@@ -165,7 +208,9 @@ class SocialService extends ChangeNotifier {
 
     final storagePath =
         '$userId/avatar_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    await _db.storage.from(_profilePhotosBucket).uploadBinary(
+    await _db.storage
+        .from(_profilePhotosBucket)
+        .uploadBinary(
           storagePath,
           bytes,
           fileOptions: const FileOptions(
@@ -234,8 +279,10 @@ class SocialService extends ChangeNotifier {
         .toList(growable: false);
     if (followedIds.isEmpty) return const <SocialUser>[];
 
-    final userRows =
-        await _db.from('users').select().inFilter('id', followedIds);
+    final userRows = await _db
+        .from('users')
+        .select()
+        .inFilter('id', followedIds);
     final byId = <String, SocialUser>{};
     for (final row in (userRows as List)) {
       final user = SocialUser.fromMap(Map<String, dynamic>.from(row));
@@ -262,5 +309,171 @@ class SocialService extends ChangeNotifier {
         .map((e) => (e['followed_id'] ?? '').toString())
         .where((id) => id.isNotEmpty)
         .toSet();
+  }
+
+  Future<void> reactToMusicNote({
+    required String targetUserId,
+    required String targetSongKey,
+    required String emoji,
+  }) async {
+    await ensureReady();
+    final reactorId = myUserId;
+    final target = targetUserId.trim();
+    final songKey = targetSongKey.trim();
+    final cleanEmoji = emoji.trim();
+    if (reactorId == null ||
+        target.isEmpty ||
+        songKey.isEmpty ||
+        cleanEmoji.isEmpty) {
+      return;
+    }
+
+    await _db.from(_musicNoteReactionsTable).upsert({
+      'reactor_id': reactorId,
+      'target_user_id': target,
+      'song_key': songKey,
+      'emoji': cleanEmoji,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
+    }, onConflict: 'reactor_id,target_user_id,song_key');
+
+    // Mejor esfuerzo: notificación push para cuando el dueño de la nota está
+    // fuera de la app. Requiere una Edge Function en Supabase.
+    try {
+      await _db.functions.invoke(
+        'send-reaction-push',
+        body: <String, dynamic>{
+          'reactor_id': reactorId,
+          'target_user_id': target,
+          'song_key': songKey,
+          'emoji': cleanEmoji,
+        },
+      );
+    } catch (_) {
+      // Si la función aún no existe, no rompemos el flujo de reacción.
+    }
+  }
+
+  Future<Map<String, MusicNoteReactionSummary>> getMusicNoteReactionSummaries({
+    required Map<String, String> targetSongKeyByUserId,
+  }) async {
+    await ensureReady();
+    final reactorId = myUserId;
+    if (reactorId == null) return const <String, MusicNoteReactionSummary>{};
+    final normalizedTargetSongKeys = <String, String>{};
+    targetSongKeyByUserId.forEach((key, value) {
+      final userId = key.trim();
+      final songKey = value.trim();
+      if (userId.isEmpty || songKey.isEmpty) return;
+      normalizedTargetSongKeys[userId] = songKey;
+    });
+    if (normalizedTargetSongKeys.isEmpty) {
+      return const <String, MusicNoteReactionSummary>{};
+    }
+    final targets = normalizedTargetSongKeys.keys.toList(growable: false);
+
+    final rows = await _db
+        .from(_musicNoteReactionsTable)
+        .select('target_user_id, reactor_id, song_key, emoji')
+        .inFilter('target_user_id', targets);
+    final byTargetSong = <String, List<Map<String, dynamic>>>{};
+    for (final raw in (rows as List)) {
+      final row = Map<String, dynamic>.from(raw);
+      final targetUserId = (row['target_user_id'] ?? '').toString().trim();
+      final songKey = (row['song_key'] ?? '').toString().trim();
+      if (targetUserId.isEmpty || songKey.isEmpty) continue;
+      final expectedSongKey = normalizedTargetSongKeys[targetUserId];
+      if (expectedSongKey == null || expectedSongKey != songKey) continue;
+      final mapKey = buildMusicNoteReactionMapKey(
+        targetUserId: targetUserId,
+        songKey: songKey,
+      );
+      byTargetSong.putIfAbsent(mapKey, () => <Map<String, dynamic>>[]).add(row);
+    }
+
+    final result = <String, MusicNoteReactionSummary>{};
+    for (final targetUserId in targets) {
+      final songKey = normalizedTargetSongKeys[targetUserId] ?? '';
+      if (songKey.isEmpty) continue;
+      final mapKey = buildMusicNoteReactionMapKey(
+        targetUserId: targetUserId,
+        songKey: songKey,
+      );
+      final entries = byTargetSong[mapKey] ?? const <Map<String, dynamic>>[];
+      if (entries.isEmpty) continue;
+      final counter = <String, int>{};
+      String? mine;
+      for (final entry in entries) {
+        final emoji = (entry['emoji'] ?? '').toString().trim();
+        if (emoji.isEmpty) continue;
+        counter[emoji] = (counter[emoji] ?? 0) + 1;
+        final reactor = (entry['reactor_id'] ?? '').toString().trim();
+        if (reactor == reactorId) mine = emoji;
+      }
+      if (counter.isEmpty) continue;
+      final top = counter.entries.reduce((a, b) => a.value >= b.value ? a : b);
+      result[mapKey] = MusicNoteReactionSummary(
+        topEmoji: top.key,
+        count: entries.length,
+        myEmoji: mine,
+      );
+    }
+    return result;
+  }
+
+  Future<List<MusicNoteReactionDetail>> getMusicNoteReactionDetails({
+    required String targetUserId,
+    required String targetSongKey,
+  }) async {
+    await ensureReady();
+    final targetId = targetUserId.trim();
+    final songKey = targetSongKey.trim();
+    if (targetId.isEmpty || songKey.isEmpty) {
+      return const <MusicNoteReactionDetail>[];
+    }
+
+    final rows = await _db
+        .from(_musicNoteReactionsTable)
+        .select('reactor_id, emoji, updated_at')
+        .eq('target_user_id', targetId)
+        .eq('song_key', songKey)
+        .order('updated_at', ascending: false);
+
+    final reactorIds = (rows as List)
+        .map((e) => (e['reactor_id'] ?? '').toString().trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (reactorIds.isEmpty) return const <MusicNoteReactionDetail>[];
+
+    final usersRows = await _db
+        .from('users')
+        .select('id, name, username')
+        .inFilter('id', reactorIds);
+    final byId = <String, Map<String, dynamic>>{};
+    for (final raw in (usersRows as List)) {
+      final row = Map<String, dynamic>.from(raw);
+      final id = (row['id'] ?? '').toString().trim();
+      if (id.isEmpty) continue;
+      byId[id] = row;
+    }
+
+    final details = <MusicNoteReactionDetail>[];
+    for (final raw in rows) {
+      final reactorId = (raw['reactor_id'] ?? '').toString().trim();
+      final emoji = (raw['emoji'] ?? '').toString().trim();
+      if (reactorId.isEmpty || emoji.isEmpty) continue;
+      final user = byId[reactorId];
+      final name = (user?['name'] ?? '').toString().trim();
+      final username = (user?['username'] ?? '').toString().trim();
+      details.add(
+        MusicNoteReactionDetail(
+          reactorId: reactorId,
+          reactorName: name,
+          reactorUsername: username,
+          emoji: emoji,
+        ),
+      );
+    }
+    return details;
   }
 }

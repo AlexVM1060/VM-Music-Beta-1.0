@@ -11,6 +11,8 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
+enum _FrameFilter { all, stickers, live }
+
 class ProfileEditPage extends StatefulWidget {
   final ProfileService profile;
 
@@ -39,6 +41,31 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
   String _cacheBustUrl(String url) {
     final sep = url.contains('?') ? '&' : '?';
     return '$url${sep}v=${DateTime.now().millisecondsSinceEpoch}';
+  }
+
+  String _urlExtension(String url) {
+    final clean = _stripQuery(url).toLowerCase();
+    final dot = clean.lastIndexOf('.');
+    if (dot < 0 || dot == clean.length - 1) return '';
+    return clean.substring(dot);
+  }
+
+  bool _isLiveStickerUrl(String url) => _urlExtension(url) == '.gif';
+
+  bool _isStaticStickerUrl(String url) {
+    final ext = _urlExtension(url);
+    return ext == '.png' || ext == '.jpg' || ext == '.jpeg';
+  }
+
+  List<String> _filterFrames(List<String> frames, _FrameFilter filter) {
+    switch (filter) {
+      case _FrameFilter.all:
+        return frames;
+      case _FrameFilter.stickers:
+        return frames.where(_isStaticStickerUrl).toList(growable: false);
+      case _FrameFilter.live:
+        return frames.where(_isLiveStickerUrl).toList(growable: false);
+    }
   }
 
   @override
@@ -217,47 +244,93 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
       if (mounted) setState(() => _isLoadingFrames = false);
     }
     if (!mounted) return;
+    _FrameFilter selectedFilter = _FrameFilter.all;
     await showCupertinoModalPopup<void>(
       context: context,
       builder: (dialogContext) => CupertinoActionSheet(
         title: const Text('Selecciona un Sticker'),
-        message: SizedBox(
-          height: 220,
-          child: frames.isEmpty
-              ? const Center(child: Text('No hay marcos disponibles'))
-              : GridView.builder(
-                  itemCount: frames.length,
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    mainAxisSpacing: 8,
-                    crossAxisSpacing: 8,
-                  ),
-                  itemBuilder: (_, index) {
-                    final url = frames[index];
-                    final current = (widget.profile.frameUrl ?? '').trim();
-                    final isSelected = _stripQuery(current) == _stripQuery(url);
-                    return GestureDetector(
-                      onTap: () async {
-                        Navigator.of(dialogContext).pop();
-                        await widget.profile.updateFrameUrl(_cacheBustUrl(url));
-                        await _syncProfilePhotoToSupabase();
-                      },
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: isSelected
-                                ? CupertinoColors.activeBlue
-                                : CupertinoColors.systemGrey4,
-                            width: isSelected ? 2 : 1,
-                          ),
-                        ),
-                        padding: const EdgeInsets.all(6),
-                        child: Image.network(url, fit: BoxFit.contain),
+        message: StatefulBuilder(
+          builder: (context, setModalState) {
+            final filteredFrames = _filterFrames(frames, selectedFilter);
+            return SizedBox(
+              height: 290,
+              child: Column(
+                children: [
+                  CupertinoSlidingSegmentedControl<_FrameFilter>(
+                    groupValue: selectedFilter,
+                    children: const {
+                      _FrameFilter.all: Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child: Text('Todos'),
                       ),
-                    );
-                  },
-                ),
+                      _FrameFilter.stickers: Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child: Text('Stickers'),
+                      ),
+                      _FrameFilter.live: Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 8),
+                        child: Text('Live Stickers'),
+                      ),
+                    },
+                    onValueChanged: (value) {
+                      if (value == null) return;
+                      setModalState(() => selectedFilter = value);
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: frames.isEmpty
+                        ? const Center(child: Text('No hay marcos disponibles'))
+                        : filteredFrames.isEmpty
+                        ? const Center(
+                            child: Text('No hay stickers en este filtro'),
+                          )
+                        : GridView.builder(
+                            itemCount: filteredFrames.length,
+                            gridDelegate:
+                                const SliverGridDelegateWithFixedCrossAxisCount(
+                                  crossAxisCount: 3,
+                                  mainAxisSpacing: 8,
+                                  crossAxisSpacing: 8,
+                                ),
+                            itemBuilder: (_, index) {
+                              final url = filteredFrames[index];
+                              final current = (widget.profile.frameUrl ?? '')
+                                  .trim();
+                              final isSelected =
+                                  _stripQuery(current) == _stripQuery(url);
+                              return GestureDetector(
+                                onTap: () async {
+                                  Navigator.of(dialogContext).pop();
+                                  await widget.profile.updateFrameUrl(
+                                    _cacheBustUrl(url),
+                                  );
+                                  await _syncProfilePhotoToSupabase();
+                                },
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                      color: isSelected
+                                          ? CupertinoColors.activeBlue
+                                          : CupertinoColors.systemGrey4,
+                                      width: isSelected ? 2 : 1,
+                                    ),
+                                  ),
+                                  padding: const EdgeInsets.all(6),
+                                  child: Image.network(
+                                    url,
+                                    fit: BoxFit.contain,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            );
+          },
         ),
         actions: [
           CupertinoActionSheetAction(
@@ -387,7 +460,8 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                                             )
                                           : Container(
                                               decoration: BoxDecoration(
-                                                color: CupertinoColors.systemGrey5
+                                                color: CupertinoColors
+                                                    .systemGrey5
                                                     .resolveFrom(context),
                                                 shape: BoxShape.circle,
                                                 border: Border.all(

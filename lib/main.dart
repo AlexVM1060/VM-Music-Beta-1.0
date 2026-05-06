@@ -27,6 +27,7 @@ import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/app_update_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
+import 'package:myapp/services/push_notification_service.dart';
 import 'package:myapp/services/social_presence_sync_service.dart';
 import 'package:myapp/services/social_service.dart';
 import 'package:myapp/search_view_state.dart';
@@ -89,6 +90,16 @@ void main() async {
             return syncService;
           },
           dispose: (_, service) => service.dispose(),
+        ),
+        Provider<PushNotificationService>(
+          lazy: false,
+          create: (context) {
+            final pushService = PushNotificationService(
+              socialService: context.read<SocialService>(),
+            );
+            unawaited(pushService.start());
+            return pushService;
+          },
         ),
         Provider(create: (_) => HistoryService()),
         Provider(create: (_) => PlaylistService()),
