@@ -19,11 +19,11 @@ import 'package:myapp/services/app_lifecycle_service.dart';
 import 'package:myapp/services/app_settings_service.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/history_service.dart';
+import 'package:myapp/services/lyrics_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
 import 'package:myapp/services/song_stream_cache_service.dart';
 import 'package:myapp/services/social_service.dart';
-import 'package:myapp/services/yt_resolver_service.dart';
 import 'package:myapp/social_friends_page.dart';
 import 'package:myapp/services/thumbnail_cache_service.dart';
 import 'package:myapp/search_page.dart';
@@ -1975,6 +1975,13 @@ class _HomeProfileNowPlayingHeader extends StatefulWidget {
 
 class _HomeProfileNowPlayingHeaderState
     extends State<_HomeProfileNowPlayingHeader> {
+  static const Map<String, String> _youtubePreviewHeaders = <String, String>{
+    'User-Agent':
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    'Accept': '*/*',
+    'Origin': 'https://www.youtube.com',
+    'Referer': 'https://www.youtube.com/',
+  };
   static const List<String> _noteReactionEmojis = <String>[
     '🔥',
     '❤️',
@@ -1986,7 +1993,7 @@ class _HomeProfileNowPlayingHeaderState
   List<SocialUser> _followingUsers = const <SocialUser>[];
   final YoutubeExplode _yt = YoutubeExplode();
   final AudioPlayer _friendPreviewPlayer = AudioPlayer();
-  final YtResolverService _ytResolverService = YtResolverService();
+  final LyricsService _lyricsService = LyricsService();
   RealtimeChannel? _friendRealtimeChannel;
   RealtimeChannel? _reactionNotificationChannel;
   Timer? _reactionNotificationPollTimer;
@@ -2006,8 +2013,16 @@ class _HomeProfileNowPlayingHeaderState
   final ValueNotifier<bool> _isFriendPreviewLoading = ValueNotifier<bool>(
     false,
   );
+  final ValueNotifier<bool> _isFriendPreviewLyricsLoading =
+      ValueNotifier<bool>(false);
+  final ValueNotifier<_FriendPreviewLyricSweepState?>
+  _friendPreviewLyricSweep = ValueNotifier<_FriendPreviewLyricSweepState?>(
+    null,
+  );
+  List<SyncedLyricLine> _friendPreviewSyncedLyrics = const [];
   int _friendPreviewRequestEpoch = 0;
   StreamSubscription<PlayerState>? _friendPreviewStateSub;
+  StreamSubscription<Duration>? _friendPreviewPositionSub;
   final Map<String, String> _reactorDisplayNameCache = <String, String>{};
   final Set<String> _handledReactionNotificationIds = <String>{};
 
@@ -2064,6 +2079,97 @@ class _HomeProfileNowPlayingHeaderState
     _isFriendPreviewLoading.value = value;
   }
 
+  void _clearFriendPreviewLyrics() {
+    _friendPreviewSyncedLyrics = const [];
+    if (_isFriendPreviewLyricsLoading.value) {
+      _isFriendPreviewLyricsLoading.value = false;
+    }
+    if (_friendPreviewLyricSweep.value != null) {
+      _friendPreviewLyricSweep.value = null;
+    }
+  }
+
+  void _updateFriendPreviewActiveLyric(Duration position) {
+    final lines = _friendPreviewSyncedLyrics;
+    if (lines.isEmpty) {
+      if (_friendPreviewLyricSweep.value != null) {
+        _friendPreviewLyricSweep.value = null;
+      }
+      return;
+    }
+    var low = 0;
+    var high = lines.length - 1;
+    var answer = -1;
+    while (low <= high) {
+      final mid = low + ((high - low) >> 1);
+      final ts = lines[mid].timestamp;
+      if (ts <= position) {
+        answer = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    final text = answer < 0 ? '' : lines[answer].text.trim();
+    if (text.isEmpty) {
+      if (_friendPreviewLyricSweep.value != null) {
+        _friendPreviewLyricSweep.value = null;
+      }
+      return;
+    }
+    final lineStart = lines[answer].timestamp;
+    Duration? lineEnd;
+    for (var i = answer + 1; i < lines.length; i++) {
+      final nextTs = lines[i].timestamp;
+      if (nextTs > lineStart) {
+        lineEnd = nextTs;
+        break;
+      }
+    }
+    final durationMs =
+        ((lineEnd ?? (lineStart + const Duration(seconds: 4))) - lineStart)
+            .inMilliseconds;
+    final safeDurationMs = durationMs <= 0 ? 1 : durationMs;
+    final elapsedMs = (position - lineStart).inMilliseconds;
+    final progress = (elapsedMs / safeDurationMs).clamp(0.0, 1.0);
+    final next = _FriendPreviewLyricSweepState(text: text, progress: progress);
+    final current = _friendPreviewLyricSweep.value;
+    if (current == null ||
+        current.text != next.text ||
+        (current.progress - next.progress).abs() > 0.006) {
+      _friendPreviewLyricSweep.value = next;
+    }
+  }
+
+  Future<void> _loadFriendPreviewLyrics({
+    required String? title,
+    required String? artist,
+    required int requestEpoch,
+  }) async {
+    final cleanTitle = (title ?? '').trim();
+    final cleanArtist = (artist ?? '').trim();
+    _clearFriendPreviewLyrics();
+    if (cleanTitle.isEmpty || cleanArtist.isEmpty) return;
+    _isFriendPreviewLyricsLoading.value = true;
+    try {
+      final result = await _lyricsService.fetchLyrics(
+        title: cleanTitle,
+        artist: cleanArtist,
+      );
+      if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+      final synced = result?.syncedLyrics ?? const <SyncedLyricLine>[];
+      if (synced.isEmpty) return;
+      _friendPreviewSyncedLyrics = List<SyncedLyricLine>.from(synced);
+      _updateFriendPreviewActiveLyric(_friendPreviewPlayer.position);
+    } catch (_) {
+      // Mejor esfuerzo.
+    } finally {
+      if (mounted && requestEpoch == _friendPreviewRequestEpoch) {
+        _isFriendPreviewLyricsLoading.value = false;
+      }
+    }
+  }
+
   void _startFriendPreviewPlayback(int requestEpoch) {
     unawaited(_startFriendPreviewPlaybackAsync(requestEpoch));
   }
@@ -2108,6 +2214,11 @@ class _HomeProfileNowPlayingHeaderState
           (state.playing || state.processingState == ProcessingState.ready)) {
         _setFriendPreviewLoading(false);
       }
+    });
+    _friendPreviewPositionSub = _friendPreviewPlayer.positionStream.listen((
+      position,
+    ) {
+      _updateFriendPreviewActiveLyric(position);
     });
     unawaited(_attachReactionNotificationListener());
     _reactionNotificationPollTimer = Timer.periodic(
@@ -2507,7 +2618,10 @@ class _HomeProfileNowPlayingHeaderState
   @override
   void dispose() {
     unawaited(_friendPreviewStateSub?.cancel());
+    unawaited(_friendPreviewPositionSub?.cancel());
     _isFriendPreviewLoading.dispose();
+    _isFriendPreviewLyricsLoading.dispose();
+    _friendPreviewLyricSweep.dispose();
     unawaited(_friendPreviewPlayer.dispose());
     _yt.close();
     _detachFriendRealtime();
@@ -2524,6 +2638,8 @@ class _HomeProfileNowPlayingHeaderState
   Future<void> _playFriendPreviewAudio({
     required String? friendId,
     required String? videoId,
+    String? title,
+    String? artist,
   }) async {
     final ownerId = (friendId ?? '').trim();
     final id = (videoId ?? '').trim();
@@ -2539,9 +2655,17 @@ class _HomeProfileNowPlayingHeaderState
     }
 
     final requestEpoch = ++_friendPreviewRequestEpoch;
+    _clearFriendPreviewLyrics();
     if (mounted) {
       _setFriendPreviewLoading(true);
     }
+    unawaited(
+      _loadFriendPreviewLyrics(
+        title: title,
+        artist: artist,
+        requestEpoch: requestEpoch,
+      ),
+    );
     try {
       final cachedVideoId = _friendPreviewVideoIdByFriendId[ownerId];
       final cachedUrl = (_friendPreviewUrlByFriendId[ownerId] ?? '').trim();
@@ -2639,76 +2763,70 @@ class _HomeProfileNowPlayingHeaderState
             : isIosFriendlyAudioSource(url);
       }
 
-      String? pickUrlFromResolved(YtResolverResult? resolved) {
-        if (resolved == null) return null;
-        final muxed = (resolved.muxedUrl ?? '').trim();
-        final audio = (resolved.audioUrl ?? '').trim();
-        final generic = resolved.sourceUrl.trim();
-        final url =
-            pickValidUrl(<String?>[muxed, audio, generic])?.trim() ?? '';
-        if (url.isEmpty) return null;
-        final isVideo =
-            url == muxed || (url == generic && resolved.isVideoSource);
-        if (!isAllowedForPlatform(url, isVideo: isVideo)) return null;
-        return url;
+      final candidatePreviewUrls = <String>[];
+      final manifest = await _yt.videos.streamsClient.getManifest(id);
+      if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
+      AudioOnlyStreamInfo? bestAudio;
+      for (final stream in manifest.audioOnly) {
+        final candidateUrl = stream.url.toString();
+        if (!isAllowedForPlatform(candidateUrl, isVideo: false)) continue;
+        if (bestAudio == null ||
+            stream.bitrate.bitsPerSecond > bestAudio.bitrate.bitsPerSecond) {
+          bestAudio = stream;
+        }
+      }
+      if (bestAudio != null) {
+        candidatePreviewUrls.add(bestAudio.url.toString());
       }
 
-      final backendCount = _ytResolverService.backendCount;
-      final backendOrder = backendCount > 0
-          ? (List<int>.generate(backendCount, (i) => i)..shuffle())
-          : const <int>[];
-      String? previewUrl;
-      for (final backendIndex in backendOrder) {
-        final resolved = await _ytResolverService.resolveVideo(
-          id,
-          preferredBackendIndex: backendIndex,
-        );
-        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
-        final picked = pickUrlFromResolved(resolved);
-        if (picked != null && picked.isNotEmpty) {
-          previewUrl = picked;
-          break;
+      MuxedStreamInfo? bestMuxed;
+      for (final stream in manifest.muxed) {
+        final candidateUrl = stream.url.toString();
+        if (!isAllowedForPlatform(candidateUrl, isVideo: true)) continue;
+        if (bestMuxed == null ||
+            stream.bitrate.bitsPerSecond > bestMuxed.bitrate.bitsPerSecond) {
+          bestMuxed = stream;
         }
+      }
+      if (bestMuxed != null) {
+        candidatePreviewUrls.add(bestMuxed.url.toString());
       }
 
-      if ((previewUrl ?? '').isEmpty) {
-        final resolved = await _ytResolverService.resolveVideo(id);
-        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
-        previewUrl = pickUrlFromResolved(resolved);
-      }
-      if ((previewUrl ?? '').trim().isEmpty) {
-        final manifest = await _yt.videos.streamsClient.getManifest(id);
-        if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
-        AudioOnlyStreamInfo? bestAudio;
-        for (final stream in manifest.audioOnly) {
-          if (bestAudio == null ||
-              stream.bitrate.bitsPerSecond > bestAudio.bitrate.bitsPerSecond) {
-            bestAudio = stream;
-          }
-        }
-        if (bestAudio != null) {
-          previewUrl = bestAudio.url.toString();
-        } else {
-          MuxedStreamInfo? bestMuxed;
-          for (final stream in manifest.muxed) {
-            if (bestMuxed == null ||
-                stream.bitrate.bitsPerSecond >
-                    bestMuxed.bitrate.bitsPerSecond) {
-              bestMuxed = stream;
-            }
-          }
-          previewUrl = bestMuxed?.url.toString() ?? '';
+      final sanitizedCandidates = <String>[];
+      for (final raw in candidatePreviewUrls) {
+        final valid = pickValidUrl(<String?>[raw])?.trim();
+        if (valid == null || valid.isEmpty) continue;
+        if (!sanitizedCandidates.contains(valid)) {
+          sanitizedCandidates.add(valid);
         }
       }
-      if ((previewUrl ?? '').trim().isEmpty) return;
+      if (sanitizedCandidates.isEmpty) return;
 
       await _friendPreviewPlayer.stop();
       if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
-      await _friendPreviewPlayer.setUrl(previewUrl!);
+      String? previewUrl;
+      Object? lastSetUrlError;
+      for (final candidate in sanitizedCandidates) {
+        try {
+          await _friendPreviewPlayer.setUrl(
+            candidate,
+            headers: _youtubePreviewHeaders,
+          );
+          previewUrl = candidate;
+          break;
+        } catch (e) {
+          lastSetUrlError = e;
+        }
+      }
+      if ((previewUrl ?? '').isEmpty) {
+        throw Exception(
+          'No se pudo cargar preview con youtube_explode: $lastSetUrlError',
+        );
+      }
       if (!mounted || requestEpoch != _friendPreviewRequestEpoch) return;
       _startFriendPreviewPlayback(requestEpoch);
       _friendPreviewVideoIdByFriendId[ownerId] = id;
-      _friendPreviewUrlByFriendId[ownerId] = previewUrl;
+      _friendPreviewUrlByFriendId[ownerId] = previewUrl!;
       final warmUri = Uri.tryParse(previewUrl);
       if (warmUri != null && !kIsWeb) {
         unawaited(
@@ -2732,6 +2850,7 @@ class _HomeProfileNowPlayingHeaderState
 
   Future<void> _stopFriendPreviewAudio() async {
     _friendPreviewRequestEpoch++;
+    _clearFriendPreviewLyrics();
     if (mounted) {
       _setFriendPreviewLoading(false);
     }
@@ -2945,6 +3064,8 @@ class _HomeProfileNowPlayingHeaderState
     VoidCallback? onTapNoteReaction,
     String? autoplayVideoId,
     String? autoplayFriendId,
+    String? autoplayTitle,
+    String? autoplayArtist,
     VoidCallback? onAddNextFromTitleMenu,
     VoidCallback? onAddToEndFromTitleMenu,
     VoidCallback? onAddToFavoritesFromTitleMenu,
@@ -2952,10 +3073,16 @@ class _HomeProfileNowPlayingHeaderState
     VoidCallback? onOpenArtistFromTitleMenu,
     VoidCallback? onOpenAlbumFromTitleMenu,
   }) async {
+    _clearFriendPreviewLyrics();
     final previewId = (autoplayVideoId ?? '').trim();
     if (previewId.isNotEmpty) {
       unawaited(
-        _playFriendPreviewAudio(friendId: autoplayFriendId, videoId: previewId),
+        _playFriendPreviewAudio(
+          friendId: autoplayFriendId,
+          videoId: previewId,
+          title: autoplayTitle,
+          artist: autoplayArtist,
+        ),
       );
     }
     try {
@@ -2989,28 +3116,44 @@ class _HomeProfileNowPlayingHeaderState
                   child: Stack(
                     alignment: Alignment.center,
                     children: [
-                      GestureDetector(
-                        onTap: () {},
-                        child: _HomeSocialPreviewCard(
-                          titleNote: titleNote,
-                          onPlayNowFromTitleMenu: expandedPlayNowAction,
-                          onAddNextFromTitleMenu: onAddNextFromTitleMenu,
-                          onAddToEndFromTitleMenu: onAddToEndFromTitleMenu,
-                          onAddToFavoritesFromTitleMenu:
-                              onAddToFavoritesFromTitleMenu,
-                          onAddToPlaylistFromTitleMenu:
-                              onAddToPlaylistFromTitleMenu,
-                          onOpenArtistFromTitleMenu: onOpenArtistFromTitleMenu,
-                          onOpenAlbumFromTitleMenu: onOpenAlbumFromTitleMenu,
-                          noteText: noteText,
-                          noteReactionText: noteReactionText,
-                          onTapNoteReaction: onTapNoteReaction,
-                          onTapAvatar: onTapAvatar,
-                          footerText: footerText,
-                          imageProvider: imageProvider,
-                          frameImageUrl: frameImageUrl,
-                          scale: 1.65,
-                        ),
+                      ValueListenableBuilder<bool>(
+                        valueListenable: _isFriendPreviewLyricsLoading,
+                        builder: (context, lyricsLoading, child) {
+                          return ValueListenableBuilder<
+                            _FriendPreviewLyricSweepState?
+                          >(
+                            valueListenable: _friendPreviewLyricSweep,
+                            builder: (context, lyricSweep, child) {
+                              return GestureDetector(
+                                onTap: () {},
+                                child: _HomeSocialPreviewCard(
+                                  titleNote: titleNote,
+                                  onPlayNowFromTitleMenu: expandedPlayNowAction,
+                                  onAddNextFromTitleMenu: onAddNextFromTitleMenu,
+                                  onAddToEndFromTitleMenu: onAddToEndFromTitleMenu,
+                                  onAddToFavoritesFromTitleMenu:
+                                      onAddToFavoritesFromTitleMenu,
+                                  onAddToPlaylistFromTitleMenu:
+                                      onAddToPlaylistFromTitleMenu,
+                                  onOpenArtistFromTitleMenu:
+                                      onOpenArtistFromTitleMenu,
+                                  onOpenAlbumFromTitleMenu:
+                                      onOpenAlbumFromTitleMenu,
+                                  noteText: noteText,
+                                  noteReactionText: noteReactionText,
+                                  onTapNoteReaction: onTapNoteReaction,
+                                  onTapAvatar: onTapAvatar,
+                                  footerText: footerText,
+                                  imageProvider: imageProvider,
+                                  frameImageUrl: frameImageUrl,
+                                  lyricSweep: lyricSweep,
+                                  lyricsLoading: lyricsLoading,
+                                  scale: 1.65,
+                                ),
+                              );
+                            },
+                          );
+                        },
                       ),
                       ValueListenableBuilder<bool>(
                         valueListenable: _isFriendPreviewLoading,
@@ -3716,6 +3859,8 @@ class _HomeProfileNowPlayingHeaderState
                       frameImageUrl: friendFrameUrl,
                       autoplayVideoId: friend.currentVideoId,
                       autoplayFriendId: friend.id,
+                      autoplayTitle: friendTitleText,
+                      autoplayArtist: friendArtist,
                     ),
                   ),
                 );
@@ -3768,6 +3913,8 @@ class _HomeSocialPreviewCard extends StatelessWidget {
   final VoidCallback? onOpenArtistFromTitleMenu;
   final VoidCallback? onOpenAlbumFromTitleMenu;
   final String noteText;
+  final _FriendPreviewLyricSweepState? lyricSweep;
+  final bool lyricsLoading;
   final String? noteReactionText;
   final VoidCallback? onTapNoteReaction;
   final VoidCallback? onTapAvatar;
@@ -3788,6 +3935,8 @@ class _HomeSocialPreviewCard extends StatelessWidget {
     this.onOpenArtistFromTitleMenu,
     this.onOpenAlbumFromTitleMenu,
     required this.noteText,
+    this.lyricSweep,
+    this.lyricsLoading = false,
     this.noteReactionText,
     this.onTapNoteReaction,
     this.onTapAvatar,
@@ -3804,6 +3953,18 @@ class _HomeSocialPreviewCard extends StatelessWidget {
     final resolvedFrameImageUrl = normalizedFrameImageUrl.isEmpty
         ? null
         : normalizedFrameImageUrl;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final lyricBubbleBackground = isDark
+        ? CupertinoColors.secondarySystemGroupedBackground
+            .resolveFrom(context)
+        : CupertinoColors.systemBackground
+            .resolveFrom(context)
+            .withValues(alpha: 0.9);
+    final currentLyricLine = (lyricSweep?.text ?? '').trim();
+    final lyricBubbleText = currentLyricLine.isNotEmpty
+        ? currentLyricLine
+        : (lyricsLoading ? 'Cargando Lyrics...' : '');
+    final reactionBubbleScale = scale > 1.0 ? 0.78 : 1.0;
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
       onTap: onTap,
@@ -3820,57 +3981,86 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                   padding: EdgeInsets.only(top: scale > 1.0 ? 18 * scale : 0),
                   child: onPlayNowFromTitleMenu == null
                       ? Align(
-                          alignment: Alignment.topCenter,
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.translucent,
-                            onTap: onTapNoteReaction,
-                            child: Stack(
-                              clipBehavior: Clip.none,
-                              children: [
-                                titleNote,
-                                if ((noteReactionText ?? '').trim().isNotEmpty)
-                                  Positioned(
-                                    right: -8 * scale,
-                                    bottom: -10 * scale,
-                                    child: GestureDetector(
-                                      behavior: HitTestBehavior.translucent,
-                                      onTap: onTapNoteReaction,
-                                      child: Container(
-                                        padding: EdgeInsets.symmetric(
-                                          horizontal: 6 * scale,
-                                          vertical: 2.5 * scale,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: CupertinoColors
-                                              .systemBackground
-                                              .resolveFrom(context),
-                                          borderRadius: BorderRadius.circular(
-                                            999,
-                                          ),
-                                          border: Border.all(
-                                            color: CupertinoColors.separator
-                                                .resolveFrom(context)
-                                                .withValues(alpha: 0.32),
-                                            width: 0.6,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          noteReactionText!.trim(),
-                                          style: TextStyle(
-                                            fontSize: 10 * scale,
-                                            fontWeight: FontWeight.w600,
-                                            color: CupertinoColors.label
-                                                .resolveFrom(context),
-                                            decoration: TextDecoration.none,
+                              alignment: Alignment.topCenter,
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  GestureDetector(
+                                    behavior: HitTestBehavior.translucent,
+                                    onTap: onTap,
+                                    child: titleNote,
+                                  ),
+                                  if (onTapNoteReaction != null)
+                                    Positioned(
+                                      right: -8 * scale,
+                                      bottom: -10 * scale,
+                                      child: SizedBox(
+                                        width: 34 * scale * reactionBubbleScale,
+                                        height:
+                                            28 * scale * reactionBubbleScale,
+                                        child: CupertinoButton(
+                                          padding: EdgeInsets.zero,
+                                          minimumSize: Size.zero,
+                                          onPressed: onTapNoteReaction,
+                                          child: Container(
+                                            padding: EdgeInsets.symmetric(
+                                              horizontal:
+                                                  6 *
+                                                  scale *
+                                                  reactionBubbleScale,
+                                              vertical:
+                                                  2.5 *
+                                                  scale *
+                                                  reactionBubbleScale,
+                                            ),
+                                            decoration: BoxDecoration(
+                                              color: CupertinoColors
+                                                  .systemBackground
+                                                  .resolveFrom(context),
+                                              borderRadius:
+                                                  BorderRadius.circular(999),
+                                              border: Border.all(
+                                                color: CupertinoColors.separator
+                                                    .resolveFrom(context)
+                                                    .withValues(alpha: 0.32),
+                                                width: 0.6,
+                                              ),
+                                            ),
+                                            child: (noteReactionText ?? '')
+                                                    .trim()
+                                                    .isNotEmpty
+                                                ? Text(
+                                                    noteReactionText!.trim(),
+                                                    style: TextStyle(
+                                                      fontSize:
+                                                          10 *
+                                                          scale *
+                                                          reactionBubbleScale,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      color: CupertinoColors
+                                                          .label
+                                                          .resolveFrom(context),
+                                                      decoration:
+                                                          TextDecoration.none,
+                                                    ),
+                                                  )
+                                                : Icon(
+                                                    CupertinoIcons.smiley,
+                                                    size:
+                                                        12 *
+                                                        scale *
+                                                        reactionBubbleScale,
+                                                    color: CupertinoColors.label
+                                                        .resolveFrom(context),
+                                                  ),
                                           ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                              ],
-                            ),
-                          ),
-                        )
+                                ],
+                              ),
+                            )
                       : CupertinoContextMenu(
                           actions: [
                             CupertinoContextMenuAction(
@@ -3994,34 +4184,41 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                           ],
                           child: Align(
                             alignment: Alignment.topCenter,
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.translucent,
-                              onTap: onTapNoteReaction,
-                              child: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  titleNote,
-                                  if ((noteReactionText ?? '')
-                                      .trim()
-                                      .isNotEmpty)
-                                    Positioned(
-                                      right: -8 * scale,
-                                      bottom: -10 * scale,
-                                      child: GestureDetector(
-                                        behavior: HitTestBehavior.translucent,
-                                        onTap: onTapNoteReaction,
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                GestureDetector(
+                                  behavior: HitTestBehavior.translucent,
+                                  onTap: onTap,
+                                  child: titleNote,
+                                ),
+                                if (onTapNoteReaction != null)
+                                  Positioned(
+                                    right: -8 * scale,
+                                    bottom: -10 * scale,
+                                    child: SizedBox(
+                                      width: 34 * scale * reactionBubbleScale,
+                                      height:
+                                          28 * scale * reactionBubbleScale,
+                                      child: CupertinoButton(
+                                        padding: EdgeInsets.zero,
+                                        minimumSize: Size.zero,
+                                        onPressed: onTapNoteReaction,
                                         child: Container(
                                           padding: EdgeInsets.symmetric(
-                                            horizontal: 6 * scale,
-                                            vertical: 2.5 * scale,
+                                            horizontal:
+                                                6 * scale * reactionBubbleScale,
+                                            vertical:
+                                                2.5 *
+                                                scale *
+                                                reactionBubbleScale,
                                           ),
                                           decoration: BoxDecoration(
                                             color: CupertinoColors
                                                 .systemBackground
                                                 .resolveFrom(context),
-                                            borderRadius: BorderRadius.circular(
-                                              999,
-                                            ),
+                                            borderRadius:
+                                                BorderRadius.circular(999),
                                             border: Border.all(
                                               color: CupertinoColors.separator
                                                   .resolveFrom(context)
@@ -4029,25 +4226,82 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                                               width: 0.6,
                                             ),
                                           ),
-                                          child: Text(
-                                            noteReactionText!.trim(),
-                                            style: TextStyle(
-                                              fontSize: 10 * scale,
-                                              fontWeight: FontWeight.w600,
-                                              color: CupertinoColors.label
-                                                  .resolveFrom(context),
-                                              decoration: TextDecoration.none,
-                                            ),
-                                          ),
+                                          child: (noteReactionText ?? '')
+                                                  .trim()
+                                                  .isNotEmpty
+                                              ? Text(
+                                                  noteReactionText!.trim(),
+                                                  style: TextStyle(
+                                                    fontSize:
+                                                        10 *
+                                                        scale *
+                                                        reactionBubbleScale,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: CupertinoColors.label
+                                                        .resolveFrom(context),
+                                                    decoration:
+                                                        TextDecoration.none,
+                                                  ),
+                                                )
+                                              : Icon(
+                                                  CupertinoIcons.smiley,
+                                                  size:
+                                                      12 *
+                                                      scale *
+                                                      reactionBubbleScale,
+                                                  color: CupertinoColors.label
+                                                      .resolveFrom(context),
+                                                ),
                                         ),
                                       ),
                                     ),
-                                ],
-                              ),
+                                  ),
+                              ],
                             ),
                           ),
                         ),
                 ),
+                if (lyricBubbleText.isNotEmpty)
+                  Positioned(
+                    top: -24 * scale,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Container(
+                        constraints: BoxConstraints(maxWidth: 120 * scale),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 8 * scale,
+                          vertical: 3 * scale,
+                        ),
+                        decoration: BoxDecoration(
+                          color: lyricBubbleBackground,
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: CupertinoColors.separator
+                                .resolveFrom(context)
+                                .withValues(alpha: 0.28),
+                            width: 0.6,
+                          ),
+                        ),
+                        child: SizedBox(
+                          width: 104 * scale,
+                          child: _HomeLyricSweepText(
+                            text: lyricBubbleText,
+                            progress: currentLyricLine.isNotEmpty
+                                ? (lyricSweep?.progress ?? 0)
+                                : 0,
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontSize: 9.5 * scale,
+                              fontWeight: FontWeight.w600,
+                              color: CupertinoColors.label.resolveFrom(context),
+                              decoration: TextDecoration.none,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -4593,6 +4847,120 @@ class _HomeReverseMarqueeText extends StatefulWidget {
   @override
   State<_HomeReverseMarqueeText> createState() =>
       _HomeReverseMarqueeTextState();
+}
+
+class _FriendPreviewLyricSweepState {
+  final String text;
+  final double progress;
+
+  const _FriendPreviewLyricSweepState({
+    required this.text,
+    required this.progress,
+  });
+}
+
+class _HomeLyricSweepText extends StatelessWidget {
+  final String text;
+  final double progress;
+  final TextStyle style;
+
+  const _HomeLyricSweepText({
+    required this.text,
+    required this.progress,
+    required this.style,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final targetProgress = progress.clamp(0.0, 1.0);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final activeColor = isDark ? CupertinoColors.white : CupertinoColors.black;
+    final inactiveColor = isDark
+        ? CupertinoColors.white.withValues(alpha: 0.42)
+        : CupertinoColors.black.withValues(alpha: 0.38);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final words = text.trim().split(RegExp(r'\s+'));
+        if (words.isEmpty || (words.length == 1 && words.first.isEmpty)) {
+          return Text(
+            text,
+            maxLines: 3,
+            softWrap: true,
+            overflow: TextOverflow.visible,
+            textAlign: TextAlign.center,
+            style: style.copyWith(color: activeColor),
+          );
+        }
+        final lines = <String>[];
+        var current = '';
+        final maxWidth = constraints.maxWidth;
+        for (final word in words) {
+          final candidate = current.isEmpty ? word : '$current $word';
+          final probe = TextPainter(
+            text: TextSpan(text: candidate, style: style),
+            maxLines: 1,
+            textDirection: TextDirection.ltr,
+          )..layout(maxWidth: double.infinity);
+          if (probe.width <= maxWidth || current.isEmpty) {
+            current = candidate;
+            continue;
+          }
+          lines.add(current);
+          current = word;
+          if (lines.length == 2) break;
+        }
+        if (lines.length < 3 && current.isNotEmpty) {
+          lines.add(current);
+        }
+        if (lines.isEmpty) {
+          lines.add(text.trim());
+        }
+
+        return TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0, end: targetProgress),
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOutCubic,
+          builder: (context, animatedProgress, _) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: List<Widget>.generate(lines.length, (index) {
+                final normalized = animatedProgress * lines.length;
+                final lineProgress = (normalized - index).clamp(0.0, 1.0);
+                final lineText = lines[index];
+                return Stack(
+                  children: [
+                    Text(
+                      lineText,
+                      maxLines: 1,
+                      softWrap: false,
+                      overflow: TextOverflow.visible,
+                      textAlign: TextAlign.center,
+                      style: style.copyWith(color: inactiveColor),
+                    ),
+                    ClipRect(
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        widthFactor: lineProgress,
+                        child: Text(
+                          lineText,
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.visible,
+                          textAlign: TextAlign.center,
+                          style: style.copyWith(color: activeColor),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }),
+            );
+          },
+        );
+      },
+    );
+  }
 }
 
 class _HomeReverseMarqueeTextState extends State<_HomeReverseMarqueeText>

@@ -322,7 +322,7 @@ class _AccountPageState extends State<AccountPage> {
               await profile.updateFrameUrl(null);
               await _syncProfileToSupabase(profile);
             },
-            child: const Text('Quitar marco'),
+            child: const Text('Quitar Sticker'),
           ),
         ],
         cancelButton: CupertinoActionSheetAction(

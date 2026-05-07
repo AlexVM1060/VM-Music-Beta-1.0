@@ -8,10 +8,10 @@ import 'package:path_provider/path_provider.dart';
 class SongStreamCacheService {
   static const String _boxName = 'song_stream_cache';
   static const String _entriesKey = 'entries_v1';
-  static const Duration _ttl = Duration(days: 1);
-  static const int _maxEntries = 30;
-  static const int _maxFileBytes = 90 * 1024 * 1024;
-  static const int _maxTotalBytes = 900 * 1024 * 1024;
+  static const Duration _ttl = Duration(days: 3);
+  static const int _maxEntries = 120;
+  static const int _maxFileBytes = 220 * 1024 * 1024;
+  static const int _maxTotalBytes = 2 * 1024 * 1024 * 1024;
 
   static final Map<String, Future<void>> _inFlightWrites =
       <String, Future<void>>{};
@@ -158,7 +158,7 @@ class SongStreamCacheService {
         HttpHeaders.userAgentHeader,
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
       );
-      final res = await req.close().timeout(const Duration(seconds: 18));
+      final res = await req.close().timeout(const Duration(seconds: 45));
       if (res.statusCode < 200 || res.statusCode >= 300) return;
 
       final sink = target.openWrite(mode: FileMode.writeOnly);

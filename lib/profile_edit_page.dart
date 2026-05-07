@@ -280,7 +280,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                   const SizedBox(height: 10),
                   Expanded(
                     child: frames.isEmpty
-                        ? const Center(child: Text('No hay marcos disponibles'))
+                        ? const Center(child: Text('No hay Stickers disponibles'))
                         : filteredFrames.isEmpty
                         ? const Center(
                             child: Text('No hay stickers en este filtro'),

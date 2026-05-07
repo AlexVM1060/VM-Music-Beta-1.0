@@ -3647,17 +3647,21 @@ class _QueueSectionState extends State<_QueueSection> {
           VideoPlayerManager,
           ({
             bool isQueueLoading,
-            String queueTitle,
-            List<PlaybackQueueItem> queue,
+            String autoplayTitle,
+            List<PlaybackQueueItem> manualQueue,
+            List<PlaybackQueueItem> autoplayQueue,
           })
         >(
           (manager) => (
             isQueueLoading: manager.isQueueLoading,
-            queueTitle: manager.queueTitle,
-            queue: manager.playbackQueue,
+            autoplayTitle: manager.queueTitle,
+            manualQueue: manager.manualPlaybackQueue,
+            autoplayQueue: manager.autoplayPlaybackQueue,
           ),
         );
-    final queue = queueState.queue;
+    final manualQueue = queueState.manualQueue;
+    final autoplayQueue = queueState.autoplayQueue;
+    final queue = <PlaybackQueueItem>[...manualQueue, ...autoplayQueue];
     final textTheme = CupertinoTheme.of(context).textTheme;
     final titleColor = CupertinoColors.label.resolveFrom(context);
     final subtitleColor = CupertinoColors.secondaryLabel.resolveFrom(context);
@@ -3722,7 +3726,7 @@ class _QueueSectionState extends State<_QueueSection> {
           ),
           const SizedBox(height: 4),
           Text(
-            '${queueState.queueTitle} · ${queue.length} canciones',
+            '${queue.length} canciones',
             style: textTheme.textStyle.copyWith(
               fontSize: 13,
               color: subtitleColor,
@@ -3737,36 +3741,110 @@ class _QueueSectionState extends State<_QueueSection> {
             ),
           ),
           const SizedBox(height: 28),
-          ReorderableListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: queue.length,
-            buildDefaultDragHandles: false,
-            proxyDecorator: (child, index, animation) {
-              return FadeTransition(
-                opacity: Tween<double>(begin: 0.96, end: 1).animate(animation),
-                child: ScaleTransition(
-                  scale: Tween<double>(begin: 0.992, end: 1).animate(animation),
-                  child: child,
-                ),
-              );
-            },
-            onReorderStart: _onReorderStart,
-            onReorderEnd: _onReorderEnd,
-            onReorder: _onReorder,
-            itemBuilder: (context, index) {
-              final item = queue[index];
-              return _QueueRow(
-                key: ObjectKey(item),
-                item: item,
-                manager: manager,
-                index: index,
-                onDragPointerMove: _onDragPointerMove,
-              );
-            },
-          ),
+          if (manualQueue.isNotEmpty) ...[
+            _QueueSubheader(
+              title: 'En cola',
+              subtitle: '${manualQueue.length} manuales',
+            ),
+            const SizedBox(height: 10),
+            ReorderableListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: manualQueue.length,
+              buildDefaultDragHandles: false,
+              proxyDecorator: (child, index, animation) {
+                return FadeTransition(
+                  opacity: Tween<double>(
+                    begin: 0.96,
+                    end: 1,
+                  ).animate(animation),
+                  child: ScaleTransition(
+                    scale: Tween<double>(
+                      begin: 0.992,
+                      end: 1,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                );
+              },
+              onReorderStart: _onReorderStart,
+              onReorderEnd: _onReorderEnd,
+              onReorder: _onReorder,
+              itemBuilder: (context, index) {
+                final item = manualQueue[index];
+                return _QueueRow(
+                  key: ObjectKey(item),
+                  item: item,
+                  manager: manager,
+                  index: index,
+                  showNextBadge: index == 0,
+                  canReorder: true,
+                  onDragPointerMove: _onDragPointerMove,
+                );
+              },
+            ),
+          ],
+          if (autoplayQueue.isNotEmpty) ...[
+            SizedBox(height: manualQueue.isNotEmpty ? 14 : 0),
+            _QueueSubheader(
+              title: queueState.autoplayTitle,
+              subtitle: '${autoplayQueue.length} autoplay',
+            ),
+            const SizedBox(height: 10),
+            ListView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: autoplayQueue.length,
+              itemBuilder: (context, index) {
+                final item = autoplayQueue[index];
+                return _QueueRow(
+                  key: ObjectKey(item),
+                  item: item,
+                  manager: manager,
+                  index: index,
+                  showNextBadge: manualQueue.isEmpty && index == 0,
+                  canReorder: false,
+                );
+              },
+            ),
+          ],
         ],
       ),
+    );
+  }
+}
+
+class _QueueSubheader extends StatelessWidget {
+  final String title;
+  final String subtitle;
+
+  const _QueueSubheader({required this.title, required this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    final titleColor = CupertinoColors.label.resolveFrom(context);
+    final subtitleColor = CupertinoColors.secondaryLabel.resolveFrom(context);
+    final textTheme = CupertinoTheme.of(context).textTheme;
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: textTheme.textStyle.copyWith(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: titleColor,
+            ),
+          ),
+        ),
+        Text(
+          subtitle,
+          style: textTheme.textStyle.copyWith(
+            fontSize: 11.5,
+            color: subtitleColor,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -3775,6 +3853,8 @@ class _QueueRow extends StatelessWidget {
   final PlaybackQueueItem item;
   final VideoPlayerManager manager;
   final int index;
+  final bool showNextBadge;
+  final bool canReorder;
   final ValueChanged<PointerMoveEvent>? onDragPointerMove;
 
   const _QueueRow({
@@ -3782,6 +3862,8 @@ class _QueueRow extends StatelessWidget {
     required this.item,
     required this.manager,
     required this.index,
+    required this.showNextBadge,
+    this.canReorder = true,
     this.onDragPointerMove,
   });
 
@@ -3810,31 +3892,34 @@ class _QueueRow extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
               child: Row(
                 children: [
-                  Listener(
-                    onPointerMove: onDragPointerMove,
-                    child: ReorderableDelayedDragStartListener(
-                      index: index,
-                      child: Padding(
-                        padding: const EdgeInsets.only(right: 8, left: 2),
-                        child: Container(
-                          width: 24,
-                          height: 24,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: CupertinoColors.white.withValues(
-                              alpha: 0.08,
+                  if (canReorder)
+                    Listener(
+                      onPointerMove: onDragPointerMove,
+                      child: ReorderableDelayedDragStartListener(
+                        index: index,
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 8, left: 2),
+                          child: Container(
+                            width: 24,
+                            height: 24,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: CupertinoColors.white.withValues(
+                                alpha: 0.08,
+                              ),
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Icon(
-                            CupertinoIcons.line_horizontal_3,
-                            size: 15,
-                            color: subtitleColor,
+                            child: Icon(
+                              CupertinoIcons.line_horizontal_3,
+                              size: 15,
+                              color: subtitleColor,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ),
+                    )
+                  else
+                    const SizedBox(width: 34),
                   item.thumbnailUrl.startsWith('/')
                       ? SquareThumbnail.file(
                           filePath: item.thumbnailUrl,
@@ -3871,7 +3956,7 @@ class _QueueRow extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        if (index == 0)
+                        if (showNextBadge)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 3),
                             child: Text(

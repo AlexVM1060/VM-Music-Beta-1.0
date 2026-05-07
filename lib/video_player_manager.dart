@@ -235,6 +235,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   String _queueTitle = 'Siguiente';
   String? _queueSeedVideoId;
   int _queueEpoch = 0;
+  String? _lastResolvedQueueVideoId;
+  DateTime? _lastResolvedQueueAt;
   final List<PlaybackQueueItem> _playbackHistory = [];
   final Set<String> _sessionPlayedVideoIds = <String>{};
   final Set<String> _recentRecommendedVideoIds = <String>{};
@@ -319,6 +321,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   static const Duration _sessionRestoredStreamTtl = Duration(minutes: 45);
   static const Duration _relatedQueueSessionTtl = Duration(minutes: 45);
   static const int _autoplayQueueRefillThreshold = 4;
+  static const Duration _autoplayQueueReloadCooldown = Duration(minutes: 2);
   static const Duration _playbackUiNotifyMinIntervalNormal = Duration(
     milliseconds: 620,
   );
@@ -670,6 +673,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     ..._manualPlaybackQueue,
     ..._playbackQueue,
   ];
+  List<PlaybackQueueItem> get manualPlaybackQueue =>
+      List<PlaybackQueueItem>.unmodifiable(_manualPlaybackQueue);
+  List<PlaybackQueueItem> get autoplayPlaybackQueue =>
+      List<PlaybackQueueItem>.unmodifiable(_playbackQueue);
   bool get isQueueLoading => _isQueueLoading;
   String get queueTitle {
     if (_manualPlaybackQueue.isEmpty) return _queueTitle;
@@ -678,6 +685,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   bool get isInBackground => false;
+  bool get _backendOnlyPlayback => _settingsService.backendOnlyPlayback;
 
   void init() {}
 
@@ -771,6 +779,18 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       return true;
     }
     return remainingAutoplayItems <= _autoplayQueueRefillThreshold;
+  }
+
+  bool _shouldSkipRedundantAutoplayQueueReload(String videoId) {
+    final normalized = videoId.trim();
+    if (normalized.isEmpty) return false;
+    if (!_hasResolvedQueueForVideo(normalized)) return false;
+    if (_playbackQueue.isEmpty) return false;
+    if (_isQueueLoading) return true;
+    if (_lastResolvedQueueVideoId != normalized) return false;
+    final lastAt = _lastResolvedQueueAt;
+    if (lastAt == null) return false;
+    return DateTime.now().difference(lastAt) < _autoplayQueueReloadCooldown;
   }
 
   bool _isTrackInQueue({required String videoId, required bool isLocal}) {
@@ -1764,6 +1784,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
 
       if (!started &&
+          !_backendOnlyPlayback &&
           !forceBackendResolver &&
           !_preferForegroundVideoPlayback &&
           !(Platform.isIOS && !kIsWeb)) {
@@ -1792,7 +1813,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         }
       }
 
-      if (!started && !forceBackendResolver) {
+      if (!started && !_backendOnlyPlayback && !forceBackendResolver) {
         manifestFuture ??= _getManifestWithRetry(videoId);
         final manifest = await manifestFuture;
         final muxedStreams = _prioritizeMuxedStreams(manifest.muxed.toList());
@@ -1814,6 +1835,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             _trackDuration = controller.value.duration;
             controller.addListener(_syncFromHiddenVideo);
             started = true;
+            unawaited(_warmSongCacheFromUri(videoId: videoId, uri: stream.url));
             if (!_preferForegroundVideoPlayback) {
               unawaited(_switchHiddenVideoToAudioEngine());
             }
@@ -2002,7 +2024,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           return;
         }
 
-        if (!forceBackendResolver) {
+        if (!_backendOnlyPlayback && !forceBackendResolver) {
           final youtubeiAltSource = await _resolveDownloadSourceViaYoutubei(
             videoId,
           );
@@ -2116,6 +2138,15 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     } catch (_) {}
 
+    final backend = await _resolveDownloadSourceViaBackend(
+      videoId,
+      preferredBackendIndex: preferredBackendIndex,
+    );
+    final backendUri = _validHttpUri(backend?.sourceUrl);
+    if (backendUri != null) return backendUri;
+
+    if (_backendOnlyPlayback) return null;
+
     try {
       final manifest = await _getManifestWithRetry(videoId);
       for (final stream in _prioritizeAudioStreams(manifest.audioOnly.toList())) {
@@ -2125,13 +2156,6 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         return stream.url;
       }
     } catch (_) {}
-
-    final backend = await _resolveDownloadSourceViaBackend(
-      videoId,
-      preferredBackendIndex: preferredBackendIndex,
-    );
-    final backendUri = _validHttpUri(backend?.sourceUrl);
-    if (backendUri != null) return backendUri;
     return null;
   }
 
@@ -2272,6 +2296,11 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<DownloadSourceInfo?> resolveDownloadSourceSilently(
     String videoId,
   ) async {
+    if (_backendOnlyPlayback) {
+      final backend = await _resolveDownloadSourceViaAllBackends(videoId);
+      if (backend != null) return backend;
+      return _resolveDownloadSourceViaYoutubei(videoId);
+    }
     try {
       final manifest = await _getManifestWithRetry(videoId);
       final isIos = !kIsWeb && Platform.isIOS;
@@ -2300,19 +2329,24 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         );
       }
 
-      return _resolveDownloadSourceViaBackend(videoId);
+      return _resolveDownloadSourceViaAllBackends(videoId);
     } on RequestLimitExceededException {
-      final backend = await _resolveDownloadSourceViaBackend(videoId);
+      final backend = await _resolveDownloadSourceViaAllBackends(videoId);
       if (backend != null) return backend;
       return _resolveDownloadSourceViaYoutubei(videoId);
     } catch (_) {
-      return _resolveDownloadSourceViaBackend(videoId);
+      return _resolveDownloadSourceViaAllBackends(videoId);
     }
   }
 
   Future<DownloadSourceInfo?> resolveDownloadSourceIsolated(
     String videoId,
   ) async {
+    if (_backendOnlyPlayback) {
+      final backend = await _resolveDownloadSourceViaAllBackends(videoId);
+      if (backend != null) return backend;
+      return _resolveDownloadSourceViaYoutubei(videoId);
+    }
     try {
       final manifest = await _getManifestWithRetry(videoId);
       final isIos = !kIsWeb && Platform.isIOS;
@@ -2352,12 +2386,33 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       // Fallback final: regresar mejor esfuerzo sin probe.
       return resolveDownloadSourceSilently(videoId);
     } on RequestLimitExceededException {
-      final backend = await _resolveDownloadSourceViaBackend(videoId);
+      final backend = await _resolveDownloadSourceViaAllBackends(videoId);
       if (backend != null) return backend;
       return _resolveDownloadSourceViaYoutubei(videoId);
     } catch (_) {
-      return _resolveDownloadSourceViaBackend(videoId);
+      return _resolveDownloadSourceViaAllBackends(videoId);
     }
+  }
+
+  Future<DownloadSourceInfo?> _resolveDownloadSourceViaAllBackends(
+    String videoId,
+  ) async {
+    final attempted = <int>{};
+
+    final first = await _resolveDownloadSourceViaBackend(videoId);
+    if (first != null) return first;
+
+    final backendCount = _ytResolverService.backendCount;
+    for (var i = 0; i < backendCount; i++) {
+      if (!attempted.add(i)) continue;
+      final resolved = await _resolveDownloadSourceViaBackend(
+        videoId,
+        preferredBackendIndex: i,
+      );
+      if (resolved != null) return resolved;
+    }
+
+    return null;
   }
 
   Future<DownloadSourceInfo?> _resolveDownloadSourceViaBackend(
@@ -2850,6 +2905,10 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _isBuffering = false;
       _trackDuration = controller.value.duration;
       controller.addListener(_syncFromHiddenVideo);
+      final currentId = _currentVideoId?.trim() ?? '';
+      if (currentId.isNotEmpty) {
+        unawaited(_warmSongCacheFromUri(videoId: currentId, uri: uri));
+      }
       if (!keepVideoEngine) {
         unawaited(_switchHiddenVideoToAudioEngine());
       }
@@ -5733,8 +5792,23 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     final alreadyInManual = _manualPlaybackQueue.any(
       (entry) => entry.videoId == item.videoId && entry.isLocal == item.isLocal,
     );
-    if (alreadyInManual) return false;
-    if (insertMode == ManualQueueInsertMode.next) {
+    final alreadyInAutoplay = _playbackQueue.any(
+      (entry) => entry.videoId == item.videoId && entry.isLocal == item.isLocal,
+    );
+
+    if (alreadyInManual || alreadyInAutoplay) {
+      _removeTrackFromQueuesById(videoId: item.videoId, isLocal: item.isLocal);
+    }
+
+    var effectiveInsertMode = insertMode;
+    // Si no hay cola manual creada por el usuario, "al final" se interpreta
+    // como "siguiente" para no enviarlo detrás del autoplay.
+    if (effectiveInsertMode == ManualQueueInsertMode.end &&
+        _manualPlaybackQueue.isEmpty) {
+      effectiveInsertMode = ManualQueueInsertMode.next;
+    }
+
+    if (effectiveInsertMode == ManualQueueInsertMode.next) {
       _manualPlaybackQueue = [item, ..._manualPlaybackQueue];
     } else {
       _manualPlaybackQueue = [..._manualPlaybackQueue, item];
@@ -6969,7 +7043,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
             }
           }
         }
-        if (!restoredFromSessionStream) {
+        if (!restoredFromSessionStream && !_backendOnlyPlayback) {
           StreamManifest? manifest;
           try {
             manifest = await _getManifestWithRetry(
@@ -7252,6 +7326,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       _clearQueueForAutoplayDisabled();
       return;
     }
+    if (_shouldSkipRedundantAutoplayQueueReload(currentVideoId)) return;
     final queueRequestId = ++_queueEpoch;
     _queueTitle = 'Siguiente';
     _playbackQueue = const [];
@@ -7266,6 +7341,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           persisted.isNotEmpty) {
         _playbackQueue = persisted;
         _queueSeedVideoId = currentVideoId;
+        _lastResolvedQueueVideoId = currentVideoId;
+        _lastResolvedQueueAt = DateTime.now();
         _rememberRecommendedQueue(_playbackQueue);
         _maybePrefetchQueueSongCacheBatchOnTrackStart();
         _isQueueLoading = false;
@@ -7281,6 +7358,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (related.isNotEmpty) {
         _playbackQueue = related;
         _queueSeedVideoId = currentVideoId;
+        _lastResolvedQueueVideoId = currentVideoId;
+        _lastResolvedQueueAt = DateTime.now();
         _rememberRecommendedQueue(_playbackQueue);
         unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
         unawaited(_maybePreloadUpcomingQueueTrack());
@@ -7307,6 +7386,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     required String currentVideoId,
   }) async {
     if (!_autoplayEnabled) return;
+    if (_shouldSkipRedundantAutoplayQueueReload(currentVideoId)) return;
 
     final queueRequestId = ++_queueEpoch;
     _queueTitle = 'Siguiente';
@@ -7322,6 +7402,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
           persisted.isNotEmpty) {
         _playbackQueue = persisted;
         _queueSeedVideoId = currentVideoId;
+        _lastResolvedQueueVideoId = currentVideoId;
+        _lastResolvedQueueAt = DateTime.now();
         _rememberRecommendedQueue(_playbackQueue);
         _maybePrefetchQueueSongCacheBatchOnTrackStart();
         _isQueueLoading = false;
@@ -7348,6 +7430,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       if (queue.isNotEmpty) {
         _playbackQueue = queue;
         _queueSeedVideoId = currentVideoId;
+        _lastResolvedQueueVideoId = currentVideoId;
+        _lastResolvedQueueAt = DateTime.now();
         _rememberRecommendedQueue(_playbackQueue);
         unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
         unawaited(_maybePreloadUpcomingQueueTrack());
@@ -8535,7 +8619,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    final backendSource = await _resolveDownloadSourceViaBackend(next.videoId);
+      final backendSource = await _resolveDownloadSourceViaAllBackends(
+        next.videoId,
+      );
     addCandidateUrl(backendSource?.sourceUrl);
 
     try {
@@ -8545,22 +8631,25 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       addCandidateUrl(resolver?.sourceUrl);
     } catch (_) {}
 
-    StreamManifest? manifest;
-    try {
-      manifest = await _getManifestWithRetry(next.videoId);
-    } catch (_) {
-      manifest = null;
-    }
-    final audioStreams =
-        manifest?.audioOnly.toList() ?? const <AudioOnlyStreamInfo>[];
-    final muxedStreams = manifest?.muxed.toList() ?? const <MuxedStreamInfo>[];
-    final ordered = _prioritizeAudioStreams(audioStreams);
-    final orderedMuxed = _prioritizeMuxedStreams(muxedStreams);
-    for (final stream in ordered) {
-      addCandidateUrl(stream.url.toString());
-    }
-    for (final stream in orderedMuxed) {
-      addCandidateUrl(stream.url.toString());
+    if (!_backendOnlyPlayback) {
+      StreamManifest? manifest;
+      try {
+        manifest = await _getManifestWithRetry(next.videoId);
+      } catch (_) {
+        manifest = null;
+      }
+      final audioStreams =
+          manifest?.audioOnly.toList() ?? const <AudioOnlyStreamInfo>[];
+      final muxedStreams =
+          manifest?.muxed.toList() ?? const <MuxedStreamInfo>[];
+      final ordered = _prioritizeAudioStreams(audioStreams);
+      final orderedMuxed = _prioritizeMuxedStreams(muxedStreams);
+      for (final stream in ordered) {
+        addCandidateUrl(stream.url.toString());
+      }
+      for (final stream in orderedMuxed) {
+        addCandidateUrl(stream.url.toString());
+      }
     }
 
     if (candidateUris.isEmpty) return false;

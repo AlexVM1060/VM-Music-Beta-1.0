@@ -197,6 +197,15 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                     ),
                     const _SectionDivider(),
                     _SettingSwitchRow(
+                      title: 'Priorizar backend para reproducción',
+                      subtitle:
+                          'Fuerza la reproducción usando únicamente el backend',
+                      value: settings.backendOnlyPlayback,
+                      onChanged: (value) =>
+                          settings.setBackendOnlyPlayback(value),
+                    ),
+                    const _SectionDivider(),
+                    _SettingSwitchRow(
                       title: 'Permitir contenido explícito',
                       value: settings.allowExplicitContent,
                       onChanged: (value) =>
