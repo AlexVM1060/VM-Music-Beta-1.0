@@ -49,7 +49,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   static const String _homeCacheBoxName = 'home_cache';
   static const String _trendingCacheKey = 'mx_trending_topic_v2';
-  static const String _curatedShelvesCacheKey = 'curated_music_shelves_v5';
+  static const String _curatedShelvesCacheKey = 'curated_music_shelves_v9';
   static const String _homeContentCacheKey = 'home_content_v1';
   static const Duration _trendingCacheTtl = Duration(hours: 6);
   static const Duration _curatedShelvesCacheTtl = Duration(hours: 4);
@@ -57,16 +57,22 @@ class _HomePageState extends State<HomePage> {
   final YoutubeExplode _yt = YoutubeExplode();
   late Future<_HomeContent> _contentFuture;
   late Future<List<_HomeTrack>> _trendingFuture;
+  late Future<_HomeShelf> _musicVideosShelfFuture;
+  late Future<_HomeShelf> _mexicanGenreShelfFuture;
   final Map<String, _HomeResolvedAlbumRef> _albumRefByVideoIdCache = {};
   final Map<String, Future<_HomeResolvedAlbumRef?>> _albumRefByVideoIdInFlight =
       {};
   final Map<String, _HomeResolvedAlbumRef> _albumShelfRefByItemId = {};
+  final Map<String, _HomeResolvedChannelPlaylistRef>
+  _ytMusicMxPlaylistRefByItemId = {};
 
   @override
   void initState() {
     super.initState();
     _contentFuture = _loadContent(includeNetwork: false);
     _trendingFuture = _loadTrendingTracks();
+    _musicVideosShelfFuture = _buildMusicVideosShelfFallback();
+    _mexicanGenreShelfFuture = _buildMexicanGenreShelf();
     unawaited(_refreshHomeContentInBackground());
     unawaited(_warmHomeArtworkCache());
   }
@@ -331,6 +337,7 @@ class _HomePageState extends State<HomePage> {
   ) async {
     final cached = await _readCuratedShelvesCache();
     if (cached.isNotEmpty) return cached;
+    _ytMusicMxPlaylistRefByItemId.clear();
 
     final shelves = <_HomeShelf>[];
     final quickPicks = await _buildQuickPicksShelf(history);
@@ -338,7 +345,48 @@ class _HomePageState extends State<HomePage> {
     final suggestedAlbums = await _buildSuggestedAlbumsShelf(history);
     if (suggestedAlbums.tracks.isNotEmpty) shelves.add(suggestedAlbums);
 
+    final channelShelves = await _loadYouTubeMusicMxShelvesFromChannel();
+    if (channelShelves.isNotEmpty) {
+      shelves.addAll(channelShelves);
+    }
+    if (!shelves.any((s) => s.id == 'ytmx_nuevos_videos_musicales')) {
+      final videosShelf = await _buildMusicVideosShelfFallback();
+      if (videosShelf.tracks.isNotEmpty) {
+        shelves.add(videosShelf);
+      }
+    }
+
     final fetched = await Future.wait([
+      if (channelShelves.isEmpty)
+        _buildShelfFromSeed(
+          const _ShelfSeed(
+            id: 'ytmx_exitos_del_momento',
+            title: 'Éxitos del Momento',
+            subtitle: 'YouTube Music México',
+            query:
+                'youtube music mexico éxitos del momento canciones top mexico topic',
+          ),
+        ),
+      if (channelShelves.isEmpty)
+        _buildShelfFromSeed(
+          const _ShelfSeed(
+            id: 'ytmx_nueva_musica',
+            title: 'Nueva Música',
+            subtitle: 'YouTube Music México',
+            query:
+                'youtube music mexico nueva música estrenos semana topic official audio',
+          ),
+        ),
+      if (channelShelves.isEmpty)
+        _buildShelfFromSeed(
+          const _ShelfSeed(
+            id: 'ytmx_una_vuelta_al_pasado',
+            title: 'Una vuelta al pasado',
+            subtitle: 'YouTube Music México',
+            query:
+                'youtube music mexico una vuelta al pasado throwback clásicos topic',
+          ),
+        ),
       _buildShelfFromSeed(
         const _ShelfSeed(
           id: 'trending_community',
@@ -377,10 +425,234 @@ class _HomePageState extends State<HomePage> {
         shelves.add(shelf);
       }
     }
+    final videosIndex = shelves.indexWhere(
+      (shelf) => shelf.id == 'ytmx_nuevos_videos_musicales',
+    );
+    final albumsIndex = shelves.indexWhere(
+      (shelf) => shelf.id == 'albums_for_you',
+    );
+    if (videosIndex != -1 &&
+        albumsIndex != -1 &&
+        videosIndex != albumsIndex + 1) {
+      final videosShelf = shelves.removeAt(videosIndex);
+      final insertAt = shelves.indexWhere(
+        (shelf) => shelf.id == 'albums_for_you',
+      );
+      if (insertAt == -1) {
+        shelves.add(videosShelf);
+      } else {
+        shelves.insert(insertAt + 1, videosShelf);
+      }
+    }
+    final throwbackPastIndex = shelves.indexWhere(
+      (shelf) => shelf.id == 'ytmx_una_vuelta_al_pasado',
+    );
+    final newMusicIndex = shelves.indexWhere(
+      (shelf) => shelf.id == 'ytmx_nueva_musica',
+    );
+    if (throwbackPastIndex != -1 &&
+        newMusicIndex != -1 &&
+        throwbackPastIndex > newMusicIndex) {
+      final throwbackPastShelf = shelves.removeAt(throwbackPastIndex);
+      final targetIndex = shelves.indexWhere(
+        (shelf) => shelf.id == 'ytmx_nueva_musica',
+      );
+      if (targetIndex == -1) {
+        shelves.add(throwbackPastShelf);
+      } else {
+        shelves.insert(targetIndex, throwbackPastShelf);
+      }
+    }
     if (shelves.isNotEmpty) {
       await _writeCuratedShelvesCache(shelves);
     }
     return shelves;
+  }
+
+  Future<List<_HomeShelf>> _loadYouTubeMusicMxShelvesFromChannel() async {
+    const channelUrl =
+        'https://www.youtube.com/channel/UC-9-kyTW8ZkZNDHQJ6FgpwQ';
+    const targetTitles = <String, String>{
+      'éxitos del momento': 'ytmx_exitos_del_momento',
+      'nueva música': 'ytmx_nueva_musica',
+      'una vuelta al pasado': 'ytmx_una_vuelta_al_pasado',
+      'nuevos videos musicales': 'ytmx_nuevos_videos_musicales',
+    };
+    final normalizedToDisplay = <String, String>{
+      'éxitos del momento': 'Éxitos del Momento',
+      'nueva música': 'Nueva Música',
+      'una vuelta al pasado': 'Una vuelta al pasado',
+      'nuevos videos musicales': 'Nuevos videos musicales',
+    };
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 10);
+      final uri = Uri.parse(channelUrl);
+      final request = await client.getUrl(uri);
+      request.headers.set(
+        HttpHeaders.userAgentHeader,
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+      );
+      request.headers.set(
+        HttpHeaders.acceptLanguageHeader,
+        'es-MX,es;q=0.9,en;q=0.8',
+      );
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        client.close(force: true);
+        return const <_HomeShelf>[];
+      }
+      final html = await utf8.decodeStream(response);
+      client.close(force: true);
+
+      final marker = 'var ytInitialData = ';
+      final start = html.indexOf(marker);
+      if (start == -1) return const <_HomeShelf>[];
+      final end = html.indexOf(';</script>', start);
+      if (end == -1) return const <_HomeShelf>[];
+      final jsonRaw = html.substring(start + marker.length, end).trim();
+      final root = jsonDecode(jsonRaw);
+      if (root is! Map<String, dynamic>) return const <_HomeShelf>[];
+
+      final found = <String, _HomeShelf>{};
+
+      void walk(dynamic node) {
+        if (node is Map) {
+          final map = Map<String, dynamic>.from(node.cast<dynamic, dynamic>());
+          final richShelf = map['richShelfRenderer'];
+          if (richShelf is Map) {
+            final shelf = Map<String, dynamic>.from(
+              richShelf.cast<dynamic, dynamic>(),
+            );
+            final titleRaw = ((shelf['title'] as Map?)?['simpleText'] ?? '')
+                .toString()
+                .trim();
+            final titleKey = titleRaw.toLowerCase();
+            final shelfId = targetTitles[titleKey];
+            if (shelfId != null && !found.containsKey(shelfId)) {
+              final contents = (shelf['contents'] as List?) ?? const [];
+              final tracks = <_HomeTrack>[];
+              for (final rawItem in contents) {
+                if (rawItem is! Map) continue;
+                final richItem = Map<String, dynamic>.from(
+                  rawItem.cast<dynamic, dynamic>(),
+                );
+                final lockup =
+                    ((richItem['richItemRenderer'] as Map?)?['content']
+                            as Map?)?['lockupViewModel']
+                        as Map?;
+                if (lockup == null) continue;
+                final contentId = (lockup['contentId'] ?? '').toString().trim();
+                if (contentId.isEmpty) continue;
+                final contentType = (lockup['contentType'] ?? '')
+                    .toString()
+                    .trim()
+                    .toUpperCase();
+                final metadata =
+                    (lockup['metadata'] as Map?)?['lockupMetadataViewModel']
+                        as Map?;
+                final playlistTitle =
+                    ((metadata?['title'] as Map?)?['content'] ?? '')
+                        .toString()
+                        .trim();
+                if (playlistTitle.isEmpty) continue;
+                final description =
+                    (((metadata?['metadata']
+                                    as Map?)?['contentMetadataViewModel']
+                                as Map?)?['metadataRows']
+                            as List?)
+                        ?.whereType<Map>()
+                        .map((row) {
+                          final parts =
+                              (row['metadataParts'] as List?) ??
+                              const <dynamic>[];
+                          return parts
+                              .whereType<Map>()
+                              .map(
+                                (part) =>
+                                    ((part['text'] as Map?)?['content'] ?? '')
+                                        .toString()
+                                        .trim(),
+                              )
+                              .where((text) => text.isNotEmpty)
+                              .join(' ');
+                        })
+                        .where((rowText) => rowText.trim().isNotEmpty)
+                        .join(' • ')
+                        .trim() ??
+                    '';
+                final thumbSources =
+                    (((((lockup['contentImage']
+                                            as Map?)?['collectionThumbnailViewModel']
+                                        as Map?)?['primaryThumbnail']
+                                    as Map?)?['thumbnailViewModel']
+                                as Map?)?['image']
+                            as Map?)?['sources']
+                        as List? ??
+                    const [];
+                String thumbUrl = '';
+                if (thumbSources.isNotEmpty && thumbSources.first is Map) {
+                  thumbUrl = (thumbSources.first['url'] ?? '').toString();
+                }
+                final isMusicVideoShelf =
+                    shelfId == 'ytmx_nuevos_videos_musicales' ||
+                    contentType.contains('VIDEO');
+                final itemId = isMusicVideoShelf
+                    ? 'ytmxmv:$contentId'
+                    : 'ytmx:$contentId';
+                if (!isMusicVideoShelf) {
+                  _ytMusicMxPlaylistRefByItemId[itemId] =
+                      _HomeResolvedChannelPlaylistRef(
+                        playlistId: contentId,
+                        title: playlistTitle,
+                        subtitle: 'YouTube Music México',
+                        thumbnailUrl: thumbUrl,
+                      );
+                }
+                tracks.add(
+                  _HomeTrack(
+                    videoId: itemId,
+                    title: playlistTitle,
+                    artist: description,
+                    thumbnailUrl: thumbUrl,
+                    isLocal: false,
+                  ),
+                );
+                if (tracks.length >= 14) break;
+              }
+              if (tracks.isNotEmpty) {
+                found[shelfId] = _HomeShelf(
+                  id: shelfId,
+                  title: normalizedToDisplay[titleKey] ?? titleRaw,
+                  subtitle: '',
+                  tracks: tracks,
+                );
+              }
+            }
+          }
+          for (final value in map.values) {
+            walk(value);
+          }
+        } else if (node is List) {
+          for (final item in node) {
+            walk(item);
+          }
+        }
+      }
+
+      walk(root);
+      return [
+        if (found['ytmx_exitos_del_momento'] != null)
+          found['ytmx_exitos_del_momento']!,
+        if (found['ytmx_una_vuelta_al_pasado'] != null)
+          found['ytmx_una_vuelta_al_pasado']!,
+        if (found['ytmx_nueva_musica'] != null) found['ytmx_nueva_musica']!,
+        if (found['ytmx_nuevos_videos_musicales'] != null)
+          found['ytmx_nuevos_videos_musicales']!,
+      ];
+    } catch (_) {
+      return const <_HomeShelf>[];
+    }
   }
 
   Future<_HomeShelf> _buildQuickPicksShelf(List<VideoHistory> history) async {
@@ -549,6 +821,248 @@ class _HomePageState extends State<HomePage> {
       subtitle: seed.subtitle,
       tracks: tracks,
     );
+  }
+
+  Future<_HomeShelf> _buildMusicVideosShelfFallback() async {
+    const fixedPlaylistId = 'OLLkIRtf8ibMYeheSlKEf7-Y4QtvTRt7low';
+    final fixedFromPage = await _buildShelfFromPlaylistPage(
+      shelfId: 'ytmx_nuevos_videos_musicales',
+      title: 'Nuevos videos musicales',
+      playlistId: fixedPlaylistId,
+      forceVideoPrefix: true,
+      limit: 18,
+    );
+    if (fixedFromPage.tracks.isNotEmpty) {
+      return fixedFromPage;
+    }
+    final fixedTracks = await _buildShelfFromPlaylistId(
+      shelfId: 'ytmx_nuevos_videos_musicales',
+      title: 'Nuevos videos musicales',
+      playlistId: fixedPlaylistId,
+      forceVideoPrefix: true,
+      limit: 18,
+    );
+    if (fixedTracks.tracks.isNotEmpty) {
+      return fixedTracks;
+    }
+
+    const queries = <String>[
+      'nuevos videos musicales mexico estreno oficial',
+      'youtube music mexico nuevos videos musicales',
+      'latin pop official music video estreno',
+      'regional mexicano video oficial nuevo',
+    ];
+    final tracks = <_HomeTrack>[];
+    final seen = <String>{};
+    try {
+      for (final query in queries) {
+        final results = await _yt.search.search(query);
+        for (final video in results.take(34)) {
+          if (!_isValidMusicVideoShelfTrack(video)) continue;
+          final id = video.id.value.trim();
+          if (id.isEmpty || !seen.add(id)) continue;
+          tracks.add(
+            _HomeTrack(
+              videoId: 'ytmxmv:$id',
+              title: video.title,
+              artist: cleanArtistName(video.author),
+              thumbnailUrl: bestThumbnailForVideo(video),
+              isLocal: false,
+            ),
+          );
+          if (tracks.length >= 14) {
+            return _HomeShelf(
+              id: 'ytmx_nuevos_videos_musicales',
+              title: 'Nuevos videos musicales',
+              subtitle: '',
+              tracks: tracks,
+            );
+          }
+        }
+      }
+    } catch (_) {
+      // Best effort.
+    }
+    return _HomeShelf(
+      id: 'ytmx_nuevos_videos_musicales',
+      title: 'Nuevos videos musicales',
+      subtitle: '',
+      tracks: tracks,
+    );
+  }
+
+  Future<_HomeShelf> _buildShelfFromPlaylistId({
+    required String shelfId,
+    required String title,
+    required String playlistId,
+    required bool forceVideoPrefix,
+    int limit = 14,
+  }) async {
+    final tracks = <_HomeTrack>[];
+    final seen = <String>{};
+    try {
+      final videos = _yt.playlists.getVideos(playlistId);
+      await for (final video in videos) {
+        final id = video.id.value.trim();
+        if (id.isEmpty || !seen.add(id)) continue;
+        tracks.add(
+          _HomeTrack(
+            videoId: forceVideoPrefix ? 'ytmxmv:$id' : id,
+            title: video.title,
+            artist: cleanArtistName(video.author),
+            thumbnailUrl: bestThumbnailForVideo(video),
+            isLocal: false,
+          ),
+        );
+        if (tracks.length >= limit) break;
+      }
+    } catch (_) {
+      // Best effort.
+    }
+    return _HomeShelf(id: shelfId, title: title, subtitle: '', tracks: tracks);
+  }
+
+  Future<_HomeShelf> _buildShelfFromPlaylistPage({
+    required String shelfId,
+    required String title,
+    required String playlistId,
+    required bool forceVideoPrefix,
+    int limit = 14,
+  }) async {
+    final tracks = <_HomeTrack>[];
+    final seen = <String>{};
+    try {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 10);
+      final uri = Uri.parse(
+        'https://www.youtube.com/playlist?list=$playlistId',
+      );
+      final request = await client.getUrl(uri);
+      request.headers.set(
+        HttpHeaders.userAgentHeader,
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+      );
+      request.headers.set(
+        HttpHeaders.acceptLanguageHeader,
+        'es-MX,es;q=0.9,en;q=0.8',
+      );
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        client.close(force: true);
+        return _HomeShelf(
+          id: shelfId,
+          title: title,
+          subtitle: '',
+          tracks: tracks,
+        );
+      }
+      final html = await utf8.decodeStream(response);
+      client.close(force: true);
+
+      final marker = 'var ytInitialData = ';
+      final start = html.indexOf(marker);
+      if (start == -1) {
+        return _HomeShelf(
+          id: shelfId,
+          title: title,
+          subtitle: '',
+          tracks: tracks,
+        );
+      }
+      final end = html.indexOf(';</script>', start);
+      if (end == -1) {
+        return _HomeShelf(
+          id: shelfId,
+          title: title,
+          subtitle: '',
+          tracks: tracks,
+        );
+      }
+      final jsonRaw = html.substring(start + marker.length, end).trim();
+      final root = jsonDecode(jsonRaw);
+      if (root is! Map<String, dynamic>) {
+        return _HomeShelf(
+          id: shelfId,
+          title: title,
+          subtitle: '',
+          tracks: tracks,
+        );
+      }
+
+      void walk(dynamic node) {
+        if (tracks.length >= limit) return;
+        if (node is Map) {
+          final map = Map<String, dynamic>.from(node.cast<dynamic, dynamic>());
+          final renderer = map['playlistVideoRenderer'];
+          if (renderer is Map) {
+            final r = Map<String, dynamic>.from(
+              renderer.cast<dynamic, dynamic>(),
+            );
+            final id = (r['videoId'] ?? '').toString().trim();
+            if (id.isNotEmpty && seen.add(id)) {
+              final titleRuns =
+                  (((r['title'] as Map?)?['runs']) as List?) ?? const [];
+              final videoTitle = titleRuns.isNotEmpty && titleRuns.first is Map
+                  ? (titleRuns.first['text'] ?? '').toString().trim()
+                  : '';
+              final authorRuns =
+                  ((((r['shortBylineText'] as Map?)?['runs']) as List?) ??
+                  const []);
+              final author = authorRuns.isNotEmpty && authorRuns.first is Map
+                  ? cleanArtistName((authorRuns.first['text'] ?? '').toString())
+                  : '';
+              final thumbs =
+                  (((((r['thumbnail'] as Map?)?['thumbnails']) as List?) ??
+                  const []));
+              String thumbUrl = '';
+              if (thumbs.isNotEmpty && thumbs.last is Map) {
+                thumbUrl = (thumbs.last['url'] ?? '').toString();
+              }
+              tracks.add(
+                _HomeTrack(
+                  videoId: forceVideoPrefix ? 'ytmxmv:$id' : id,
+                  title: videoTitle.isEmpty ? 'Video musical' : videoTitle,
+                  artist: author,
+                  thumbnailUrl: thumbUrl,
+                  isLocal: false,
+                ),
+              );
+            }
+          }
+          for (final value in map.values) {
+            walk(value);
+            if (tracks.length >= limit) break;
+          }
+        } else if (node is List) {
+          for (final item in node) {
+            walk(item);
+            if (tracks.length >= limit) break;
+          }
+        }
+      }
+
+      walk(root);
+    } catch (_) {
+      // Best effort.
+    }
+    return _HomeShelf(id: shelfId, title: title, subtitle: '', tracks: tracks);
+  }
+
+  bool _isValidMusicVideoShelfTrack(Video video) {
+    final title = video.title.toLowerCase();
+    final author = video.author.toLowerCase();
+    final description = video.description.toLowerCase();
+    final blob = '$title $author $description';
+    if (_shelfBlockedKeywords.any(blob.contains)) return false;
+    if (_isBlockedSearchAuthor(author)) return false;
+    final hasMusicVideoSignal =
+        blob.contains('official video') ||
+        blob.contains('video oficial') ||
+        blob.contains('music video') ||
+        blob.contains('mv') ||
+        blob.contains('videoclip');
+    final isTopic = author.endsWith('- topic') || author.endsWith('topic');
+    return hasMusicVideoSignal && !isTopic;
   }
 
   bool _isValidShelfTrack(Video video) {
@@ -1112,11 +1626,362 @@ class _HomePageState extends State<HomePage> {
   Future<void> _refresh() async {
     final updated = _loadContent();
     final trendingUpdated = _loadTrendingTracks();
+    final videosUpdated = _buildMusicVideosShelfFallback();
+    final mexicanUpdated = _buildMexicanGenreShelf();
     setState(() {
       _contentFuture = updated;
       _trendingFuture = trendingUpdated;
+      _musicVideosShelfFuture = videosUpdated;
+      _mexicanGenreShelfFuture = mexicanUpdated;
     });
-    await Future.wait([updated, trendingUpdated]);
+    await Future.wait([
+      updated,
+      trendingUpdated,
+      videosUpdated,
+      mexicanUpdated,
+    ]);
+  }
+
+  Future<_HomeShelf> _buildMexicanGenreShelf() async {
+    const endpoint =
+        'https://music.youtube.com/youtubei/v1/browse?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+    const clientVersion = '1.20240226.01.00';
+
+    String runsToText(dynamic node) {
+      final runs = (node as List?) ?? const [];
+      return runs
+          .whereType<Map>()
+          .map((r) => (r['text'] ?? '').toString())
+          .join()
+          .trim();
+    }
+
+    Future<Map<String, dynamic>?> postBrowse({
+      required String browseId,
+      String? params,
+      required String referer,
+    }) async {
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 10);
+      try {
+        final req = await client.postUrl(Uri.parse(endpoint));
+        req.headers.set(HttpHeaders.contentTypeHeader, 'application/json');
+        req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+        req.headers.set(
+          HttpHeaders.userAgentHeader,
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        );
+        req.headers.set('Origin', 'https://music.youtube.com');
+        req.headers.set('Referer', referer);
+        req.headers.set('X-Youtube-Client-Name', '67');
+        req.headers.set('X-Youtube-Client-Version', clientVersion);
+        req.add(
+          utf8.encode(
+            jsonEncode(<String, Object?>{
+              'browseId': browseId,
+              if (params != null && params.isNotEmpty) 'params': params,
+              'context': {
+                'client': {
+                  'clientName': 'WEB_REMIX',
+                  'clientVersion': clientVersion,
+                  'hl': 'es-419',
+                  'gl': 'MX',
+                },
+                'request': {'useSsl': true},
+              },
+              'contentCheckOk': true,
+              'racyCheckOk': true,
+            }),
+          ),
+        );
+        final res = await req.close();
+        if (res.statusCode < 200 || res.statusCode >= 300) return null;
+        final body = await utf8.decoder.bind(res).join();
+        final decoded = jsonDecode(body);
+        if (decoded is Map<String, dynamic>) return decoded;
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded.cast<dynamic, dynamic>());
+        }
+        return null;
+      } catch (_) {
+        return null;
+      } finally {
+        client.close(force: true);
+      }
+    }
+
+    String? musicaMexicanaParams(Map<String, dynamic> root) {
+      String? out;
+      void walk(dynamic n) {
+        if (out != null) return;
+        if (n is Map) {
+          final m = Map<String, dynamic>.from(n.cast<dynamic, dynamic>());
+          final btn = m['musicNavigationButtonRenderer'];
+          if (btn is Map) {
+            final b = Map<String, dynamic>.from(btn.cast<dynamic, dynamic>());
+            final text = runsToText(
+              (b['buttonText'] as Map?)?['runs'],
+            ).toLowerCase();
+            if (text == 'música mexicana' || text == 'musica mexicana') {
+              final p =
+                  (((b['clickCommand'] as Map?)?['browseEndpoint']
+                              as Map?)?['params'] ??
+                          '')
+                      .toString()
+                      .trim();
+              if (p.isNotEmpty) out = p;
+            }
+          }
+          for (final v in m.values) {
+            walk(v);
+          }
+        } else if (n is List) {
+          for (final v in n) {
+            walk(v);
+          }
+        }
+      }
+
+      walk(root);
+      return out;
+    }
+
+    final moodRoot = await postBrowse(
+      browseId: 'FEmusic_moods_and_genres',
+      referer: 'https://music.youtube.com/moods_and_genres',
+    );
+    if (moodRoot == null) {
+      return const _HomeShelf(
+        id: 'ytm_musica_mexicana',
+        title: 'Música Mexicana',
+        subtitle: '',
+        tracks: [],
+      );
+    }
+    final params = musicaMexicanaParams(moodRoot);
+    if (params == null || params.isEmpty) {
+      return const _HomeShelf(
+        id: 'ytm_musica_mexicana',
+        title: 'Música Mexicana',
+        subtitle: '',
+        tracks: [],
+      );
+    }
+
+    final genreRoot = await postBrowse(
+      browseId: 'FEmusic_moods_and_genres_category',
+      params: params,
+      referer: 'https://music.youtube.com/moods_and_genres',
+    );
+    if (genreRoot == null) {
+      return const _HomeShelf(
+        id: 'ytm_musica_mexicana',
+        title: 'Música Mexicana',
+        subtitle: '',
+        tracks: [],
+      );
+    }
+
+    String firstThumbFromAny(dynamic node) {
+      final thumbs =
+          (((node as Map?)?['thumbnail'] as Map?)?['thumbnails'] as List?) ??
+          const [];
+      if (thumbs.isNotEmpty && thumbs.last is Map) {
+        return (thumbs.last['url'] ?? '').toString().trim();
+      }
+      return '';
+    }
+
+    final songTracks = <_HomeTrack>[];
+    final playlistTracks = <_HomeTrack>[];
+    final seen = <String>{};
+
+    void addSongTrack({
+      required String videoId,
+      required String title,
+      required String subtitle,
+      required String thumbnailUrl,
+    }) {
+      final cleanVideoId = videoId.trim();
+      final cleanTitle = title.trim();
+      if (cleanVideoId.isEmpty || cleanTitle.isEmpty) return;
+      final itemId = 'ytmxmv:$cleanVideoId';
+      if (!seen.add(itemId)) return;
+      songTracks.add(
+        _HomeTrack(
+          videoId: itemId,
+          title: cleanTitle,
+          artist: subtitle.trim(),
+          thumbnailUrl: thumbnailUrl.trim(),
+          isLocal: false,
+        ),
+      );
+    }
+
+    void addPlaylistTrack({
+      required String browseId,
+      required String title,
+      required String subtitle,
+      required String thumbnailUrl,
+    }) {
+      final cleanBrowseId = browseId.trim();
+      final cleanTitle = title.trim();
+      if (cleanBrowseId.isEmpty || cleanTitle.isEmpty) return;
+      final itemId = 'ytmx:$cleanBrowseId';
+      if (!seen.add(itemId)) return;
+      _ytMusicMxPlaylistRefByItemId[itemId] = _HomeResolvedChannelPlaylistRef(
+        playlistId: cleanBrowseId.startsWith('VL')
+            ? cleanBrowseId.substring(2)
+            : cleanBrowseId,
+        title: cleanTitle,
+        subtitle: '',
+        thumbnailUrl: thumbnailUrl.trim(),
+      );
+      playlistTracks.add(
+        _HomeTrack(
+          videoId: itemId,
+          title: cleanTitle,
+          artist: subtitle.trim(),
+          thumbnailUrl: thumbnailUrl.trim(),
+          isLocal: false,
+        ),
+      );
+    }
+
+    void walkItems(dynamic n) {
+      if (songTracks.length + playlistTracks.length >= 30) return;
+      if (n is Map) {
+        final m = Map<String, dynamic>.from(n.cast<dynamic, dynamic>());
+        final twoRow = m['musicTwoRowItemRenderer'];
+        if (twoRow is Map) {
+          final r = Map<String, dynamic>.from(twoRow.cast<dynamic, dynamic>());
+          final title = runsToText(((r['title'] as Map?)?['runs']));
+          if (title.isNotEmpty) {
+            final subtitle = runsToText(
+              ((((r['subtitle'] as Map?)?['runs']) as List?) ?? const []),
+            );
+            final thumbs =
+                (((((r['thumbnailRenderer'] as Map?)?['musicThumbnailRenderer']
+                            as Map?)?['thumbnail']
+                        as Map?)?['thumbnails']
+                    as List?) ??
+                const []);
+            var thumbUrl = '';
+            if (thumbs.isNotEmpty && thumbs.last is Map) {
+              thumbUrl = (thumbs.last['url'] ?? '').toString().trim();
+            }
+            final nav = (r['navigationEndpoint'] as Map?) ?? const {};
+            final watchVideoId =
+                (((nav['watchEndpoint'] as Map?)?['videoId'] ?? '').toString())
+                    .trim();
+            final browseId =
+                (((nav['browseEndpoint'] as Map?)?['browseId'] ?? '')
+                        .toString())
+                    .trim();
+            if (watchVideoId.isNotEmpty) {
+              addSongTrack(
+                videoId: watchVideoId,
+                title: title,
+                subtitle: subtitle,
+                thumbnailUrl: thumbUrl,
+              );
+            } else if (browseId.isNotEmpty) {
+              addPlaylistTrack(
+                browseId: browseId,
+                title: title,
+                subtitle: subtitle,
+                thumbnailUrl: thumbUrl,
+              );
+            }
+          }
+        }
+        final responsive = m['musicResponsiveListItemRenderer'];
+        if (responsive is Map) {
+          final r = Map<String, dynamic>.from(
+            responsive.cast<dynamic, dynamic>(),
+          );
+          final flexColumns = (r['flexColumns'] as List?) ?? const [];
+          String title = '';
+          String subtitle = '';
+          if (flexColumns.isNotEmpty && flexColumns.first is Map) {
+            final firstCol = Map<String, dynamic>.from(
+              flexColumns.first.cast<dynamic, dynamic>(),
+            );
+            title = runsToText(
+              (((firstCol['musicResponsiveListItemFlexColumnRenderer']
+                          as Map?)?['text']
+                      as Map?)?['runs']) ??
+                  const [],
+            );
+          }
+          if (flexColumns.length > 1 && flexColumns[1] is Map) {
+            final secondCol = Map<String, dynamic>.from(
+              flexColumns[1].cast<dynamic, dynamic>(),
+            );
+            subtitle = runsToText(
+              (((secondCol['musicResponsiveListItemFlexColumnRenderer']
+                          as Map?)?['text']
+                      as Map?)?['runs']) ??
+                  const [],
+            );
+          }
+          final thumbFromRenderer = firstThumbFromAny(
+            ((r['thumbnail'] as Map?)?['musicThumbnailRenderer']) as Map? ?? {},
+          );
+          final nav = (r['navigationEndpoint'] as Map?) ?? const {};
+          final watchVideoId =
+              (((nav['watchEndpoint'] as Map?)?['videoId'] ?? '').toString())
+                  .trim();
+          final watchPlaylistId =
+              (((nav['watchEndpoint'] as Map?)?['playlistId'] ?? '').toString())
+                  .trim();
+          final browseId =
+              (((nav['browseEndpoint'] as Map?)?['browseId'] ?? '').toString())
+                  .trim();
+
+          if (watchVideoId.isNotEmpty) {
+            addSongTrack(
+              videoId: watchVideoId,
+              title: title,
+              subtitle: subtitle,
+              thumbnailUrl: thumbFromRenderer,
+            );
+          } else if (watchPlaylistId.isNotEmpty || browseId.isNotEmpty) {
+            final playlistId = watchPlaylistId.isNotEmpty
+                ? watchPlaylistId
+                : browseId;
+            addPlaylistTrack(
+              browseId: playlistId,
+              title: title,
+              subtitle: subtitle,
+              thumbnailUrl: thumbFromRenderer,
+            );
+          }
+        }
+        for (final v in m.values) {
+          walkItems(v);
+          if (songTracks.length + playlistTracks.length >= 30) {
+            break;
+          }
+        }
+      } else if (n is List) {
+        for (final v in n) {
+          walkItems(v);
+          if (songTracks.length + playlistTracks.length >= 30) {
+            break;
+          }
+        }
+      }
+    }
+
+    walkItems(genreRoot);
+    final orderedTracks = <_HomeTrack>[...songTracks, ...playlistTracks];
+    return _HomeShelf(
+      id: 'ytm_musica_mexicana',
+      title: 'Música Mexicana',
+      subtitle: '',
+      tracks: orderedTracks,
+    );
   }
 
   Future<void> _playTrack(_HomeTrack track) async {
@@ -1380,6 +2245,24 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Future<void> _openChannelPlaylistRef(
+    _HomeResolvedChannelPlaylistRef resolved, {
+    bool showTrackArtwork = false,
+  }) async {
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      CupertinoPageRoute(
+        builder: (_) => AlbumTracksPage(
+          playlistId: resolved.playlistId,
+          albumTitle: resolved.title,
+          artistName: resolved.subtitle,
+          seedThumbnailUrl: resolved.thumbnailUrl,
+          showTrackArtwork: showTrackArtwork,
+        ),
+      ),
+    );
+  }
+
   Future<_HomeResolvedAlbumRef?> _resolveAlbumFromSearchFallback(
     _HomeTrack track,
   ) async {
@@ -1496,6 +2379,7 @@ class _HomePageState extends State<HomePage> {
       );
       if (tracks.length >= 14) break;
     }
+    tracks.shuffle(math.Random());
 
     return _HomeShelf(
       id: 'albums_for_you',
@@ -1511,115 +2395,6 @@ class _HomePageState extends State<HomePage> {
       return renderBox.localToGlobal(Offset.zero) & renderBox.size;
     }
     return const Rect.fromLTWH(1, 1, 1, 1);
-  }
-
-  Future<List<PlaybackQueueItem>> _buildQueueItemsFromTracks(
-    List<_HomeTrack> tracks,
-  ) async {
-    final downloadService = context.read<DownloadService>();
-    final queue = <PlaybackQueueItem>[];
-    final seenIds = <String>{};
-
-    for (final track in tracks) {
-      if (!seenIds.add(track.videoId)) continue;
-      if (track.isLocal &&
-          track.localFilePath != null &&
-          track.localFilePath!.isNotEmpty &&
-          File(track.localFilePath!).existsSync()) {
-        queue.add(
-          PlaybackQueueItem(
-            videoId: track.videoId,
-            title: track.title,
-            thumbnailUrl: track.thumbnailUrl,
-            artist: track.artist,
-            isLocal: true,
-            localFilePath: track.localFilePath,
-            localPlainLyrics: track.localPlainLyrics,
-            localSyncedLyrics: track.localSyncedLyrics,
-          ),
-        );
-        continue;
-      }
-
-      final local = await downloadService.getDownloadedVideoById(track.videoId);
-      if (local != null) {
-        final thumb =
-            (local.localThumbnailPath != null &&
-                local.localThumbnailPath!.isNotEmpty)
-            ? local.localThumbnailPath!
-            : local.thumbnailUrl;
-        queue.add(
-          PlaybackQueueItem(
-            videoId: local.videoId,
-            title: local.title,
-            thumbnailUrl: thumb,
-            artist: cleanArtistName(local.channelTitle),
-            isLocal: true,
-            localFilePath: local.filePath,
-            localPlainLyrics: local.plainLyrics,
-            localSyncedLyrics: local.syncedLyrics,
-          ),
-        );
-      } else {
-        queue.add(
-          PlaybackQueueItem(
-            videoId: track.videoId,
-            title: track.title,
-            thumbnailUrl: track.thumbnailUrl,
-            artist: track.artist,
-            isLocal: false,
-          ),
-        );
-      }
-    }
-    return queue;
-  }
-
-  Future<void> _playMix(_HomeMix mix) async {
-    if (mix.tracks.isEmpty) return;
-    final manager = context.read<VideoPlayerManager>();
-    final queueItems = await _buildQueueItemsFromTracks(mix.tracks);
-    if (queueItems.isEmpty) return;
-    final first = queueItems.first;
-    final rest = queueItems.skip(1).toList(growable: false);
-    manager.replaceManualPlaybackQueue(rest, queueTitle: 'Mix · ${mix.title}');
-    await manager.playQueueItem(first);
-  }
-
-  Future<void> _queueMix(_HomeMix mix) async {
-    if (mix.tracks.isEmpty) return;
-    final manager = context.read<VideoPlayerManager>();
-    final queueItems = await _buildQueueItemsFromTracks(mix.tracks);
-    var addedCount = 0;
-    for (final item in queueItems) {
-      final added = item.isLocal
-          ? manager.addLocalTrackToPlaybackQueue(
-              videoId: item.videoId,
-              title: item.title,
-              thumbnailUrl: item.thumbnailUrl,
-              artist: item.artist,
-              filePath: item.localFilePath ?? '',
-              localPlainLyrics: item.localPlainLyrics,
-              localSyncedLyrics: item.localSyncedLyrics,
-            )
-          : manager.addOnlineTrackToPlaybackQueue(
-              videoId: item.videoId,
-              title: item.title,
-              thumbnailUrl: item.thumbnailUrl,
-              artist: item.artist,
-            );
-      if (added) addedCount++;
-    }
-    if (!mounted) return;
-    _showQueueIosToast(
-      context,
-      message: addedCount > 0
-          ? 'Mix añadido a la cola ($addedCount)'
-          : 'Ese mix ya estaba en cola',
-      icon: addedCount > 0
-          ? CupertinoIcons.check_mark_circled_solid
-          : CupertinoIcons.info_circle_fill,
-    );
   }
 
   List<List<_HomeTrack>> _buildTrackColumns(
@@ -1653,6 +2428,107 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _handleShelfItemTap(_HomeShelf shelf, _HomeTrack item) async {
+    final enableTrackArtworkForYtMxShelf =
+        shelf.id == 'ytmx_exitos_del_momento' ||
+        shelf.id == 'ytmx_nueva_musica' ||
+        shelf.id == 'ytmx_una_vuelta_al_pasado' ||
+        shelf.id == 'ytm_musica_mexicana';
+    final rawGlobalId = item.videoId.trim();
+    if (rawGlobalId.startsWith('ytmxmv:') && rawGlobalId.length > 7) {
+      final videoId = rawGlobalId.substring(7).trim();
+      if (videoId.isNotEmpty) {
+        await context.read<VideoPlayerManager>().playFromUserSelection(
+          context,
+          videoId,
+          preferredThumbnailUrl: item.thumbnailUrl,
+          preferredTitle: item.title,
+          preferredArtist: item.artist,
+          preferVideoPlayback: true,
+        );
+        return;
+      }
+    }
+    if (rawGlobalId.startsWith('ytmx:') && rawGlobalId.length > 5) {
+      final mapped = _ytMusicMxPlaylistRefByItemId[rawGlobalId];
+      if (mapped != null) {
+        await _openChannelPlaylistRef(
+          mapped,
+          showTrackArtwork: enableTrackArtworkForYtMxShelf,
+        );
+        return;
+      }
+      final playlistId = rawGlobalId.substring(5).trim();
+      if (playlistId.isNotEmpty) {
+        await _openChannelPlaylistRef(
+          _HomeResolvedChannelPlaylistRef(
+            playlistId: playlistId,
+            title: item.title,
+            subtitle: '',
+            thumbnailUrl: item.thumbnailUrl,
+          ),
+          showTrackArtwork: enableTrackArtworkForYtMxShelf,
+        );
+        return;
+      }
+    }
+
+    if (shelf.id.startsWith('ytmx_')) {
+      if (shelf.id == 'ytmx_nuevos_videos_musicales') {
+        final rawId = item.videoId.trim();
+        final videoId = rawId.startsWith('ytmxmv:') && rawId.length > 7
+            ? rawId.substring(7).trim()
+            : rawId;
+        if (videoId.isNotEmpty) {
+          await context.read<VideoPlayerManager>().playFromUserSelection(
+            context,
+            videoId,
+            preferredThumbnailUrl: item.thumbnailUrl,
+            preferredTitle: item.title,
+            preferredArtist: item.artist,
+            preferVideoPlayback: true,
+          );
+          return;
+        }
+      }
+      final rawId = item.videoId.trim();
+      if (rawId.startsWith('ytmxmv:') && rawId.length > 7) {
+        final videoId = rawId.substring(7).trim();
+        if (videoId.isNotEmpty) {
+          await context.read<VideoPlayerManager>().playFromUserSelection(
+            context,
+            videoId,
+            preferredThumbnailUrl: item.thumbnailUrl,
+            preferredTitle: item.title,
+            preferredArtist: item.artist,
+            preferVideoPlayback: true,
+          );
+          return;
+        }
+      }
+      final resolved = _ytMusicMxPlaylistRefByItemId[item.videoId];
+      if (resolved != null) {
+        await _openChannelPlaylistRef(
+          resolved,
+          showTrackArtwork: enableTrackArtworkForYtMxShelf,
+        );
+        return;
+      }
+      if (rawId.startsWith('ytmx:') && rawId.length > 5) {
+        final playlistId = rawId.substring(5).trim();
+        if (playlistId.isNotEmpty) {
+          await _openChannelPlaylistRef(
+            _HomeResolvedChannelPlaylistRef(
+              playlistId: playlistId,
+              title: item.title,
+              subtitle: '',
+              thumbnailUrl: item.thumbnailUrl,
+            ),
+            showTrackArtwork: enableTrackArtworkForYtMxShelf,
+          );
+          return;
+        }
+      }
+    }
     if (shelf.id == 'albums_for_you') {
       final resolved = _albumShelfRefByItemId[item.videoId];
       if (resolved != null) {
@@ -1712,87 +2588,100 @@ class _HomePageState extends State<HomePage> {
               content.relisten,
               itemsPerColumn: 4,
             );
-            final suggestionColumns = _buildTrackColumns(
-              content.suggestions,
-              itemsPerColumn: 4,
+            final topPicks = content.suggestions
+                .take(12)
+                .toList(growable: false);
+            final matchingVideoShelves = content.curatedShelves
+                .where((s) => s.id == 'ytmx_nuevos_videos_musicales')
+                .toList(growable: false);
+            final videosShelfFromContent = matchingVideoShelves.isNotEmpty
+                ? matchingVideoShelves.first
+                : null;
+            final curatedShelvesForRender =
+                content.curatedShelves
+                    .where((s) => s.id != 'ytmx_nuevos_videos_musicales')
+                    .toList(growable: false)
+                  ..sort((a, b) {
+                    const preferredOrder = <String, int>{
+                      'albums_for_you': 10,
+                      'ytmx_exitos_del_momento': 20,
+                      'ytmx_una_vuelta_al_pasado': 30,
+                      'ytmx_nueva_musica': 40,
+                    };
+                    final rankA = preferredOrder[a.id] ?? 1000;
+                    final rankB = preferredOrder[b.id] ?? 1000;
+                    if (rankA != rankB) return rankA.compareTo(rankB);
+                    return 0;
+                  });
+            final hasAlbumsSuggested = curatedShelvesForRender.any(
+              (s) => s.id == 'albums_for_you',
             );
 
             return CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               slivers: [
                 CupertinoSliverRefreshControl(onRefresh: _refresh),
-                const SliverToBoxAdapter(child: SizedBox(height: 12)),
+                const SliverToBoxAdapter(child: SizedBox(height: 10)),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 2, 18, 8),
+                    child: const Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Listen Now',
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Display',
+                              fontSize: 38,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: -0.9,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
                 const SliverToBoxAdapter(child: _HomeProfileNowPlayingHeader()),
                 _SectionHeaderSliver(
-                  title: 'Sugerencias para ti',
-                  subtitle: '',
+                  title: 'Top Picks',
+                  subtitle: 'Just Updated',
                 ),
                 SliverToBoxAdapter(
                   child: SizedBox(
-                    height: 320,
+                    height: 286,
                     child: ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
                       scrollDirection: Axis.horizontal,
-                      itemCount: suggestionColumns.length,
+                      itemCount: topPicks.length,
                       separatorBuilder: (_, _) => const SizedBox(width: 12),
                       itemBuilder: (context, index) {
-                        final columnItems = suggestionColumns[index];
-                        return _StackedTrackColumn(
-                          items: columnItems,
-                          onTap: _playTrack,
-                          onSwipeToQueueNext: (item) => _addTrackToQueue(
-                            item,
-                            insertMode: ManualQueueInsertMode.next,
-                          ),
-                          onSwipeToQueueEnd: (item) => _addTrackToQueue(
-                            item,
-                            insertMode: ManualQueueInsertMode.end,
-                          ),
-                          onContextAction: _runTrackContextAction,
-                          allowSwipeToQueue: false,
-                          thinCards: true,
+                        final item = topPicks[index];
+                        return _HeroTopPickCard(
+                          item: item,
+                          onTap: () => _playTrack(item),
+                          onContextAction: (action) =>
+                              _runTrackContextAction(item, action),
                         );
                       },
                     ),
                   ),
                 ),
-                if (content.mixes.isNotEmpty) ...[
-                  const SliverToBoxAdapter(child: SizedBox(height: 6)),
+                if (curatedShelvesForRender.isNotEmpty) ...[
+                  const SliverToBoxAdapter(child: SizedBox(height: 10)),
                   _SectionHeaderSliver(
-                    title: 'Mixes para ti',
-                    subtitle: 'Como en radio, pero con tu gusto',
+                    title: 'Browse',
+                    subtitle: 'Quick picks, throwbacks and trending playlists',
                   ),
-                  SliverToBoxAdapter(
-                    child: SizedBox(
-                      height: 154,
-                      child: ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                        scrollDirection: Axis.horizontal,
-                        itemCount: content.mixes.length,
-                        separatorBuilder: (_, _) => const SizedBox(width: 12),
-                        itemBuilder: (context, index) {
-                          final mix = content.mixes[index];
-                          return _HomeMixCard(
-                            mix: mix,
-                            onPlay: () => _playMix(mix),
-                            onQueue: () => _queueMix(mix),
-                          );
-                        },
-                      ),
-                    ),
-                  ),
-                ],
-                if (content.curatedShelves.isNotEmpty) ...[
-                  const SliverToBoxAdapter(child: SizedBox(height: 6)),
-                  _SectionHeaderSliver(
-                    title: 'Explorar en VM Music',
-                    subtitle:
-                        'Quick picks, throwbacks y playlists en tendencia',
-                  ),
-                  for (final shelf in content.curatedShelves) ...[
+                  for (final shelf in curatedShelvesForRender) ...[
                     _SectionHeaderSliver(
                       title: shelf.title,
-                      subtitle: shelf.subtitle,
+                      subtitle:
+                          shelf.id == 'ytmx_exitos_del_momento' ||
+                              shelf.id == 'ytmx_nueva_musica' ||
+                              shelf.id == 'ytmx_una_vuelta_al_pasado'
+                          ? ''
+                          : shelf.subtitle,
                     ),
                     if (_shouldRenderAsTopSongsStack(shelf))
                       SliverToBoxAdapter(
@@ -1832,6 +2721,28 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                       )
+                    else if (shelf.id == 'albums_for_you' ||
+                        shelf.id == 'ytmx_exitos_del_momento' ||
+                        shelf.id == 'ytmx_nueva_musica')
+                      SliverToBoxAdapter(
+                        child: SizedBox(
+                          height: 286,
+                          child: ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+                            scrollDirection: Axis.horizontal,
+                            itemCount: shelf.tracks.length,
+                            separatorBuilder: (_, _) =>
+                                const SizedBox(width: 12),
+                            itemBuilder: (context, index) {
+                              final item = shelf.tracks[index];
+                              return _HeroTopPickCard(
+                                item: item,
+                                onTap: () => _handleShelfItemTap(shelf, item),
+                              );
+                            },
+                          ),
+                        ),
+                      )
                     else
                       SliverToBoxAdapter(
                         child: SizedBox(
@@ -1852,13 +2763,258 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ),
                       ),
+                    if (shelf.id == 'albums_for_you') ...[
+                      const _SectionHeaderSliver(
+                        title: 'Nuevos videos musicales',
+                        subtitle: '',
+                      ),
+                      SliverToBoxAdapter(
+                        child: FutureBuilder<_HomeShelf>(
+                          future: _musicVideosShelfFuture,
+                          builder: (context, videosSnapshot) {
+                            final shelfData =
+                                videosSnapshot.data ?? videosShelfFromContent;
+                            if (shelfData == null || shelfData.tracks.isEmpty) {
+                              return const SizedBox(
+                                height: 210,
+                                child: Center(
+                                  child: CupertinoActivityIndicator(radius: 12),
+                                ),
+                              );
+                            }
+                            return SizedBox(
+                              height: 232,
+                              child: ListView.separated(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  8,
+                                  16,
+                                  10,
+                                ),
+                                scrollDirection: Axis.horizontal,
+                                itemCount: shelfData.tracks.length,
+                                separatorBuilder: (_, _) =>
+                                    const SizedBox(width: 12),
+                                itemBuilder: (context, index) {
+                                  final item = shelfData.tracks[index];
+                                  return _HomeVideoFeatureCard(
+                                    item: item,
+                                    onTap: () => _handleShelfItemTap(
+                                      const _HomeShelf(
+                                        id: 'ytmx_nuevos_videos_musicales',
+                                        title: 'Nuevos videos musicales',
+                                        subtitle: '',
+                                        tracks: [],
+                                      ),
+                                      item,
+                                    ),
+                                  );
+                                },
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      const _SectionHeaderSliver(
+                        title: 'Música Mexicana',
+                        subtitle: '',
+                      ),
+                      SliverToBoxAdapter(
+                        child: FutureBuilder<_HomeShelf>(
+                          future: _mexicanGenreShelfFuture,
+                          builder: (context, mexicanSnapshot) {
+                            final shelfData = mexicanSnapshot.data;
+                            if (shelfData == null || shelfData.tracks.isEmpty) {
+                              return const SizedBox(
+                                height: 210,
+                                child: Center(
+                                  child: CupertinoActivityIndicator(radius: 12),
+                                ),
+                              );
+                            }
+                            final songItems = shelfData.tracks
+                                .where(
+                                  (track) => track.videoId.trim().startsWith(
+                                    'ytmxmv:',
+                                  ),
+                                )
+                                .toList(growable: false);
+                            final playlistItems = shelfData.tracks
+                                .where(
+                                  (track) =>
+                                      track.videoId.trim().startsWith('ytmx:'),
+                                )
+                                .toList(growable: false);
+                            return SizedBox(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  if (songItems.isNotEmpty) ...[
+                                    SizedBox(
+                                      height: 320,
+                                      child: ListView.separated(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          16,
+                                          6,
+                                          16,
+                                          8,
+                                        ),
+                                        scrollDirection: Axis.horizontal,
+                                        itemCount: _buildTrackColumns(
+                                          songItems,
+                                          itemsPerColumn: 4,
+                                        ).length,
+                                        separatorBuilder: (_, _) =>
+                                            const SizedBox(width: 12),
+                                        itemBuilder: (context, index) {
+                                          final columnItems =
+                                              _buildTrackColumns(
+                                                songItems,
+                                                itemsPerColumn: 4,
+                                              )[index];
+                                          return _StackedTrackColumn(
+                                            items: columnItems,
+                                            onTap: (item) =>
+                                                _handleShelfItemTap(
+                                                  const _HomeShelf(
+                                                    id: 'ytm_musica_mexicana',
+                                                    title: 'Música Mexicana',
+                                                    subtitle: '',
+                                                    tracks: [],
+                                                  ),
+                                                  item,
+                                                ),
+                                            onSwipeToQueueNext: (item) =>
+                                                _addTrackToQueue(
+                                                  item,
+                                                  insertMode:
+                                                      ManualQueueInsertMode
+                                                          .next,
+                                                ),
+                                            onSwipeToQueueEnd: (item) =>
+                                                _addTrackToQueue(
+                                                  item,
+                                                  insertMode:
+                                                      ManualQueueInsertMode.end,
+                                                ),
+                                            onContextAction:
+                                                _runTrackContextAction,
+                                            allowSwipeToQueue: false,
+                                            thinCards: true,
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                  if (playlistItems.isNotEmpty) ...[
+                                    const Padding(
+                                      padding: EdgeInsets.fromLTRB(
+                                        18,
+                                        4,
+                                        18,
+                                        6,
+                                      ),
+                                      child: Text(
+                                        'Playlists',
+                                        style: TextStyle(
+                                          fontFamily: '.SF Pro Display',
+                                          fontSize: 22,
+                                          fontWeight: FontWeight.w700,
+                                          letterSpacing: -0.3,
+                                        ),
+                                      ),
+                                    ),
+                                    SizedBox(
+                                      height: 222,
+                                      child: ListView.separated(
+                                        padding: const EdgeInsets.fromLTRB(
+                                          16,
+                                          6,
+                                          16,
+                                          8,
+                                        ),
+                                        scrollDirection: Axis.horizontal,
+                                        itemCount: playlistItems.length,
+                                        separatorBuilder: (_, _) =>
+                                            const SizedBox(width: 12),
+                                        itemBuilder: (context, index) {
+                                          final item = playlistItems[index];
+                                          return _HomeFeatureCard(
+                                            item: item,
+                                            onTap: () => _handleShelfItemTap(
+                                              const _HomeShelf(
+                                                id: 'ytm_musica_mexicana',
+                                                title: 'Música Mexicana',
+                                                subtitle: '',
+                                                tracks: [],
+                                              ),
+                                              item,
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ],
+                  if (!hasAlbumsSuggested) ...[
+                    const _SectionHeaderSliver(
+                      title: 'Nuevos videos musicales',
+                      subtitle: '',
+                    ),
+                    SliverToBoxAdapter(
+                      child: FutureBuilder<_HomeShelf>(
+                        future: _musicVideosShelfFuture,
+                        builder: (context, videosSnapshot) {
+                          final shelfData =
+                              videosSnapshot.data ?? videosShelfFromContent;
+                          if (shelfData == null || shelfData.tracks.isEmpty) {
+                            return const SizedBox(
+                              height: 210,
+                              child: Center(
+                                child: CupertinoActivityIndicator(radius: 12),
+                              ),
+                            );
+                          }
+                          return SizedBox(
+                            height: 232,
+                            child: ListView.separated(
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+                              scrollDirection: Axis.horizontal,
+                              itemCount: shelfData.tracks.length,
+                              separatorBuilder: (_, _) =>
+                                  const SizedBox(width: 12),
+                              itemBuilder: (context, index) {
+                                final item = shelfData.tracks[index];
+                                return _HomeVideoFeatureCard(
+                                  item: item,
+                                  onTap: () => _handleShelfItemTap(
+                                    const _HomeShelf(
+                                      id: 'ytmx_nuevos_videos_musicales',
+                                      title: 'Nuevos videos musicales',
+                                      subtitle: '',
+                                      tracks: [],
+                                    ),
+                                    item,
+                                  ),
+                                );
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ),
                   ],
                 ],
                 const SliverToBoxAdapter(child: SizedBox(height: 6)),
-                _SectionHeaderSliver(
-                  title: 'Volver a escuchar',
-                  subtitle: 'Tus últimas reproducciones',
-                ),
+                _SectionHeaderSliver(title: 'Recently Played  >', subtitle: ''),
                 SliverToBoxAdapter(
                   child: SizedBox(
                     height: 320,
@@ -2013,18 +3169,27 @@ class _HomeProfileNowPlayingHeaderState
   final ValueNotifier<bool> _isFriendPreviewLoading = ValueNotifier<bool>(
     false,
   );
-  final ValueNotifier<bool> _isFriendPreviewLyricsLoading =
-      ValueNotifier<bool>(false);
-  final ValueNotifier<_FriendPreviewLyricSweepState?>
-  _friendPreviewLyricSweep = ValueNotifier<_FriendPreviewLyricSweepState?>(
-    null,
+  final ValueNotifier<bool> _isFriendPreviewLyricsLoading = ValueNotifier<bool>(
+    false,
   );
+  final ValueNotifier<_FriendPreviewLyricSweepState?> _friendPreviewLyricSweep =
+      ValueNotifier<_FriendPreviewLyricSweepState?>(null);
   List<SyncedLyricLine> _friendPreviewSyncedLyrics = const [];
   int _friendPreviewRequestEpoch = 0;
   StreamSubscription<PlayerState>? _friendPreviewStateSub;
   StreamSubscription<Duration>? _friendPreviewPositionSub;
   final Map<String, String> _reactorDisplayNameCache = <String, String>{};
   final Set<String> _handledReactionNotificationIds = <String>{};
+
+  bool get _shouldRunLiveWork {
+    if (!mounted) return false;
+    final appInForeground = context
+        .read<VideoPlayerManager>()
+        .isAppInForeground;
+    if (!appInForeground) return false;
+    final selectedTab = context.read<AppTabState?>()?.selectedIndex ?? 0;
+    return selectedTab == 0;
+  }
 
   String _songKeyForTrack({
     required String? videoId,
@@ -2215,15 +3380,20 @@ class _HomeProfileNowPlayingHeaderState
         _setFriendPreviewLoading(false);
       }
     });
-    _friendPreviewPositionSub = _friendPreviewPlayer.positionStream.listen((
-      position,
-    ) {
-      _updateFriendPreviewActiveLyric(position);
-    });
+    _friendPreviewPositionSub = _friendPreviewPlayer
+        .createPositionStream(
+          steps: 220,
+          minPeriod: const Duration(milliseconds: 220),
+          maxPeriod: const Duration(milliseconds: 750),
+        )
+        .listen((position) {
+          _updateFriendPreviewActiveLyric(position);
+        });
     unawaited(_attachReactionNotificationListener());
     _reactionNotificationPollTimer = Timer.periodic(
-      const Duration(seconds: 6),
+      const Duration(seconds: 12),
       (_) {
+        if (!_shouldRunLiveWork) return;
         unawaited(_pollReactionNotifications());
       },
     );
@@ -2285,7 +3455,7 @@ class _HomeProfileNowPlayingHeaderState
   }
 
   Future<void> _pollReactionNotifications() async {
-    if (!mounted) return;
+    if (!_shouldRunLiveWork) return;
     try {
       final social = context.read<SocialService>();
       await social.ensureReady();
@@ -2441,7 +3611,8 @@ class _HomeProfileNowPlayingHeaderState
     final client = Supabase.instance.client;
     _followingIds = ids;
     _friendRefreshTimer?.cancel();
-    _friendRefreshTimer = Timer.periodic(const Duration(seconds: 6), (_) {
+    _friendRefreshTimer = Timer.periodic(const Duration(seconds: 12), (_) {
+      if (!_shouldRunLiveWork) return;
       unawaited(_refreshFriendsFromServer(ids));
     });
     _friendRealtimeChannel = client.channel('friends-live-all')
@@ -3129,8 +4300,10 @@ class _HomeProfileNowPlayingHeaderState
                                 child: _HomeSocialPreviewCard(
                                   titleNote: titleNote,
                                   onPlayNowFromTitleMenu: expandedPlayNowAction,
-                                  onAddNextFromTitleMenu: onAddNextFromTitleMenu,
-                                  onAddToEndFromTitleMenu: onAddToEndFromTitleMenu,
+                                  onAddNextFromTitleMenu:
+                                      onAddNextFromTitleMenu,
+                                  onAddToEndFromTitleMenu:
+                                      onAddToEndFromTitleMenu,
                                   onAddToFavoritesFromTitleMenu:
                                       onAddToFavoritesFromTitleMenu,
                                   onAddToPlaylistFromTitleMenu:
@@ -3955,11 +5128,10 @@ class _HomeSocialPreviewCard extends StatelessWidget {
         : normalizedFrameImageUrl;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final lyricBubbleBackground = isDark
-        ? CupertinoColors.secondarySystemGroupedBackground
-            .resolveFrom(context)
+        ? CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context)
         : CupertinoColors.systemBackground
-            .resolveFrom(context)
-            .withValues(alpha: 0.9);
+              .resolveFrom(context)
+              .withValues(alpha: 0.9);
     final currentLyricLine = (lyricSweep?.text ?? '').trim();
     final lyricBubbleText = currentLyricLine.isNotEmpty
         ? currentLyricLine
@@ -3981,86 +5153,81 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                   padding: EdgeInsets.only(top: scale > 1.0 ? 18 * scale : 0),
                   child: onPlayNowFromTitleMenu == null
                       ? Align(
-                              alignment: Alignment.topCenter,
-                              child: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  GestureDetector(
-                                    behavior: HitTestBehavior.translucent,
-                                    onTap: onTap,
-                                    child: titleNote,
-                                  ),
-                                  if (onTapNoteReaction != null)
-                                    Positioned(
-                                      right: -8 * scale,
-                                      bottom: -10 * scale,
-                                      child: SizedBox(
-                                        width: 34 * scale * reactionBubbleScale,
-                                        height:
-                                            28 * scale * reactionBubbleScale,
-                                        child: CupertinoButton(
-                                          padding: EdgeInsets.zero,
-                                          minimumSize: Size.zero,
-                                          onPressed: onTapNoteReaction,
-                                          child: Container(
-                                            padding: EdgeInsets.symmetric(
-                                              horizontal:
-                                                  6 *
-                                                  scale *
-                                                  reactionBubbleScale,
-                                              vertical:
-                                                  2.5 *
-                                                  scale *
-                                                  reactionBubbleScale,
-                                            ),
-                                            decoration: BoxDecoration(
-                                              color: CupertinoColors
-                                                  .systemBackground
-                                                  .resolveFrom(context),
-                                              borderRadius:
-                                                  BorderRadius.circular(999),
-                                              border: Border.all(
-                                                color: CupertinoColors.separator
-                                                    .resolveFrom(context)
-                                                    .withValues(alpha: 0.32),
-                                                width: 0.6,
-                                              ),
-                                            ),
-                                            child: (noteReactionText ?? '')
-                                                    .trim()
-                                                    .isNotEmpty
-                                                ? Text(
-                                                    noteReactionText!.trim(),
-                                                    style: TextStyle(
-                                                      fontSize:
-                                                          10 *
-                                                          scale *
-                                                          reactionBubbleScale,
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                      color: CupertinoColors
-                                                          .label
-                                                          .resolveFrom(context),
-                                                      decoration:
-                                                          TextDecoration.none,
-                                                    ),
-                                                  )
-                                                : Icon(
-                                                    CupertinoIcons.smiley,
-                                                    size:
-                                                        12 *
-                                                        scale *
-                                                        reactionBubbleScale,
-                                                    color: CupertinoColors.label
-                                                        .resolveFrom(context),
-                                                  ),
+                          alignment: Alignment.topCenter,
+                          child: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onTap: onTap,
+                                child: titleNote,
+                              ),
+                              if (onTapNoteReaction != null)
+                                Positioned(
+                                  right: -8 * scale,
+                                  bottom: -10 * scale,
+                                  child: SizedBox(
+                                    width: 34 * scale * reactionBubbleScale,
+                                    height: 28 * scale * reactionBubbleScale,
+                                    child: CupertinoButton(
+                                      padding: EdgeInsets.zero,
+                                      minimumSize: Size.zero,
+                                      onPressed: onTapNoteReaction,
+                                      child: Container(
+                                        padding: EdgeInsets.symmetric(
+                                          horizontal:
+                                              6 * scale * reactionBubbleScale,
+                                          vertical:
+                                              2.5 * scale * reactionBubbleScale,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: CupertinoColors
+                                              .systemBackground
+                                              .resolveFrom(context),
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
+                                          border: Border.all(
+                                            color: CupertinoColors.separator
+                                                .resolveFrom(context)
+                                                .withValues(alpha: 0.32),
+                                            width: 0.6,
                                           ),
                                         ),
+                                        child:
+                                            (noteReactionText ?? '')
+                                                .trim()
+                                                .isNotEmpty
+                                            ? Text(
+                                                noteReactionText!.trim(),
+                                                style: TextStyle(
+                                                  fontSize:
+                                                      10 *
+                                                      scale *
+                                                      reactionBubbleScale,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: CupertinoColors.label
+                                                      .resolveFrom(context),
+                                                  decoration:
+                                                      TextDecoration.none,
+                                                ),
+                                              )
+                                            : Icon(
+                                                CupertinoIcons.smiley,
+                                                size:
+                                                    12 *
+                                                    scale *
+                                                    reactionBubbleScale,
+                                                color: CupertinoColors.label
+                                                    .resolveFrom(context),
+                                              ),
                                       ),
                                     ),
-                                ],
-                              ),
-                            )
+                                  ),
+                                ),
+                            ],
+                          ),
+                        )
                       : CupertinoContextMenu(
                           actions: [
                             CupertinoContextMenuAction(
@@ -4198,8 +5365,7 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                                     bottom: -10 * scale,
                                     child: SizedBox(
                                       width: 34 * scale * reactionBubbleScale,
-                                      height:
-                                          28 * scale * reactionBubbleScale,
+                                      height: 28 * scale * reactionBubbleScale,
                                       child: CupertinoButton(
                                         padding: EdgeInsets.zero,
                                         minimumSize: Size.zero,
@@ -4217,8 +5383,9 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                                             color: CupertinoColors
                                                 .systemBackground
                                                 .resolveFrom(context),
-                                            borderRadius:
-                                                BorderRadius.circular(999),
+                                            borderRadius: BorderRadius.circular(
+                                              999,
+                                            ),
                                             border: Border.all(
                                               color: CupertinoColors.separator
                                                   .resolveFrom(context)
@@ -4226,7 +5393,8 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                                               width: 0.6,
                                             ),
                                           ),
-                                          child: (noteReactionText ?? '')
+                                          child:
+                                              (noteReactionText ?? '')
                                                   .trim()
                                                   .isNotEmpty
                                               ? Text(
@@ -4396,13 +5564,19 @@ class _HomeSocialPreviewCard extends StatelessWidget {
                         width: 0.6,
                       ),
                     ),
-                    child: _HomeReverseMarqueeText(
-                      text: noteText,
-                      style: TextStyle(
-                        fontFamily: '.SF Pro Text',
-                        fontSize: 10 * scale,
-                        color: CupertinoColors.label.resolveFrom(context),
-                        decoration: TextDecoration.none,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(9 * scale),
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 1.5 * scale),
+                        child: _HomeReverseMarqueeText(
+                          text: noteText,
+                          style: TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontSize: 10 * scale,
+                            color: CupertinoColors.label.resolveFrom(context),
+                            decoration: TextDecoration.none,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -4639,6 +5813,7 @@ class _HomeMarqueeText extends StatefulWidget {
 
 class _HomeMarqueeTextState extends State<_HomeMarqueeText>
     with TickerProviderStateMixin {
+  static const double _edgeSafetyPadding = 4.0;
   AnimationController? _scrollController;
   AnimationController? _fadeController;
   double _overflow = 0;
@@ -4669,6 +5844,15 @@ class _HomeMarqueeTextState extends State<_HomeMarqueeText>
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
+        if (!constraints.hasBoundedWidth) {
+          return Text(
+            widget.text,
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.ellipsis,
+            style: widget.style,
+          );
+        }
         final maxWidth = constraints.maxWidth;
         final painter = TextPainter(
           text: TextSpan(text: widget.text, style: widget.style),
@@ -4676,7 +5860,7 @@ class _HomeMarqueeTextState extends State<_HomeMarqueeText>
           textDirection: Directionality.of(context),
         )..layout(minWidth: 0, maxWidth: double.infinity);
 
-        final textWidth = painter.width;
+        final textWidth = painter.width + _edgeSafetyPadding;
         final textHeight = painter.height;
         _overflow = (textWidth - maxWidth).clamp(0.0, double.infinity);
         if (_overflow <= 1) {
@@ -4686,11 +5870,15 @@ class _HomeMarqueeTextState extends State<_HomeMarqueeText>
           _fadeController?.stop();
           _scrollController?.value = 0;
           _fadeController?.value = 1;
-          return Text(
-            widget.text,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: widget.style,
+          return SizedBox(
+            width: maxWidth,
+            child: Text(
+              widget.text,
+              maxLines: 1,
+              softWrap: false,
+              overflow: TextOverflow.ellipsis,
+              style: widget.style,
+            ),
           );
         }
 
@@ -4709,55 +5897,71 @@ class _HomeMarqueeTextState extends State<_HomeMarqueeText>
 
         _startCycleIfNeeded();
         const gap = 36.0;
-        return ClipRect(
-          child: AnimatedBuilder(
-            animation: Listenable.merge([_scrollController!, _fadeController!]),
-            builder: (context, _) {
-              final eased = Curves.easeInOutCubic.transform(
-                _scrollController!.value,
-              );
-              return Transform.translate(
-                offset: Offset(-_travel * eased, 0),
-                child: SizedBox(
-                  height: textHeight,
-                  child: Opacity(
-                    opacity: _fadeController!.value,
-                    child: OverflowBox(
-                      minHeight: textHeight,
-                      maxHeight: textHeight,
-                      maxWidth: double.infinity,
-                      alignment: Alignment.centerLeft,
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          SizedBox(
-                            width: textWidth,
-                            child: Text(
-                              widget.text,
-                              maxLines: 1,
-                              softWrap: false,
-                              style: widget.style,
-                              textAlign: TextAlign.left,
+        return SizedBox(
+          width: maxWidth,
+          child: ClipRect(
+            child: AnimatedBuilder(
+              animation: Listenable.merge([
+                _scrollController!,
+                _fadeController!,
+              ]),
+              builder: (context, _) {
+                final eased = Curves.easeInOutCubic.transform(
+                  _scrollController!.value,
+                );
+                return Transform.translate(
+                  offset: Offset(-_travel * eased, 0),
+                  child: SizedBox(
+                    height: textHeight,
+                    child: Opacity(
+                      opacity: _fadeController!.value,
+                      child: OverflowBox(
+                        minHeight: textHeight,
+                        maxHeight: textHeight,
+                        maxWidth: double.infinity,
+                        alignment: Alignment.centerLeft,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                              width: textWidth,
+                              child: Padding(
+                                padding: const EdgeInsets.only(
+                                  right: _edgeSafetyPadding,
+                                ),
+                                child: Text(
+                                  widget.text,
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  style: widget.style,
+                                  textAlign: TextAlign.left,
+                                ),
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: gap),
-                          SizedBox(
-                            width: textWidth,
-                            child: Text(
-                              widget.text,
-                              maxLines: 1,
-                              softWrap: false,
-                              style: widget.style,
-                              textAlign: TextAlign.left,
+                            const SizedBox(width: gap),
+                            SizedBox(
+                              width: textWidth,
+                              child: Padding(
+                                padding: const EdgeInsets.only(
+                                  right: _edgeSafetyPadding,
+                                ),
+                                child: Text(
+                                  widget.text,
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  style: widget.style,
+                                  textAlign: TextAlign.left,
+                                ),
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              );
-            },
+                );
+              },
+            ),
           ),
         );
       },
@@ -4965,6 +6169,7 @@ class _HomeLyricSweepText extends StatelessWidget {
 
 class _HomeReverseMarqueeTextState extends State<_HomeReverseMarqueeText>
     with SingleTickerProviderStateMixin {
+  static const double _edgeSafetyPadding = 7.0;
   late final AnimationController _controller;
   double _overflow = 0;
 
@@ -4986,7 +6191,9 @@ class _HomeReverseMarqueeTextState extends State<_HomeReverseMarqueeText>
       maxLines: 1,
       textDirection: TextDirection.ltr,
     )..layout(minWidth: 0, maxWidth: double.infinity);
-    final nextOverflow = math.max(0.0, painter.width - maxWidth).toDouble();
+    final nextOverflow = math
+        .max(0.0, (painter.width + _edgeSafetyPadding) - maxWidth)
+        .toDouble();
     if ((nextOverflow - _overflow).abs() < 0.5) return;
     _overflow = nextOverflow;
     if (_overflow <= 0.5) {
@@ -5020,12 +6227,15 @@ class _HomeReverseMarqueeTextState extends State<_HomeReverseMarqueeText>
                   -_overflow * Curves.easeInOut.transform(_controller.value);
               return Transform.translate(
                 offset: Offset(x, 0),
-                child: Text(
-                  widget.text,
-                  maxLines: 1,
-                  softWrap: false,
-                  overflow: TextOverflow.visible,
-                  style: widget.style,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: _edgeSafetyPadding),
+                  child: Text(
+                    widget.text,
+                    maxLines: 1,
+                    softWrap: false,
+                    overflow: TextOverflow.visible,
+                    style: widget.style,
+                  ),
                 ),
               );
             },
@@ -5340,6 +6550,20 @@ class _HomeResolvedAlbumRef {
   });
 }
 
+class _HomeResolvedChannelPlaylistRef {
+  final String playlistId;
+  final String title;
+  final String subtitle;
+  final String thumbnailUrl;
+
+  const _HomeResolvedChannelPlaylistRef({
+    required this.playlistId,
+    required this.title,
+    required this.subtitle,
+    required this.thumbnailUrl,
+  });
+}
+
 class _SectionHeaderSliver extends StatelessWidget {
   final String title;
   final String subtitle;
@@ -5454,16 +6678,11 @@ class _HomeFeatureCard extends StatelessWidget {
   }
 }
 
-class _HomeMixCard extends StatelessWidget {
-  final _HomeMix mix;
-  final VoidCallback onPlay;
-  final VoidCallback onQueue;
+class _HomeVideoFeatureCard extends StatelessWidget {
+  final _HomeTrack item;
+  final VoidCallback onTap;
 
-  const _HomeMixCard({
-    required this.mix,
-    required this.onPlay,
-    required this.onQueue,
-  });
+  const _HomeVideoFeatureCard({required this.item, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -5476,108 +6695,83 @@ class _HomeMixCard extends StatelessWidget {
         : CupertinoColors.separator
               .resolveFrom(context)
               .withValues(alpha: 0.12);
-    final coverTrack = mix.tracks.isNotEmpty ? mix.tracks.first : null;
 
     return SizedBox(
-      width: 226,
+      width: 252,
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         child: Material(
           color: cardColor,
+          surfaceTintColor: Colors.transparent,
           child: InkWell(
-            onTap: onPlay,
+            onTap: onTap,
             child: Container(
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
+                color: cardColor,
+                borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: cardBorder, width: 0.6),
               ),
-              padding: const EdgeInsets.all(10),
-              child: Row(
+              padding: const EdgeInsets.all(8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  coverTrack == null
-                      ? Container(
-                          width: 76,
-                          height: 76,
-                          decoration: BoxDecoration(
-                            color: CupertinoColors.tertiarySystemFill
-                                .resolveFrom(context),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          alignment: Alignment.center,
-                          child: const Icon(CupertinoIcons.music_note_list),
-                        )
-                      : _AdaptiveThumb(item: coverTrack, size: 76),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          mix.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontWeight: FontWeight.w800,
-                            fontSize: 15,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          mix.subtitle,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontFamily: '.SF Pro Text',
-                            fontSize: 12,
-                            color: CupertinoColors.secondaryLabel.resolveFrom(
-                              context,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            CupertinoButton(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
-                              minimumSize: Size.zero,
-                              color: CupertinoColors.systemPink.resolveFrom(
-                                context,
-                              ),
-                              borderRadius: BorderRadius.circular(999),
-                              onPressed: onPlay,
-                              child: const Icon(
-                                CupertinoIcons.play_fill,
-                                color: CupertinoColors.white,
-                                size: 14,
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            CupertinoButton(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
-                              minimumSize: Size.zero,
-                              color: CupertinoColors.tertiarySystemFill
-                                  .resolveFrom(context),
-                              borderRadius: BorderRadius.circular(999),
-                              onPressed: onQueue,
-                              child: Icon(
-                                CupertinoIcons.music_note_list,
-                                color: CupertinoColors.label.resolveFrom(
-                                  context,
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: AspectRatio(
+                      aspectRatio: 16 / 9,
+                      child:
+                          item.thumbnailUrl.isNotEmpty &&
+                              item.thumbnailUrl.startsWith('/')
+                          ? Image.file(
+                              File(item.thumbnailUrl),
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => Container(
+                                color: CupertinoColors.tertiarySystemFill
+                                    .resolveFrom(context),
+                                alignment: Alignment.center,
+                                child: const Icon(
+                                  CupertinoIcons.videocam_fill,
+                                  size: 28,
                                 ),
-                                size: 14,
+                              ),
+                            )
+                          : Image.network(
+                              item.thumbnailUrl,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, _, _) => Container(
+                                color: CupertinoColors.tertiarySystemFill
+                                    .resolveFrom(context),
+                                alignment: Alignment.center,
+                                child: const Icon(
+                                  CupertinoIcons.videocam_fill,
+                                  size: 28,
+                                ),
                               ),
                             ),
-                          ],
-                        ),
-                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    item.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontFamily: '.SF Pro Text',
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    item.artist,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontFamily: '.SF Pro Text',
+                      fontSize: 12,
+                      color: CupertinoColors.secondaryLabel.resolveFrom(
+                        context,
+                      ),
                     ),
                   ),
                 ],
@@ -5587,6 +6781,121 @@ class _HomeMixCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _HeroTopPickCard extends StatelessWidget {
+  final _HomeTrack item;
+  final VoidCallback onTap;
+  final Future<void> Function(_TrackContextAction action)? onContextAction;
+
+  const _HeroTopPickCard({
+    required this.item,
+    required this.onTap,
+    this.onContextAction,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isYtMusicMxCard = item.videoId.startsWith('ytmx:');
+    final supportingText = item.artist.trim();
+    final hasTopLabel = !isYtMusicMxCard && supportingText.isNotEmpty;
+    final hasBottomLabel = supportingText.isNotEmpty;
+    final card = SizedBox(
+      width: 232,
+      height: 268,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                SquareThumbnail.network(
+                  imageUrl: item.thumbnailUrl,
+                  size: 232,
+                  borderRadius: 16,
+                  fallback: Container(
+                    color: CupertinoColors.tertiarySystemFill.resolveFrom(
+                      context,
+                    ),
+                    alignment: Alignment.center,
+                    child: const Icon(CupertinoIcons.music_note, size: 34),
+                  ),
+                ),
+                const DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Color(0x14000000),
+                        Color(0x22000000),
+                        Color(0xA6000000),
+                      ],
+                      stops: [0.0, 0.58, 1.0],
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (hasTopLabel)
+                        Text(
+                          item.artist.toUpperCase(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.2,
+                            color: Color(0xFFF2F2F7),
+                          ),
+                        ),
+                      const Spacer(),
+                      Text(
+                        item.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: '.SF Pro Display',
+                          fontSize: 22,
+                          height: 1.04,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.55,
+                          color: CupertinoColors.white,
+                        ),
+                      ),
+                      if (hasBottomLabel) const SizedBox(height: 4),
+                      if (hasBottomLabel)
+                        Text(
+                          supportingText,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontFamily: '.SF Pro Text',
+                            fontSize: 13,
+                            color: Color(0xFFE5E5EA),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final contextAction = onContextAction;
+    if (contextAction == null) return card;
+    return _TrackContextMenu(onAction: contextAction, child: card);
   }
 }
 

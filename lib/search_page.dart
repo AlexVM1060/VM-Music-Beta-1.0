@@ -1582,6 +1582,7 @@ class _SearchPageState extends State<SearchPage>
   Timer? _autocompleteDebounce;
   SearchViewState? _searchViewState;
   AnimationController? _searchBarGlowController;
+  String _primaryArtistThumbPrefetchVideoId = '';
 
   @override
   void initState() {
@@ -1606,6 +1607,16 @@ class _SearchPageState extends State<SearchPage>
     return created;
   }
 
+  TextStyle _appleMusicSectionTitleStyle(BuildContext context) {
+    final base = CupertinoTheme.of(context).textTheme.navTitleTextStyle;
+    return base.copyWith(
+      fontFamily: '.SF Pro Display',
+      fontSize: 22,
+      fontWeight: FontWeight.w700,
+      letterSpacing: -0.35,
+    );
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -1614,6 +1625,61 @@ class _SearchPageState extends State<SearchPage>
     _searchViewState?.removeListener(_handleSearchViewStateChanged);
     _searchViewState = nextState;
     _searchViewState?.addListener(_handleSearchViewStateChanged);
+  }
+
+  void _prefetchPrimaryArtistThumbnail(Video? primaryVideo) {
+    if (primaryVideo == null) return;
+    final videoId = primaryVideo.id.value.trim();
+    if (videoId.isEmpty) return;
+    final cached = _artistProfileByVideoIdCache[videoId];
+    if (cached != null && cached.channelThumbnailUrl.trim().isNotEmpty) return;
+    if (_primaryArtistThumbPrefetchVideoId == videoId &&
+        _artistProfileByVideoIdInFlight[videoId] != null) {
+      return;
+    }
+    _primaryArtistThumbPrefetchVideoId = videoId;
+    final inFlight = _artistProfileByVideoIdInFlight[videoId];
+    if (inFlight != null) {
+      unawaited(() async {
+        final resolved = await inFlight;
+        if (!mounted || resolved == null) return;
+        if (_artistProfileByVideoIdCache[videoId] == null) {
+          setState(() {
+            _artistProfileByVideoIdCache[videoId] = resolved;
+          });
+          unawaited(_persistArtistByVideoPersistentCache());
+        }
+      }());
+      return;
+    }
+    final fetch =
+        _runYoutubeWithRetry(
+          () => _youtubeExplode.channels.getByVideo(videoId),
+          maxAttempts: 1,
+        ).then<PendingArtistProfile?>((details) {
+          final channelId = details.id.value.trim();
+          if (channelId.isEmpty) return null;
+          return PendingArtistProfile(
+            channelId: channelId,
+            channelName: details.title,
+            channelThumbnailUrl: details.logoUrl,
+          );
+        });
+    _artistProfileByVideoIdInFlight[videoId] = fetch;
+    unawaited(() async {
+      try {
+        final resolved = await fetch;
+        if (!mounted || resolved == null) return;
+        setState(() {
+          _artistProfileByVideoIdCache[videoId] = resolved;
+        });
+        unawaited(_persistArtistByVideoPersistentCache());
+      } catch (_) {
+        // Best effort.
+      } finally {
+        _artistProfileByVideoIdInFlight.remove(videoId);
+      }
+    }());
   }
 
   void _handleSearchViewStateChanged() {
@@ -3026,7 +3092,11 @@ class _SearchPageState extends State<SearchPage>
           final shelfTitle = _normalizeAlbumSearchText(
             _extractYouTubeText(shelf['title']),
           );
-          collect(shelf['contents'], depth: depth + 1, currentShelfTitle: shelfTitle);
+          collect(
+            shelf['contents'],
+            depth: depth + 1,
+            currentShelfTitle: shelfTitle,
+          );
         }
 
         final responsive = node['musicResponsiveListItemRenderer'];
@@ -3039,13 +3109,21 @@ class _SearchPageState extends State<SearchPage>
         }
 
         for (final value in node.values) {
-          collect(value, depth: depth + 1, currentShelfTitle: currentShelfTitle);
+          collect(
+            value,
+            depth: depth + 1,
+            currentShelfTitle: currentShelfTitle,
+          );
         }
         return;
       }
       if (node is List) {
         for (final value in node) {
-          collect(value, depth: depth + 1, currentShelfTitle: currentShelfTitle);
+          collect(
+            value,
+            depth: depth + 1,
+            currentShelfTitle: currentShelfTitle,
+          );
         }
       }
     }
@@ -3372,7 +3450,11 @@ class _SearchPageState extends State<SearchPage>
           final shelfTitle = _normalizeAlbumSearchText(
             _extractYouTubeText(shelf['title']),
           );
-          scan(shelf['contents'], depth: depth + 1, currentShelfTitle: shelfTitle);
+          scan(
+            shelf['contents'],
+            depth: depth + 1,
+            currentShelfTitle: shelfTitle,
+          );
         }
 
         final responsive = node['musicResponsiveListItemRenderer'];
@@ -4177,12 +4259,22 @@ class _SearchPageState extends State<SearchPage>
         final primaryVideo = prioritizedVideos.isNotEmpty
             ? prioritizedVideos.first
             : null;
+        _prefetchPrimaryArtistThumbnail(primaryVideo);
         final primaryArtistChannelThumb = primaryVideo == null
             ? null
-            : _findChannelThumbnailForArtist(
-                artistName: primaryVideo.author,
-                channels: displayChannels,
-              );
+            : (() {
+                final videoId = primaryVideo.id.value.trim();
+                final cachedThumb =
+                    (_artistProfileByVideoIdCache[videoId]
+                                ?.channelThumbnailUrl ??
+                            '')
+                        .trim();
+                if (cachedThumb.isNotEmpty) return cachedThumb;
+                return _findChannelThumbnailForArtist(
+                  artistName: primaryVideo.author,
+                  channels: displayChannels,
+                );
+              })();
         return ListView(
           children: [
             if ((_isVideosFilterMode || _isPodcastFilterMode) &&
@@ -4216,16 +4308,20 @@ class _SearchPageState extends State<SearchPage>
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Text(
                   'Artista principal',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: _appleMusicSectionTitleStyle(context),
                 ),
               ),
               if (primaryVideo != null)
-                _TopArtistFromVideoCard(
-                  video: primaryVideo,
-                  channelThumbnailUrl: primaryArtistChannelThumb,
-                  onOpen: () => _openArtistFromVideo(primaryVideo),
+                _TopArtistCardWithIntroSweep(
+                  key: ValueKey<String>(
+                    'top-artist-sweep-${primaryVideo.id.value.trim()}-$_searchEpoch',
+                  ),
+                  artistKey: primaryVideo.id.value.trim(),
+                  child: _TopArtistFromVideoCard(
+                    video: primaryVideo,
+                    channelThumbnailUrl: primaryArtistChannelThumb,
+                    onOpen: () => _openArtistFromVideo(primaryVideo),
+                  ),
                 )
               else
                 TopArtistCard(
@@ -4268,9 +4364,7 @@ class _SearchPageState extends State<SearchPage>
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Text(
                   'Álbumes',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: _appleMusicSectionTitleStyle(context),
                 ),
               ),
               ...albumResults
@@ -4290,9 +4384,7 @@ class _SearchPageState extends State<SearchPage>
                   _isPodcastFilterMode
                       ? 'Podcast'
                       : (_isVideosFilterMode ? 'Videos' : 'Canciones'),
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: _appleMusicSectionTitleStyle(context),
                 ),
               ),
             ],
@@ -5490,6 +5582,111 @@ class _TopArtistFromVideoCard extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _TopArtistCardWithIntroSweep extends StatefulWidget {
+  final String artistKey;
+  final Widget child;
+
+  const _TopArtistCardWithIntroSweep({
+    super.key,
+    required this.artistKey,
+    required this.child,
+  });
+
+  @override
+  State<_TopArtistCardWithIntroSweep> createState() =>
+      _TopArtistCardWithIntroSweepState();
+}
+
+class _TopArtistCardWithIntroSweepState
+    extends State<_TopArtistCardWithIntroSweep>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1050),
+    );
+    _playOnce();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TopArtistCardWithIntroSweep oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.artistKey != widget.artistKey) {
+      _playOnce();
+    }
+  }
+
+  void _playOnce() {
+    _controller
+      ..stop()
+      ..value = 0;
+    if (!mounted) return;
+    unawaited(_controller.forward(from: 0));
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: Stack(
+        children: [
+          widget.child,
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, _) {
+                  if (_controller.value <= 0 ||
+                      _controller.status == AnimationStatus.completed) {
+                    return const SizedBox.shrink();
+                  }
+                  final t = Curves.easeOutCubic.transform(_controller.value);
+                  final fadeOut = ((1 - _controller.value) / 0.14).clamp(
+                    0.0,
+                    1.0,
+                  );
+                  final alphaFactor = Curves.easeOut.transform(fadeOut);
+                  return FractionallySizedBox(
+                    widthFactor: 0.38,
+                    alignment: Alignment(-1.45 + (t * 3.2), 0),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.centerLeft,
+                          end: Alignment.centerRight,
+                          colors: [
+                            Colors.transparent,
+                            const Color(0xFFFFD84D).withValues(
+                              alpha: (isDark ? 0.20 : 0.26) * alphaFactor,
+                            ),
+                            Colors.transparent,
+                          ],
+                          stops: const [0.0, 0.5, 1.0],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -6757,7 +6954,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     if (playlistId.isNotEmpty) {
       try {
         final full = await _runYoutubeWithRetry(
-          () => _yt.playlists.getVideos(PlaylistId(playlistId)).take(250).toList(),
+          () => _yt.playlists
+              .getVideos(PlaylistId(playlistId))
+              .take(250)
+              .toList(),
           maxAttempts: 1,
         );
         if (!mounted || loadEpoch != _artistTopSongsLoadEpoch) return;
@@ -7153,7 +7353,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
         profilePayload,
       );
       final topSongsShelves = [...listShelves, ...carouselShelves]
-          .where((shelf) => _isTopSongsShelfTitle(_extractYouTubeText(shelf['title'])))
+          .where(
+            (shelf) =>
+                _isTopSongsShelfTitle(_extractYouTubeText(shelf['title'])),
+          )
           .toList(growable: false);
       String? showAllPlaylistId;
       for (final shelf in topSongsShelves) {
@@ -8169,7 +8372,8 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
 
   Widget _buildTopSongsSection(BuildContext context) {
     final columns = _buildTopSongColumns(_artistTopSongs);
-    if (columns.isEmpty && !_artistTopSongsLoading) return const SizedBox.shrink();
+    if (columns.isEmpty && !_artistTopSongsLoading)
+      return const SizedBox.shrink();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -8214,46 +8418,49 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
             child: _artistTopSongsLoading
                 ? const Center(child: CupertinoActivityIndicator(radius: 12))
                 : ListView.separated(
-              padding: const EdgeInsets.symmetric(
-                horizontal: _artistSectionHorizontalInset,
-              ),
-              scrollDirection: Axis.horizontal,
-              itemCount: columns.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 12),
-              itemBuilder: (context, index) {
-                final chunk = columns[index];
-                return SizedBox(
-                  width: 332,
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      const spacing = 8.0;
-                      const rows = 4;
-                      final rowHeight =
-                          (constraints.maxHeight - (rows - 1) * spacing) / rows;
-                      return Column(
-                        children: List.generate(rows * 2 - 1, (slotIndex) {
-                          if (slotIndex.isOdd) {
-                            return const SizedBox(height: spacing);
-                          }
-                          final itemIndex = slotIndex ~/ 2;
-                          if (itemIndex >= chunk.length) {
-                            return SizedBox(height: rowHeight);
-                          }
-                          return SizedBox(
-                            height: rowHeight,
-                            child: _buildTopSongCompactCard(
-                              context,
-                              chunk[itemIndex],
-                              expanded: false,
-                            ),
-                          );
-                        }),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: _artistSectionHorizontalInset,
+                    ),
+                    scrollDirection: Axis.horizontal,
+                    itemCount: columns.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 12),
+                    itemBuilder: (context, index) {
+                      final chunk = columns[index];
+                      return SizedBox(
+                        width: 332,
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            const spacing = 8.0;
+                            const rows = 4;
+                            final rowHeight =
+                                (constraints.maxHeight - (rows - 1) * spacing) /
+                                rows;
+                            return Column(
+                              children: List.generate(rows * 2 - 1, (
+                                slotIndex,
+                              ) {
+                                if (slotIndex.isOdd) {
+                                  return const SizedBox(height: spacing);
+                                }
+                                final itemIndex = slotIndex ~/ 2;
+                                if (itemIndex >= chunk.length) {
+                                  return SizedBox(height: rowHeight);
+                                }
+                                return SizedBox(
+                                  height: rowHeight,
+                                  child: _buildTopSongCompactCard(
+                                    context,
+                                    chunk[itemIndex],
+                                    expanded: false,
+                                  ),
+                                );
+                              }),
+                            );
+                          },
+                        ),
                       );
                     },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),
@@ -8266,7 +8473,10 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     if (playlistId.isNotEmpty) {
       try {
         final loaded = await _runYoutubeWithRetry(
-          () => _yt.playlists.getVideos(PlaylistId(playlistId)).take(250).toList(),
+          () => _yt.playlists
+              .getVideos(PlaylistId(playlistId))
+              .take(250)
+              .toList(),
           maxAttempts: 1,
         );
         if (loaded.isNotEmpty && mounted) {
@@ -9191,6 +9401,7 @@ class AlbumTracksPage extends StatefulWidget {
   final String albumTitle;
   final String artistName;
   final String seedThumbnailUrl;
+  final bool showTrackArtwork;
   final LibraryAlbumsService? libraryAlbumsService;
   final bool embedded;
   final VoidCallback? onBack;
@@ -9201,6 +9412,7 @@ class AlbumTracksPage extends StatefulWidget {
     required this.albumTitle,
     required this.artistName,
     required this.seedThumbnailUrl,
+    this.showTrackArtwork = false,
     this.libraryAlbumsService,
     this.embedded = false,
     this.onBack,
@@ -10412,35 +10624,63 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 220),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                      Expanded(
+                        child: Row(
                           children: [
-                            Text(
-                              video.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context)
-                                  .textTheme
-                                  .textStyle
-                                  .copyWith(
-                                    fontSize: 16,
-                                    color: CupertinoColors.white,
+                            if (widget.showTrackArtwork) ...[
+                              SquareThumbnail.network(
+                                imageUrl: _bestQualityThumbnail(video),
+                                size: 52,
+                                borderRadius: 8,
+                                fallback: Container(
+                                  width: 52,
+                                  height: 52,
+                                  decoration: BoxDecoration(
+                                    color: CupertinoColors.tertiarySystemFill
+                                        .resolveFrom(context),
+                                    borderRadius: BorderRadius.circular(8),
                                   ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              cleanArtistName(video.author),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: CupertinoTheme.of(context)
-                                  .textTheme
-                                  .textStyle
-                                  .copyWith(
-                                    fontSize: 13,
-                                    color: CupertinoColors.systemGrey2,
+                                  alignment: Alignment.center,
+                                  child: const Icon(
+                                    CupertinoIcons.music_note,
+                                    color: CupertinoColors.systemGrey,
+                                    size: 18,
                                   ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                            ],
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    video.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: CupertinoTheme.of(context)
+                                        .textTheme
+                                        .textStyle
+                                        .copyWith(
+                                          fontSize: 16,
+                                          color: CupertinoColors.white,
+                                        ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    cleanArtistName(video.author),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: CupertinoTheme.of(context)
+                                        .textTheme
+                                        .textStyle
+                                        .copyWith(
+                                          fontSize: 13,
+                                          color: CupertinoColors.systemGrey2,
+                                        ),
+                                  ),
+                                ],
+                              ),
                             ),
                           ],
                         ),

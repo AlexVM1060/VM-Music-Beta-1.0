@@ -58,12 +58,14 @@ class DownloadService with ChangeNotifier {
     'Referer': 'https://www.youtube.com/',
   };
   static const Set<String> _backendHosts = <String>{
-    '34.170.69.96',
-    '34.58.164.68',
-    '34.173.78.255',
-    '136.111.242.170',
-    '34.70.29.254',
-    '34.170.163.28',
+    '136.111.94.65',
+    '34.121.98.182',
+    '104.154.137.196',
+    '34.82.44.187',
+    '34.39.147.69',
+    '35.224.107.127',
+    '34.136.177.105',
+    '35.222.0.143',
   };
 
   final Map<String, double> _downloadProgress = {};

@@ -1,6 +1,6 @@
 
 {
-  "latestVersion": "0.4.9",
+  "latestVersion": "0.5.0",
   "minimumSupportedVersion": "0.4.7",
   "force": false,
   "title": "Nueva versión disponible",
@@ -8,7 +8,7 @@
   "actions": [
     {
       "label": "Actualizar",
-      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/94740d292900.plist",
+      "urlIos": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/bd1d9faa90c0.plist",
       "urlAndroid": "itms-services://?action=download-manifest&url=https://ipa.ipasign.cc/manifest/6ec486e42c00.plist"
     }
   ]

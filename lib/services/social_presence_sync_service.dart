@@ -28,7 +28,7 @@ class SocialPresenceSyncService {
   void start() {
     playerManager.addListener(_scheduleSync);
     profileService.addListener(_scheduleSync);
-    _periodic = Timer.periodic(const Duration(seconds: 5), (_) {
+    _periodic = Timer.periodic(const Duration(seconds: 12), (_) {
       _scheduleSync();
     });
     _scheduleSync();
@@ -36,6 +36,7 @@ class SocialPresenceSyncService {
 
   void _scheduleSync() {
     if (_disposed) return;
+    if (!playerManager.isAppInForeground) return;
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 250), _syncNow);
   }
@@ -55,17 +56,33 @@ class SocialPresenceSyncService {
     // active: hasTrack && isPlaying
     final hasTrack = song.isNotEmpty || currentVideoId.isNotEmpty;
     final isPlayingForPresence = hasTrack && playerManager.isPlaying;
+    final shouldIdleSync =
+        !isPlayingForPresence &&
+        song.isEmpty &&
+        artist.isEmpty &&
+        currentVideoId.isEmpty;
 
     final signature =
         '${profileService.name.trim()}|${profileService.username.trim()}|${profileService.bio.trim()}|$currentVideoId|$song|$artist';
 
     final now = DateTime.now();
     final recentlySynced =
-        _lastSyncAt != null && now.difference(_lastSyncAt!) < const Duration(seconds: 2);
+        _lastSyncAt != null &&
+        now.difference(_lastSyncAt!) < const Duration(seconds: 2);
     final unchangedSignature = signature == _lastSignature;
     final samePlaying = _lastSentIsPlaying == isPlayingForPresence;
 
-    if (!_forceNextSync && recentlySynced && unchangedSignature && samePlaying) {
+    if (shouldIdleSync &&
+        !_forceNextSync &&
+        _lastSentIsPlaying == false &&
+        unchangedSignature) {
+      return;
+    }
+
+    if (!_forceNextSync &&
+        recentlySynced &&
+        unchangedSignature &&
+        samePlaying) {
       return;
     }
     _forceNextSync = false;

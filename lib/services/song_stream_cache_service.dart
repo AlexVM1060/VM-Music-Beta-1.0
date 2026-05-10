@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:hive/hive.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -12,6 +14,23 @@ class SongStreamCacheService {
   static const int _maxEntries = 120;
   static const int _maxFileBytes = 220 * 1024 * 1024;
   static const int _maxTotalBytes = 2 * 1024 * 1024 * 1024;
+  static const Map<String, String> _youtubeHeaders = {
+    'User-Agent':
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+    'Accept': '*/*',
+    'Origin': 'https://www.youtube.com',
+    'Referer': 'https://www.youtube.com/',
+    'Connection': 'keep-alive',
+  };
+  static final Dio _dio = Dio();
+  static const Set<String> _safeAudioExtensions = {
+    'm4a',
+    'mp4',
+    'webm',
+    'mp3',
+    'aac',
+    'ogg',
+  };
 
   static final Map<String, Future<void>> _inFlightWrites =
       <String, Future<void>>{};
@@ -23,7 +42,10 @@ class SongStreamCacheService {
     if (normalized.isEmpty) return null;
     await _ensureLoaded();
     final idx = _entries.indexWhere((entry) => entry.videoId == normalized);
-    if (idx == -1) return null;
+    if (idx == -1) {
+      log('[song-cache] miss videoId=$normalized reason=no_entry');
+      return null;
+    }
     final entry = _entries[idx];
     final file = File(entry.filePath);
     if (!_isEntryFresh(entry) || !await file.exists()) {
@@ -34,8 +56,10 @@ class SongStreamCacheService {
           await file.delete();
         }
       } catch (_) {}
+      log('[song-cache] miss videoId=$normalized reason=stale_or_missing_file');
       return null;
     }
+    log('[song-cache] hit videoId=$normalized file=${entry.filePath}');
     return entry.filePath;
   }
 
@@ -145,47 +169,82 @@ class SongStreamCacheService {
   }) async {
     final dir = await _cacheDirectory();
     await dir.create(recursive: true);
-    final target = File(
-      '${dir.path}/$videoId-${DateTime.now().millisecondsSinceEpoch}.m4a',
-    );
+    final uriFallbackExt = _inferFileExtensionFromUri(streamUri, fallback: 'mp4');
+    var target = File('${dir.path}/$videoId.$uriFallbackExt');
+    if (await target.exists()) {
+      try {
+        await target.delete();
+      } catch (_) {}
+    }
 
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    final tempTarget = File('${target.path}.part');
+    if (await tempTarget.exists()) {
+      try {
+        await tempTarget.delete();
+      } catch (_) {}
+    }
+
     try {
-      final req = await client.getUrl(streamUri).timeout(
-        const Duration(seconds: 10),
+      final response = await _dio.getUri<ResponseBody>(
+        streamUri,
+        options: Options(
+          headers: _youtubeHeaders,
+          responseType: ResponseType.stream,
+          followRedirects: true,
+          receiveTimeout: const Duration(minutes: 3),
+          sendTimeout: const Duration(minutes: 1),
+        ),
       );
-      req.headers.set(
-        HttpHeaders.userAgentHeader,
-        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-      );
-      final res = await req.close().timeout(const Duration(seconds: 45));
-      if (res.statusCode < 200 || res.statusCode >= 300) return;
-
-      final sink = target.openWrite(mode: FileMode.writeOnly);
+      final contentType = (response.headers.value(Headers.contentTypeHeader) ?? '')
+          .toLowerCase();
+      final headerExt = _inferExtensionFromContentType(contentType);
+      if (headerExt != null && headerExt != uriFallbackExt) {
+        target = File('${dir.path}/$videoId.$headerExt');
+      }
+      final realTempTarget = File('${target.path}.part');
+      if (await realTempTarget.exists()) {
+        try {
+          await realTempTarget.delete();
+        } catch (_) {}
+      }
+      final sink = realTempTarget.openWrite(mode: FileMode.writeOnly);
       var totalBytes = 0;
-      await for (final chunk in res) {
+      final stream = response.data?.stream;
+      if (stream == null) {
+        await sink.flush();
+        await sink.close();
+        return;
+      }
+      await for (final chunk in stream) {
         totalBytes += chunk.length;
         if (totalBytes > _maxFileBytes) {
           await sink.flush();
           await sink.close();
           try {
-            if (await target.exists()) await target.delete();
+            if (await realTempTarget.exists()) await realTempTarget.delete();
           } catch (_) {}
+          log('[song-cache] write_skipped videoId=$videoId reason=file_too_large bytes=$totalBytes');
           return;
         }
         sink.add(chunk);
       }
       await sink.flush();
       await sink.close();
-
-      if (!await target.exists()) return;
-      final sizeBytes = await target.length();
+      if (!await realTempTarget.exists()) return;
+      final sizeBytes = await realTempTarget.length();
       if (sizeBytes <= 0 || sizeBytes > _maxFileBytes) {
         try {
-          await target.delete();
+          await realTempTarget.delete();
         } catch (_) {}
         return;
       }
+      if (await target.exists()) {
+        try {
+          await target.delete();
+        } catch (_) {}
+      }
+      await realTempTarget.rename(target.path);
+      if (!await target.exists()) return;
 
       _entries.removeWhere((entry) => entry.videoId == videoId);
       _entries.insert(
@@ -198,11 +257,41 @@ class SongStreamCacheService {
         ),
       );
       await _pruneAndPersist();
-    } catch (_) {
-      // Best effort.
+      log('[song-cache] write_ok videoId=$videoId file=${target.path} bytes=$sizeBytes contentType=$contentType');
+    } catch (e) {
+      log(
+        '[song-cache] write_failed videoId=$videoId urlHost=${streamUri.host} error=$e',
+      );
     } finally {
-      client.close(force: true);
+      try {
+        if (await tempTarget.exists()) {
+          await tempTarget.delete();
+        }
+      } catch (_) {}
     }
+  }
+
+  static String _inferFileExtensionFromUri(Uri uri, {String fallback = 'm4a'}) {
+    final ext = uri.pathSegments.isEmpty
+        ? ''
+        : uri.pathSegments.last.split('.').last.toLowerCase();
+    if (_safeAudioExtensions.contains(ext)) return ext;
+    return fallback;
+  }
+
+  static String? _inferExtensionFromContentType(String contentType) {
+    if (contentType.contains('audio/mp4') || contentType.contains('video/mp4')) {
+      return 'mp4';
+    }
+    if (contentType.contains('audio/mpeg')) return 'mp3';
+    if (contentType.contains('audio/webm') || contentType.contains('video/webm')) {
+      return 'webm';
+    }
+    if (contentType.contains('audio/aac')) return 'aac';
+    if (contentType.contains('audio/ogg') || contentType.contains('application/ogg')) {
+      return 'ogg';
+    }
+    return null;
   }
 
   static Future<Directory> _cacheDirectory() async {

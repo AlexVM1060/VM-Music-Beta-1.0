@@ -585,120 +585,133 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                 duration: const Duration(milliseconds: 220),
                 curve: Curves.easeOutQuad,
                 opacity: fadeOpacity,
-              child: ClipRRect(
-                clipBehavior: Clip.antiAlias,
-                borderRadius: BorderRadius.circular(dynamicRadius),
-                child: _PerformanceBackdrop(
-                  filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                  child: CupertinoButton(
-                    padding: EdgeInsets.zero,
-                    onPressed: widget.manager.maximize,
-                    child: Container(
-                      height: miniPlayerHeight,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(dynamicRadius),
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: isDark
-                              ? [
-                                  const Color(0xFF9CA3AF).withValues(alpha: 0.30),
-                                  const Color(0xFF6B7280).withValues(alpha: 0.22),
-                                ]
-                              : [
-                                  const Color(0xFFE5E7EB).withValues(alpha: 0.90),
-                                  const Color(0xFFD1D5DB).withValues(alpha: 0.74),
-                                ],
+                child: ClipRRect(
+                  clipBehavior: Clip.antiAlias,
+                  borderRadius: BorderRadius.circular(dynamicRadius),
+                  child: _PerformanceBackdrop(
+                    filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+                    child: CupertinoButton(
+                      padding: EdgeInsets.zero,
+                      onPressed: widget.manager.maximize,
+                      child: Container(
+                        height: miniPlayerHeight,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(dynamicRadius),
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: isDark
+                                ? [
+                                    const Color(
+                                      0xFF9CA3AF,
+                                    ).withValues(alpha: 0.30),
+                                    const Color(
+                                      0xFF6B7280,
+                                    ).withValues(alpha: 0.22),
+                                  ]
+                                : [
+                                    const Color(
+                                      0xFFE5E7EB,
+                                    ).withValues(alpha: 0.90),
+                                    const Color(
+                                      0xFFD1D5DB,
+                                    ).withValues(alpha: 0.74),
+                                  ],
+                          ),
+                          border: Border.all(
+                            color: isDark
+                                ? const Color(
+                                    0xFF9CA3AF,
+                                  ).withValues(alpha: 0.38)
+                                : const Color(
+                                    0xFFCBD5E1,
+                                  ).withValues(alpha: 0.94),
+                            width: 0.8,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: CupertinoColors.black.withValues(
+                                alpha: dynamicShadowOpacity,
+                              ),
+                              blurRadius: dynamicShadowBlur,
+                              offset: Offset(0, dynamicShadowYOffset),
+                            ),
+                          ],
                         ),
-                        border: Border.all(
-                          color: isDark
-                              ? const Color(0xFF9CA3AF).withValues(alpha: 0.38)
-                              : const Color(0xFFCBD5E1).withValues(alpha: 0.94),
-                          width: 0.8,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: CupertinoColors.black.withValues(
-                              alpha: dynamicShadowOpacity,
-                            ),
-                            blurRadius: dynamicShadowBlur,
-                            offset: Offset(0, dynamicShadowYOffset),
-                          ),
-                        ],
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      child: Row(
-                        children: [
-                          _ArtworkSwipeNavigator(
-                            manager: widget.manager,
-                            child: _ArtworkImage(
-                              url: miniState.trackThumbnailUrl,
-                              size: 44,
-                              borderRadius: 10,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _AnimatedTrackMeta(
-                              trackKey:
-                                  miniState.trackTitle ??
-                                  miniState.trackArtist ??
-                                  'mini_unknown',
-                              title: miniState.trackTitle ?? 'Reproduciendo',
-                              artist:
-                                  miniState.trackArtist ??
-                                  'Artista desconocido',
-                              direction:
-                                  widget.manager.trackTransitionDirection,
-                              titleStyle: CupertinoTheme.of(context)
-                                  .textTheme
-                                  .textStyle
-                                  .copyWith(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                              artistStyle: CupertinoTheme.of(context)
-                                  .textTheme
-                                  .textStyle
-                                  .copyWith(
-                                    fontSize: 12,
-                                    color: CupertinoColors.secondaryLabel
-                                        .resolveFrom(context),
-                                  ),
-                              titleMaxLines: 1,
-                              artistMaxLines: 1,
-                              verticalPadding: 0,
-                            ),
-                          ),
-                          CupertinoButton(
-                            padding: EdgeInsets.zero,
-                            onPressed: widget.manager.togglePlayPause,
-                            child: Icon(
-                              miniState.isPlaying
-                                  ? CupertinoIcons.pause_fill
-                                  : CupertinoIcons.play_fill,
-                              size: 27,
-                              color: CupertinoColors.label.resolveFrom(context),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                          CupertinoButton(
-                            padding: EdgeInsets.zero,
-                            onPressed: widget.manager.playNextInQueue,
-                            child: Icon(
-                              CupertinoIcons.forward_fill,
-                              size: 22,
-                              color: CupertinoColors.secondaryLabel.resolveFrom(
-                                context,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Row(
+                          children: [
+                            _ArtworkSwipeNavigator(
+                              manager: widget.manager,
+                              child: _ArtworkImage(
+                                url: miniState.trackThumbnailUrl,
+                                size: 44,
+                                borderRadius: 10,
                               ),
                             ),
-                          ),
-                        ],
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _AnimatedTrackMeta(
+                                trackKey:
+                                    miniState.trackTitle ??
+                                    miniState.trackArtist ??
+                                    'mini_unknown',
+                                title: miniState.trackTitle ?? 'Reproduciendo',
+                                artist:
+                                    miniState.trackArtist ??
+                                    'Artista desconocido',
+                                direction:
+                                    widget.manager.trackTransitionDirection,
+                                titleStyle: CupertinoTheme.of(context)
+                                    .textTheme
+                                    .textStyle
+                                    .copyWith(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                artistStyle: CupertinoTheme.of(context)
+                                    .textTheme
+                                    .textStyle
+                                    .copyWith(
+                                      fontSize: 12,
+                                      color: CupertinoColors.secondaryLabel
+                                          .resolveFrom(context),
+                                    ),
+                                titleMaxLines: 1,
+                                artistMaxLines: 1,
+                                verticalPadding: 0,
+                              ),
+                            ),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              onPressed: widget.manager.togglePlayPause,
+                              child: Icon(
+                                miniState.isPlaying
+                                    ? CupertinoIcons.pause_fill
+                                    : CupertinoIcons.play_fill,
+                                size: 27,
+                                color: CupertinoColors.label.resolveFrom(
+                                  context,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            CupertinoButton(
+                              padding: EdgeInsets.zero,
+                              onPressed: widget.manager.playNextInQueue,
+                              child: Icon(
+                                CupertinoIcons.forward_fill,
+                                size: 22,
+                                color: CupertinoColors.secondaryLabel
+                                    .resolveFrom(context),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
               ),
             ),
           ),
@@ -2113,9 +2126,7 @@ class _InlineLyricsButton extends StatelessWidget {
                   ? CupertinoIcons.quote_bubble_fill
                   : CupertinoIcons.quote_bubble,
               size: 26,
-              color: isActive
-                  ? Colors.black
-                  : CupertinoColors.white,
+              color: isActive ? Colors.black : CupertinoColors.white,
             ),
           ],
         ),
@@ -2141,7 +2152,7 @@ class _InlineAudioRouteButtonState extends State<_InlineAudioRouteButton> {
   void initState() {
     super.initState();
     unawaited(_loadRouteInfo());
-    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       unawaited(_loadRouteInfo());
     });
   }
@@ -2154,6 +2165,10 @@ class _InlineAudioRouteButtonState extends State<_InlineAudioRouteButton> {
 
   Future<void> _loadRouteInfo() async {
     if (!Platform.isIOS) return;
+    final appInForeground = context
+        .read<VideoPlayerManager>()
+        .isAppInForeground;
+    if (!appInForeground) return;
     try {
       final raw = await _systemVolumeChannel
           .invokeMethod<Map<dynamic, dynamic>>('getCurrentAudioOutputInfo');
@@ -2412,9 +2427,7 @@ class _InlineAutoplayButton extends StatelessWidget {
             Icon(
               CupertinoIcons.dot_radiowaves_left_right,
               size: 14,
-              color: isActive
-                  ? activeColor
-                  : CupertinoColors.white,
+              color: isActive ? activeColor : CupertinoColors.white,
             ),
             const SizedBox(width: 6),
             Text(
@@ -3337,13 +3350,17 @@ class _InlineArtistActionButtonState extends State<_InlineArtistActionButton>
     );
     _scale = TweenSequence<double>([
       TweenSequenceItem(
-        tween: Tween<double>(begin: 1.0, end: 1.22)
-            .chain(CurveTween(curve: Curves.easeOutCubic)),
+        tween: Tween<double>(
+          begin: 1.0,
+          end: 1.22,
+        ).chain(CurveTween(curve: Curves.easeOutCubic)),
         weight: 45,
       ),
       TweenSequenceItem(
-        tween: Tween<double>(begin: 1.22, end: 1.0)
-            .chain(CurveTween(curve: Curves.easeInOutCubic)),
+        tween: Tween<double>(
+          begin: 1.22,
+          end: 1.0,
+        ).chain(CurveTween(curve: Curves.easeInOutCubic)),
         weight: 55,
       ),
     ]).animate(_controller);
@@ -3517,11 +3534,7 @@ class _TopGlassIconButton extends StatelessWidget {
             width: 0.5,
           ),
         ),
-        child: Icon(
-          icon,
-          size: 18,
-          color: CupertinoColors.white,
-        ),
+        child: Icon(icon, size: 18, color: CupertinoColors.white),
       ),
     );
   }
@@ -4217,7 +4230,11 @@ class _QueueRow extends StatelessWidget {
   }
 
   void _showQueueSnackBar(BuildContext context, String message) {
-    showIosNotice(context, message, duration: const Duration(milliseconds: 1500));
+    showIosNotice(
+      context,
+      message,
+      duration: const Duration(milliseconds: 1500),
+    );
   }
 }
 
@@ -4342,11 +4359,7 @@ class _NativeControlButton extends StatelessWidget {
         width: 40,
         height: 40,
         alignment: Alignment.center,
-        child: Icon(
-          icon,
-          size: 44,
-          color: CupertinoColors.white,
-        ),
+        child: Icon(icon, size: 44, color: CupertinoColors.white),
       ),
     );
   }
@@ -4745,10 +4758,10 @@ class _LyricsPanelState extends State<_LyricsPanel> {
   DateTime _visualLyricsWallClock = DateTime.fromMillisecondsSinceEpoch(0);
   Duration _lastVisualClockManagerPosition = Duration.zero;
   static const Duration _lyricsVisualTickIntervalNormal = Duration(
-    milliseconds: 110,
+    milliseconds: 130,
   );
   static const Duration _lyricsVisualTickIntervalLowPower = Duration(
-    milliseconds: 190,
+    milliseconds: 220,
   );
   Duration? _activeLyricsVisualTickInterval;
   Color? _lyricsAccentColor;
@@ -4995,8 +5008,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
     final baseFontSize = isImmersive ? 22.0 : 20.0;
     final activeFontSize = isImmersive ? 28.0 : 26.0;
     _syncLyricsAccentColor(manager);
-    final activeLyricsColor =
-        _lyricsAccentColor ?? CupertinoColors.white;
+    final activeLyricsColor = _lyricsAccentColor ?? CupertinoColors.white;
     unawaited(
       _syncIosWordAlignment(
         manager: manager,
