@@ -47,6 +47,15 @@ class SocialPresenceSyncService {
       _pendingSync = true;
       return;
     }
+    try {
+      final stillActive = await socialService.verifyClaimedSessionStillActive();
+      if (!stillActive) {
+        await _resetProfileAfterSessionClosed();
+        return;
+      }
+    } catch (_) {
+      // Si falla la validación remota, seguimos al sync normal.
+    }
 
     final song = (playerManager.trackTitle ?? '').trim();
     final artist = (playerManager.trackArtist ?? '').trim();
@@ -106,6 +115,10 @@ class SocialPresenceSyncService {
         '[social_sync] sent is_playing=$isPlayingForPresence hasTrack=$hasTrack player=${playerManager.isPlaying} song="$song"',
       );
     } catch (e) {
+      if (e.toString().contains('sesión de perfil fue cerrada') ||
+          e.toString().contains('sesion de perfil fue cerrada')) {
+        await _resetProfileAfterSessionClosed();
+      }
       // ignore: avoid_print
       print('[social_sync] sync error: $e');
     } finally {
@@ -124,5 +137,12 @@ class SocialPresenceSyncService {
     _periodic?.cancel();
     playerManager.removeListener(_scheduleSync);
     profileService.removeListener(_scheduleSync);
+  }
+
+  Future<void> _resetProfileAfterSessionClosed() async {
+    await profileService.resetToDefaults();
+    _lastSignature = '';
+    _lastSyncAt = null;
+    _lastSentIsPlaying = null;
   }
 }

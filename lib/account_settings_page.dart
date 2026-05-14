@@ -5,6 +5,7 @@ import 'package:flutter/material.dart' show Theme;
 import 'package:myapp/main.dart' show ThemeProvider;
 import 'package:myapp/apple_music_migration_page.dart';
 import 'package:myapp/services/app_settings_service.dart';
+import 'package:myapp/widgets/app_back_circle_button.dart';
 import 'package:provider/provider.dart';
 
 class AccountSettingsPage extends StatefulWidget {
@@ -25,13 +26,21 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
         : const Color(0xFF111111);
 
     if (settings == null) {
-      return const CupertinoPageScaffold(
-        navigationBar: CupertinoNavigationBar(middle: Text('Configuración')),
+      return CupertinoPageScaffold(
+        navigationBar: CupertinoNavigationBar(
+          automaticallyImplyLeading: false,
+          leading: Navigator.of(context).canPop()
+              ? AppBackCircleButton(
+                  onPressed: () => Navigator.of(context).maybePop(),
+                )
+              : null,
+          middle: const Text('Configuración'),
+        ),
         child: SafeArea(
           child: Center(
             child: Padding(
-              padding: EdgeInsets.all(24),
-              child: Text(
+              padding: const EdgeInsets.all(24),
+              child: const Text(
                 'Configuración no disponible. Haz Hot Restart para recargar proveedores.',
                 textAlign: TextAlign.center,
               ),
@@ -51,6 +60,12 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
 
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
+        automaticallyImplyLeading: false,
+        leading: Navigator.of(context).canPop()
+            ? AppBackCircleButton(
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
         middle: Text(
           'Configuración',
           style: TextStyle(
@@ -106,15 +121,6 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                           'Resalta la letra en tiempo real\nEsto podría consumir mas bateria',
                       value: settings.liveLyrics,
                       onChanged: (value) => settings.setLiveLyrics(value),
-                    ),
-                    const _SectionDivider(),
-                    _SettingSwitchRow(
-                      title: 'VM Music Sing',
-                      subtitle:
-                          'Activa modo karaoke con separación instrumental por IA\nSi está apagado, no se carga esa lógica para ahorrar recursos',
-                      value: settings.vmMusicSingEnabled,
-                      onChanged: (value) =>
-                          settings.setVmMusicSingEnabled(value),
                     ),
                     const _SectionDivider(),
                     _SettingSwitchRow(
@@ -194,15 +200,6 @@ class _AccountSettingsPageState extends State<AccountSettingsPage> {
                           'Reduce resolución de video y carátulas, y limita cargas en segundo plano de YouTube',
                       value: settings.dataSaverMode,
                       onChanged: (value) => settings.setDataSaverMode(value),
-                    ),
-                    const _SectionDivider(),
-                    _SettingSwitchRow(
-                      title: 'Priorizar backend para reproducción',
-                      subtitle:
-                          'Fuerza la reproducción usando únicamente el backend',
-                      value: settings.backendOnlyPlayback,
-                      onChanged: (value) =>
-                          settings.setBackendOnlyPlayback(value),
                     ),
                     const _SectionDivider(),
                     _SettingSwitchRow(

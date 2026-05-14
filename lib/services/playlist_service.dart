@@ -1,14 +1,47 @@
+import 'dart:async';
+
 import 'package:hive/hive.dart';
 import 'package:myapp/models/playlist.dart';
 import 'package:myapp/models/video_history.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class PlaylistService {
   static const String _boxName = 'playlists';
+  static const String _syncMetaBoxName = 'playlist_sync_meta';
+  static const String _cloudOwnerIdKey = 'cloud_owner_id';
+  static const String _cloudPlaylistsTable = 'user_playlists';
+  static const String _cloudPlaylistItemsTable = 'user_playlist_items';
   static const String favoritesPlaylistName = 'Favoritos';
   static const String _legacyFavoritesPlaylistName = 'Videos favoritos';
+  bool _startupSyncQueued = false;
 
   Future<Box<Playlist>> get _box async =>
       await Hive.openBox<Playlist>(_boxName);
+  Future<Box<dynamic>> get _syncMetaBox async =>
+      await Hive.openBox<dynamic>(_syncMetaBoxName);
+
+  SupabaseClient? get _db {
+    try {
+      return Supabase.instance.client;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void startAutoSync() {
+    if (_startupSyncQueued) return;
+    _startupSyncQueued = true;
+    unawaited(_runStartupSync());
+  }
+
+  Future<void> _runStartupSync() async {
+    try {
+      await getPlaylists();
+      await _syncLocalPlaylistsToCloudBestEffort();
+    } catch (_) {
+      // Best effort.
+    }
+  }
 
   static bool isFavoritesPlaylistName(String name) {
     final normalized = name.trim().toLowerCase();
@@ -52,6 +85,7 @@ class PlaylistService {
         description: cleanDescription.isEmpty ? null : cleanDescription,
       ),
     );
+    await _syncLocalPlaylistsToCloudBestEffort();
   }
 
   Future<void> addVideoToPlaylist(
@@ -97,6 +131,7 @@ class PlaylistService {
           description: playlist.description,
         );
         await box.put(playlistKey, updated);
+        await _syncLocalPlaylistsToCloudBestEffort();
       }
     }
   }
@@ -151,6 +186,7 @@ class PlaylistService {
         description: playlist.description,
       );
       await box.put(playlistKey, updated);
+      await _syncLocalPlaylistsToCloudBestEffort();
     }
     return added;
   }
@@ -182,6 +218,7 @@ class PlaylistService {
       description: playlist.description,
     );
     await box.put(playlistKey, updated);
+    await _syncLocalPlaylistsToCloudBestEffort();
   }
 
   Future<void> deletePlaylist(String playlistName) async {
@@ -202,6 +239,7 @@ class PlaylistService {
       throw Exception('No se encontró la playlist');
     }
     await box.delete(playlistKey);
+    await _syncLocalPlaylistsToCloudBestEffort();
   }
 
   Future<Playlist> updatePlaylistDetails({
@@ -260,6 +298,7 @@ class PlaylistService {
       description: cleanDescription.isEmpty ? null : cleanDescription,
     );
     await box.put(targetKey, updated);
+    await _syncLocalPlaylistsToCloudBestEffort();
     return updated;
   }
 
@@ -328,5 +367,150 @@ class PlaylistService {
       ),
     );
     await box.delete(legacyKey);
+  }
+
+  Future<void> setCloudOwnerId(String? ownerId) async {
+    final box = await _syncMetaBox;
+    final clean = (ownerId ?? '').trim();
+    if (clean.isEmpty) {
+      await box.delete(_cloudOwnerIdKey);
+      return;
+    }
+    await box.put(_cloudOwnerIdKey, clean);
+  }
+
+  Future<String?> _effectiveCloudOwnerId() async {
+    final meta = await _syncMetaBox;
+    final explicit = (meta.get(_cloudOwnerIdKey) as String?)?.trim();
+    if ((explicit ?? '').isNotEmpty) return explicit;
+    final db = _db;
+    return db?.auth.currentUser?.id;
+  }
+
+  Future<void> replaceLocalPlaylistsFromCloud({
+    required String ownerId,
+  }) async {
+    final db = _db;
+    if (db == null) return;
+    final cleanOwner = ownerId.trim();
+    if (cleanOwner.isEmpty) return;
+
+    final rows = await db
+        .from(_cloudPlaylistsTable)
+        .select('id, name, cover_url, description, is_favorites, updated_at')
+        .eq('owner_id', cleanOwner)
+        .order('updated_at', ascending: true);
+    final cloudPlaylists = (rows as List)
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList(growable: false);
+
+    final playlistIds = cloudPlaylists
+        .map((e) => (e['id'] ?? '').toString().trim())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+    final itemsByPlaylistId = <String, List<Map<String, dynamic>>>{};
+    if (playlistIds.isNotEmpty) {
+      final itemRows = await db
+          .from(_cloudPlaylistItemsTable)
+          .select('playlist_id, position, video_id, title, artist')
+          .inFilter('playlist_id', playlistIds)
+          .order('position', ascending: true);
+      for (final raw in (itemRows as List)) {
+        final map = Map<String, dynamic>.from(raw);
+        final playlistId = (map['playlist_id'] ?? '').toString().trim();
+        if (playlistId.isEmpty) continue;
+        itemsByPlaylistId.putIfAbsent(playlistId, () => <Map<String, dynamic>>[]);
+        itemsByPlaylistId[playlistId]!.add(map);
+      }
+    }
+
+    final box = await _box;
+    await box.clear();
+    for (final p in cloudPlaylists) {
+      final playlistId = (p['id'] ?? '').toString().trim();
+      final name = (p['name'] ?? '').toString().trim();
+      if (name.isEmpty) continue;
+      final itemRows = itemsByPlaylistId[playlistId] ?? const <Map<String, dynamic>>[];
+      final videos = itemRows.map((row) {
+        final videoId = (row['video_id'] ?? '').toString();
+        final thumbUrl = videoId.trim().isEmpty
+            ? ''
+            : 'https://i.ytimg.com/vi/$videoId/maxresdefault.jpg';
+        return VideoHistory(
+          videoId: videoId,
+          title: (row['title'] ?? '').toString(),
+          thumbnailUrl: thumbUrl,
+          channelTitle: (row['artist'] ?? '').toString(),
+          watchedAt: DateTime.now(),
+        );
+      }).where((v) => v.videoId.trim().isNotEmpty).toList(growable: false);
+
+      await box.add(
+        Playlist(
+          name: _normalizePlaylistName(name),
+          videos: videos,
+          coverUrl: (p['cover_url'] as String?)?.trim().isEmpty == true
+              ? null
+              : p['cover_url'] as String?,
+          description: (p['description'] as String?)?.trim().isEmpty == true
+              ? null
+              : p['description'] as String?,
+        ),
+      );
+    }
+
+    await getPlaylists();
+    await setCloudOwnerId(cleanOwner);
+  }
+
+  Future<void> _syncLocalPlaylistsToCloudBestEffort() async {
+    final db = _db;
+    if (db == null) return;
+    final ownerId = await _effectiveCloudOwnerId();
+    final cleanOwner = (ownerId ?? '').trim();
+    if (cleanOwner.isEmpty) return;
+
+    try {
+      final box = await _box;
+      final local = box.values.toList(growable: false);
+
+      await db.from(_cloudPlaylistsTable).delete().eq('owner_id', cleanOwner);
+
+      for (final playlist in local) {
+        final inserted = await db
+            .from(_cloudPlaylistsTable)
+            .insert({
+              'owner_id': cleanOwner,
+              'name': playlist.name,
+              'cover_url': (playlist.coverUrl ?? '').trim().isEmpty
+                  ? null
+                  : playlist.coverUrl!.trim(),
+              'description': (playlist.description ?? '').trim().isEmpty
+                  ? null
+                  : playlist.description!.trim(),
+              'is_favorites': isFavoritesPlaylistName(playlist.name),
+              'updated_at': DateTime.now().toUtc().toIso8601String(),
+            })
+            .select('id')
+            .single();
+        final playlistId = (inserted['id'] ?? '').toString().trim();
+        if (playlistId.isEmpty) continue;
+        if (playlist.videos.isEmpty) continue;
+        final itemPayload = <Map<String, dynamic>>[];
+        for (var i = 0; i < playlist.videos.length; i++) {
+          final video = playlist.videos[i];
+          itemPayload.add({
+            'playlist_id': playlistId,
+            'position': i,
+            'video_id': video.videoId,
+            'title': video.title,
+            'artist': video.channelTitle,
+          });
+        }
+        await db.from(_cloudPlaylistItemsTable).insert(itemPayload);
+      }
+    } catch (_) {
+      // Best effort: no bloqueamos la app por fallas de red/RLS.
+    }
   }
 }

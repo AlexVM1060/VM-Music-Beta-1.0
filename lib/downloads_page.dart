@@ -15,6 +15,8 @@ import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/library_albums_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/app_back_circle_button.dart';
+import 'package:myapp/widgets/favorites_star_badge.dart';
 import 'package:myapp/widgets/ios_notice.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:provider/provider.dart';
@@ -76,7 +78,10 @@ class _DownloadsPageState extends State<DownloadsPage> {
     });
     final raw = box.get(_pinnedPlaylistsKey);
     final names = raw is List
-        ? raw.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList()
+        ? raw
+              .map((e) => e.toString().trim())
+              .where((e) => e.isNotEmpty)
+              .toList()
         : <String>[];
     if (!mounted) return;
     setState(() {
@@ -87,7 +92,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
   Future<void> _pinPlaylistShortcut(Playlist playlist) async {
     final name = playlist.name.trim();
     if (name.isEmpty) return;
-    if (_pinnedPlaylistNames.any((p) => p.toLowerCase() == name.toLowerCase())) {
+    if (_pinnedPlaylistNames.any(
+      (p) => p.toLowerCase() == name.toLowerCase(),
+    )) {
       return;
     }
     final updated = <String>[name, ..._pinnedPlaylistNames];
@@ -320,61 +327,63 @@ class _DownloadsPageState extends State<DownloadsPage> {
           if (_pinnedPlaylistNames.isNotEmpty)
             _buildPinnedPlaylistsStrip(byName: byName, accent: accent),
           ...sections.map((section) {
-        final isDark = Theme.of(context).brightness == Brightness.dark;
-        final cardColor = isDark
-            ? Colors.black
-            : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
-                context,
-              );
-        final border = isDark
-            ? Colors.white.withValues(alpha: 0.12)
-            : CupertinoColors.separator
-                  .resolveFrom(context)
-                  .withValues(alpha: 0.12);
+            final isDark = Theme.of(context).brightness == Brightness.dark;
+            final cardColor = isDark
+                ? Colors.black
+                : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
+                    context,
+                  );
+            final border = isDark
+                ? Colors.white.withValues(alpha: 0.12)
+                : CupertinoColors.separator
+                      .resolveFrom(context)
+                      .withValues(alpha: 0.12);
 
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: Material(
-            color: cardColor,
-            child: InkWell(
+            return ClipRRect(
               borderRadius: BorderRadius.circular(14),
-              onTap: () {
-                _openLibrarySection(section.section);
-              },
-              child: Container(
-                decoration: BoxDecoration(
+              child: Material(
+                color: cardColor,
+                child: InkWell(
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: border, width: 0.5),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 14,
-                ),
-                child: Row(
-                  children: [
-                    Icon(section.icon, size: 22, color: accent),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        section.title,
-                        style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: CupertinoColors.label.resolveFrom(context),
-                            ),
-                      ),
+                  onTap: () {
+                    _openLibrarySection(section.section);
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: border, width: 0.5),
                     ),
-                    Icon(
-                      CupertinoIcons.chevron_forward,
-                      size: 16,
-                      color: accent,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 14,
                     ),
-                  ],
+                    child: Row(
+                      children: [
+                        Icon(section.icon, size: 22, color: accent),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            section.title,
+                            style: Theme.of(context).textTheme.titleMedium
+                                ?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  color: CupertinoColors.label.resolveFrom(
+                                    context,
+                                  ),
+                                ),
+                          ),
+                        ),
+                        Icon(
+                          CupertinoIcons.chevron_forward,
+                          size: 16,
+                          color: accent,
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-            ),
-          ),
-        );
+            );
           }),
         ];
 
@@ -400,7 +409,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
         : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(context);
     final border = isDark
         ? Colors.white.withValues(alpha: 0.12)
-        : CupertinoColors.separator.resolveFrom(context).withValues(alpha: 0.12);
+        : CupertinoColors.separator
+              .resolveFrom(context)
+              .withValues(alpha: 0.12);
 
     final isFavorites = playlist != null
         ? PlaylistService.isFavoritesPlaylistName(playlist.name)
@@ -517,7 +528,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
                     style: TextStyle(
                       fontFamily: '.SF Pro Text',
                       fontSize: 10,
-                      color: CupertinoColors.secondaryLabel.resolveFrom(context),
+                      color: CupertinoColors.secondaryLabel.resolveFrom(
+                        context,
+                      ),
                     ),
                   ),
                 ],
@@ -544,8 +557,8 @@ class _DownloadsPageState extends State<DownloadsPage> {
     final gridHeight = rowCount == 0
         ? 0.0
         : (rowCount * cardHeight) +
-            ((rowCount - 1) * spacing) +
-            bottomSafetyGap;
+              ((rowCount - 1) * spacing) +
+              bottomSafetyGap;
     return LayoutBuilder(
       builder: (context, constraints) {
         final available = constraints.maxWidth - (horizontalPadding * 2);
@@ -645,7 +658,10 @@ class _DownloadsPageState extends State<DownloadsPage> {
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
-        _buildSectionHeader(title, topPadding: _albumsHeaderTopPadding(context)),
+        _buildSectionHeader(
+          title,
+          topPadding: _albumsHeaderTopPadding(context),
+        ),
         const SizedBox(height: 120),
         const Center(child: Text('Disponible próximamente.')),
         SizedBox(height: bottomReserve),
@@ -696,9 +712,8 @@ class _DownloadsPageState extends State<DownloadsPage> {
               final isDark = Theme.of(context).brightness == Brightness.dark;
               final cardColor = isDark
                   ? Colors.black
-                  : CupertinoColors.secondarySystemGroupedBackground.resolveFrom(
-                      context,
-                    );
+                  : CupertinoColors.secondarySystemGroupedBackground
+                        .resolveFrom(context);
               final border = isDark
                   ? Colors.white.withValues(alpha: 0.12)
                   : CupertinoColors.separator
@@ -749,19 +764,19 @@ class _DownloadsPageState extends State<DownloadsPage> {
                                   ),
                                 )
                               : Container(
-                                width: 56,
-                                height: 56,
-                                decoration: BoxDecoration(
-                                  color: CupertinoColors.tertiarySystemFill
-                                      .resolveFrom(context),
-                                  borderRadius: BorderRadius.circular(10),
+                                  width: 56,
+                                  height: 56,
+                                  decoration: BoxDecoration(
+                                    color: CupertinoColors.tertiarySystemFill
+                                        .resolveFrom(context),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: const Icon(
+                                    CupertinoIcons.music_albums,
+                                    size: 20,
+                                  ),
                                 ),
-                                alignment: Alignment.center,
-                                child: const Icon(
-                                  CupertinoIcons.music_albums,
-                                  size: 20,
-                                ),
-                              ),
                           const SizedBox(width: 12),
                           Expanded(
                             child: Column(
@@ -842,7 +857,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
             future: downloadService.getDownloadedVideos(),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CupertinoActivityIndicator(radius: 14));
+                return const Center(
+                  child: CupertinoActivityIndicator(radius: 14),
+                );
               }
 
               final songs = snapshot.data ?? const <DownloadedVideo>[];
@@ -876,15 +893,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
       padding: EdgeInsets.fromLTRB(8, topPadding, 8, 0),
       child: Row(
         children: [
-          CupertinoButton(
-            padding: EdgeInsets.zero,
-            minimumSize: const Size(34, 34),
-            onPressed: _goBackToLibraryList,
-            child: Icon(
-              CupertinoIcons.chevron_left,
-              color: themedLabel,
-            ),
-          ),
+          AppBackCircleButton(onPressed: _goBackToLibraryList),
           const SizedBox(width: 4),
           Text(
             title,
@@ -1100,6 +1109,13 @@ class _DownloadsPageState extends State<DownloadsPage> {
                         ),
                       ),
                       const SizedBox(width: 8),
+                      SizedBox(
+                        width: 14,
+                        child: Center(
+                          child: FavoritesStarBadge(videoId: song.videoId),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
                       IconButton(
                         icon: const Icon(
                           CupertinoIcons.delete,
@@ -1152,7 +1168,8 @@ class _PinnedShortcutDraggableCard extends StatefulWidget {
       _PinnedShortcutDraggableCardState();
 }
 
-class _PinnedShortcutDraggableCardState extends State<_PinnedShortcutDraggableCard> {
+class _PinnedShortcutDraggableCardState
+    extends State<_PinnedShortcutDraggableCard> {
   bool _isDragging = false;
   double _jigglePhase = -1.0;
   Timer? _jiggleTimer;
@@ -1168,15 +1185,12 @@ class _PinnedShortcutDraggableCardState extends State<_PinnedShortcutDraggableCa
 
   void _startJiggle() {
     _jiggleTimer?.cancel();
-    _jiggleTimer = Timer.periodic(
-      const Duration(milliseconds: 110),
-      (timer) {
+    _jiggleTimer = Timer.periodic(const Duration(milliseconds: 110), (timer) {
       if (!mounted || !_isDragging) return;
       setState(() {
         _jigglePhase = _jigglePhase > 0 ? -1.0 : 1.0;
       });
-      },
-    );
+    });
   }
 
   void _stopJiggle() {
@@ -1198,8 +1212,7 @@ class _PinnedShortcutDraggableCardState extends State<_PinnedShortcutDraggableCa
   Widget build(BuildContext context) {
     return DragTarget<String>(
       onWillAcceptWithDetails: (details) =>
-          details.data.trim().isNotEmpty &&
-          details.data != widget.playlistName,
+          details.data.trim().isNotEmpty && details.data != widget.playlistName,
       onMove: (details) {
         final from = details.data;
         final to = widget.playlistName;

@@ -11,6 +11,7 @@ class ProfileService extends ChangeNotifier {
   static const String _usernameKey = 'username';
   static const String _bioKey = 'bio';
   static const String _photoPathKey = 'photo_path';
+  static const String _photoUrlKey = 'photo_url';
   static const String _frameUrlKey = 'frame_url';
   static const String _followersKey = 'followers_count';
   static const String _isPublicProfileKey = 'is_public_profile';
@@ -22,6 +23,7 @@ class ProfileService extends ChangeNotifier {
   String _username = '@usuario';
   String _bio = 'Escribe una biografia para tu perfil.';
   String? _photoPath;
+  String? _photoUrl;
   String? _frameUrl;
   int _followersCount = 0;
   bool _isPublicProfile = false;
@@ -31,6 +33,7 @@ class ProfileService extends ChangeNotifier {
   String get username => _username;
   String get bio => _bio;
   String? get photoPath => _photoPath;
+  String? get photoUrl => _photoUrl;
   String? get frameUrl => _frameUrl;
   int get followersCount => _followersCount;
   bool get isPublicProfile => _isPublicProfile;
@@ -49,6 +52,10 @@ class ProfileService extends ChangeNotifier {
         : _bio;
     final rawPhoto = (_box!.get(_photoPathKey) as String?)?.trim();
     _photoPath = await _resolveStoredPhotoPath(rawPhoto);
+    final remotePhoto = (_box!.get(_photoUrlKey) as String?)?.trim();
+    _photoUrl = (remotePhoto == null || remotePhoto.isEmpty)
+        ? null
+        : remotePhoto;
     if ((_photoPath ?? '').isNotEmpty) {
       final canonicalToken = await _toStoredPhotoToken(_photoPath);
       if (canonicalToken != null && canonicalToken != rawPhoto) {
@@ -103,7 +110,52 @@ class ProfileService extends ChangeNotifier {
       _photoPath = await _resolveStoredPhotoPath(clean);
       final token = await _toStoredPhotoToken(clean);
       await box.put(_photoPathKey, token ?? clean);
+      _photoUrl = null;
+      await box.delete(_photoUrlKey);
     }
+    notifyListeners();
+  }
+
+  Future<void> applyRemoteProfile({
+    required String name,
+    required String username,
+    required String bio,
+    required String? photoUrl,
+    required String? frameUrl,
+  }) async {
+    final box = _box;
+    if (box == null) return;
+
+    final cleanName = name.trim();
+    final cleanUsername = username.trim();
+    final cleanBio = bio.trim();
+    final cleanPhotoUrl = (photoUrl ?? '').trim();
+    final cleanFrameUrl = (frameUrl ?? '').trim();
+
+    _name = cleanName.isEmpty ? _name : cleanName;
+    _username = cleanUsername.isEmpty
+        ? _username
+        : (cleanUsername.startsWith('@') ? cleanUsername : '@$cleanUsername');
+    _bio = cleanBio.isEmpty ? 'Escribe una biografia para tu perfil.' : cleanBio;
+    _frameUrl = cleanFrameUrl.isEmpty ? null : cleanFrameUrl;
+    _photoPath = null;
+    _photoUrl = cleanPhotoUrl.isEmpty ? null : cleanPhotoUrl;
+
+    await box.put(_nameKey, _name);
+    await box.put(_usernameKey, _username);
+    await box.put(_bioKey, _bio);
+    await box.delete(_photoPathKey);
+    if (_photoUrl == null) {
+      await box.delete(_photoUrlKey);
+    } else {
+      await box.put(_photoUrlKey, _photoUrl);
+    }
+    if (_frameUrl == null) {
+      await box.delete(_frameUrlKey);
+    } else {
+      await box.put(_frameUrlKey, _frameUrl);
+    }
+
     notifyListeners();
   }
 
@@ -169,6 +221,28 @@ class ProfileService extends ChangeNotifier {
     if (box == null) return;
     _isPublicProfile = enabled;
     await box.put(_isPublicProfileKey, enabled);
+    notifyListeners();
+  }
+
+  Future<void> resetToDefaults() async {
+    final box = _box;
+    if (box == null) return;
+    _name = 'Tu nombre';
+    _username = '@usuario';
+    _bio = 'Escribe una biografia para tu perfil.';
+    _photoPath = null;
+    _photoUrl = null;
+    _frameUrl = null;
+    _followersCount = 0;
+    _isPublicProfile = false;
+    await box.delete(_nameKey);
+    await box.delete(_usernameKey);
+    await box.delete(_bioKey);
+    await box.delete(_photoPathKey);
+    await box.delete(_photoUrlKey);
+    await box.delete(_frameUrlKey);
+    await box.delete(_followersKey);
+    await box.delete(_isPublicProfileKey);
     notifyListeners();
   }
 }

@@ -23,6 +23,8 @@ import 'package:myapp/utils/artwork_subject_cutout_service.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/ios_notice.dart';
+import 'package:myapp/widgets/app_back_circle_button.dart';
+import 'package:myapp/widgets/favorites_star_badge.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
@@ -37,6 +39,7 @@ enum _SearchFilterMode { music, podcast, videos }
 
 enum _SearchVideoContextAction {
   addToFavorites,
+  removeFromFavorites,
   addToPlaylist,
   addNext,
   addToEnd,
@@ -2782,6 +2785,10 @@ class _SearchPageState extends State<SearchPage>
       await _addVideoToPlaylist(video, PlaylistService.favoritesPlaylistName);
       return;
     }
+    if (action == _SearchVideoContextAction.removeFromFavorites) {
+      await _removeVideoFromFavorites(video.id.value);
+      return;
+    }
     if (action == _SearchVideoContextAction.addToPlaylist) {
       await _showPlaylistPicker(video);
       return;
@@ -3019,6 +3026,22 @@ class _SearchPageState extends State<SearchPage>
       icon: PlaylistService.isFavoritesPlaylistName(playlistName)
           ? CupertinoIcons.star_fill
           : CupertinoIcons.check_mark_circled_solid,
+    );
+  }
+
+  Future<void> _removeVideoFromFavorites(String videoId) async {
+    final cleanId = videoId.trim();
+    if (cleanId.isEmpty) return;
+    final playlistService = context.read<PlaylistService>();
+    await playlistService.removeVideoFromPlaylist(
+      PlaylistService.favoritesPlaylistName,
+      cleanId,
+    );
+    if (!mounted) return;
+    _showIosTopToast(
+      context,
+      message: 'Eliminada de Favoritos',
+      icon: CupertinoIcons.star_lefthalf_fill,
     );
   }
 
@@ -4025,6 +4048,10 @@ class _SearchPageState extends State<SearchPage>
     final controlsBottomOffset = keyboardInset > 0
         ? math.max(keyboardInset, bottomOverlayReserve)
         : bottomOverlayReserve;
+    const searchControlsClearance = 20.0;
+    final contentBottomPadding =
+        (controlsBottomOffset + searchControlsClearance) -
+        bottomOverlayReserve;
     const controlsBottomSpacing = 12.0;
 
     return MediaQuery(
@@ -4038,7 +4065,7 @@ class _SearchPageState extends State<SearchPage>
               Padding(
                 padding: const EdgeInsets.only(top: 16),
                 child: _buildBody(
-                  additionalBottomPadding: -bottomOverlayReserve,
+                  additionalBottomPadding: contentBottomPadding,
                 ),
               ),
               Positioned(
@@ -4068,8 +4095,16 @@ class _SearchPageState extends State<SearchPage>
   }
 
   Widget _buildSearchBar() {
-    final borderRadius = BorderRadius.circular(18);
+    final borderRadius = BorderRadius.circular(25);
     final focused = _searchFocusNode.hasFocus;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final searchSurfaceColor = isDark
+        ? const Color(0xFF111317).withValues(alpha: 0.50)
+        : const Color(0xFFE5E7EB).withValues(alpha: 0.90);
+    final searchForegroundColor = isDark
+        ? Colors.white
+        : const Color(0xFF1F2937);
+    const searchBarHeight = 50.0;
     final appInForeground = context.select<AppLifecycleService?, bool>(
       (s) => s?.isForeground ?? true,
     );
@@ -4089,71 +4124,178 @@ class _SearchPageState extends State<SearchPage>
     }
 
     Widget buildSearchFieldShell(double rotation) {
+      final shellGradient = shouldUseLightweightUi
+          ? const LinearGradient(
+              colors: [Color(0xFFFF4F7A), Color(0xFFFF8A00)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            )
+          : SweepGradient(
+              transform: GradientRotation(rotation),
+              colors: const [
+                Color(0xFFFF004D),
+                Color(0xFFFF7A00),
+                Color(0xFF7A5CFF),
+                Color(0xFFFF004D),
+              ],
+            );
       return Container(
-        height: 42,
-        padding: const EdgeInsets.all(1.25),
+        height: searchBarHeight,
         decoration: BoxDecoration(
           borderRadius: borderRadius,
-          gradient: shouldUseLightweightUi
-              ? const LinearGradient(
-                  colors: [Color(0xFFFF4F7A), Color(0xFFFF8A00)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                )
-              : SweepGradient(
-                  transform: GradientRotation(rotation),
-                  colors: const [
-                    Color(0xFFFF004D),
-                    Color(0xFFFF7A00),
-                    Color(0xFF7A5CFF),
-                    Color(0xFFFF004D),
-                  ],
-                ),
           boxShadow: [
             BoxShadow(
-              color: const Color(
-                0xFF581A95,
-              ).withValues(alpha: focused ? 0.34 : 0.14),
+              color: isDark
+                  ? Colors.black.withValues(alpha: focused ? 0.34 : 0.18)
+                  : Colors.black.withValues(alpha: focused ? 0.10 : 0.06),
               blurRadius: focused ? (shouldUseLightweightUi ? 14 : 20) : 10,
               spreadRadius: focused ? 0.9 : 0,
               offset: const Offset(0, 2),
             ),
             BoxShadow(
-              color: const Color(
-                0xFFFF2A6D,
-              ).withValues(alpha: focused ? 0.24 : 0.08),
+              color: isDark
+                  ? const Color(
+                      0xFF6B7280,
+                    ).withValues(alpha: focused ? 0.18 : 0.08)
+                  : Colors.black.withValues(alpha: focused ? 0.07 : 0.04),
               blurRadius: focused ? (shouldUseLightweightUi ? 16 : 26) : 12,
               spreadRadius: focused ? 1.2 : 0,
               offset: const Offset(0, 5),
             ),
           ],
         ),
-        child: ClipRRect(
-          borderRadius: borderRadius,
-          child: shouldUseLightweightUi
-              ? _buildSearchFieldContent(borderRadius, focused)
-              : _AdaptiveBackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                  child: _buildSearchFieldContent(borderRadius, focused),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: ClipRRect(
+                borderRadius: borderRadius,
+                child: Padding(
+                  padding: const EdgeInsets.all(1.25),
+                  child: _buildSearchFieldContent(
+                    borderRadius,
+                    focused,
+                    searchSurfaceColor,
+                  ),
                 ),
+              ),
+            ),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: _GradientOutlinePainter(
+                    gradient: shellGradient,
+                    radius: 25,
+                    strokeWidth: 1.25,
+                  ),
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
 
-    if (shouldUseLightweightUi) {
-      return buildSearchFieldShell(0);
-    }
+    final searchField = shouldUseLightweightUi
+        ? buildSearchFieldShell(0)
+        : AnimatedBuilder(
+            animation: glow,
+            builder: (context, _) =>
+                buildSearchFieldShell(glow.value * math.pi * 2),
+          );
 
-    return AnimatedBuilder(
-      animation: glow,
-      builder: (context, _) => buildSearchFieldShell(glow.value * math.pi * 2),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const closeButtonSize = searchBarHeight;
+        const closeButtonGap = 10.0;
+        final fullWidth = constraints.maxWidth;
+        final targetFieldWidth = focused
+            ? math.max(0.0, fullWidth - closeButtonSize - closeButtonGap)
+            : fullWidth;
+
+        return Row(
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 240),
+              curve: Curves.easeOutCubic,
+              width: targetFieldWidth,
+              child: searchField,
+            ),
+            ClipRect(
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 240),
+                curve: Curves.easeOutCubic,
+                width: focused ? (closeButtonSize + closeButtonGap) : 0,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Transform.translate(
+                    offset: Offset(focused ? 0 : -14, 0),
+                    child: Opacity(
+                      opacity: focused ? 1 : 0,
+                      child: Padding(
+                        padding: const EdgeInsets.only(left: closeButtonGap),
+                        child: GestureDetector(
+                          onTap: () {
+                            _searchFocusNode.unfocus();
+                          },
+                          child: Container(
+                            width: closeButtonSize,
+                            height: closeButtonSize,
+                            padding: EdgeInsets.zero,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: searchSurfaceColor,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: isDark
+                                      ? Colors.black.withValues(alpha: 0.22)
+                                      : Colors.black.withValues(alpha: 0.08),
+                                  blurRadius: 16,
+                                  spreadRadius: 0.5,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            child: ClipOval(
+                              child: Container(
+                                color: searchSurfaceColor,
+                                child: Center(
+                                  child: Icon(
+                                    CupertinoIcons.xmark,
+                                    size: 25,
+                                    color: searchForegroundColor,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 
-  Widget _buildSearchFieldContent(BorderRadius borderRadius, bool focused) {
+  Widget _buildSearchFieldContent(
+    BorderRadius borderRadius,
+    bool focused,
+    Color searchSurfaceColor,
+  ) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final searchForegroundColor = isDark
+        ? Colors.white
+        : const Color(0xFF1F2937);
+    final hintColor = isDark
+        ? Colors.white.withValues(alpha: 0.58)
+        : const Color(0xFF6B7280);
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF0A0D14).withValues(alpha: 0.83),
+        color: searchSurfaceColor,
         borderRadius: borderRadius,
       ),
       child: TextField(
@@ -4161,32 +4303,40 @@ class _SearchPageState extends State<SearchPage>
         controller: _textController,
         textInputAction: TextInputAction.search,
         onSubmitted: (_) => _searchVideos(),
-        style: const TextStyle(
-          fontSize: 14,
+        style: TextStyle(
+          fontFamily: '.SF Pro Text',
+          fontSize: 17,
           fontWeight: FontWeight.w500,
-          color: Colors.white,
+          letterSpacing: -0.2,
+          height: 1.15,
+          color: searchForegroundColor,
         ),
         decoration: InputDecoration(
           hintText: 'Buscar en VM Music...',
           hintStyle: TextStyle(
-            color: Colors.white.withValues(alpha: 0.58),
-            fontSize: 13,
+            fontFamily: '.SF Pro Text',
+            color: hintColor,
+            fontSize: 16,
             fontWeight: FontWeight.w500,
+            letterSpacing: -0.18,
+            height: 1.15,
           ),
           prefixIcon: Align(
             widthFactor: 1,
             heightFactor: 1,
             child: Icon(
               CupertinoIcons.search,
-              size: 17,
+              size: 19,
               color: focused
                   ? const Color(0xFFFF7A9C)
-                  : Colors.white.withValues(alpha: 0.75),
+                  : searchForegroundColor.withValues(
+                      alpha: isDark ? 0.75 : 0.8,
+                    ),
             ),
           ),
           prefixIconConstraints: const BoxConstraints(
-            minWidth: 36,
-            minHeight: 42,
+            minWidth: 40,
+            minHeight: 50,
           ),
           suffixIcon: _textController.text.trim().isEmpty
               ? null
@@ -4199,16 +4349,16 @@ class _SearchPageState extends State<SearchPage>
                   child: Icon(
                     CupertinoIcons.xmark_circle_fill,
                     size: 17,
-                    color: Colors.white.withValues(alpha: 0.72),
+                    color: searchForegroundColor.withValues(alpha: 0.72),
                   ),
                 ),
           suffixIconConstraints: const BoxConstraints(
-            minWidth: 36,
-            minHeight: 42,
+            minWidth: 40,
+            minHeight: 50,
           ),
           isDense: true,
           contentPadding: const EdgeInsets.symmetric(
-            vertical: 12,
+            vertical: 14,
             horizontal: 4,
           ),
           border: InputBorder.none,
@@ -4906,6 +5056,13 @@ class _SearchHistoryTrackCard extends StatelessWidget {
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
+              SizedBox(
+                width: 14,
+                child: Center(
+                  child: FavoritesStarBadge(videoId: entry.videoId),
+                ),
+              ),
             ],
           ),
         ),
@@ -5110,8 +5267,7 @@ class SearchModeButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final borderRadius = BorderRadius.circular(12);
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final foregroundColor = isDark ? Colors.white : Colors.black;
+    const foregroundColor = Colors.white;
     return CupertinoButton(
       padding: EdgeInsets.zero,
       minimumSize: Size.zero,
@@ -5843,18 +5999,6 @@ class _VideoCard extends StatelessWidget {
         : CupertinoColors.separator
               .resolveFrom(context)
               .withValues(alpha: 0.14);
-    final horizontalPadding = 8.0;
-    final thumbSize = 56.0;
-    final thumbGap = 8.0;
-    final trailingSpace = effectiveIsDownloaded ? 300.0 : 0.0;
-    final safeMaxTextWidth =
-        MediaQuery.of(context).size.width -
-        (horizontalPadding * 2) -
-        thumbSize -
-        thumbGap -
-        trailingSpace -
-        34.0;
-
     final card = LayoutBuilder(
       builder: (context, constraints) => ClipRRect(
         borderRadius: borderRadius,
@@ -5897,53 +6041,43 @@ class _VideoCard extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  ConstrainedBox(
-                    constraints: BoxConstraints(
-                      maxWidth: safeMaxTextWidth.clamp(140.0, 520.0),
+                  (constraints.hasBoundedWidth
+                          ? Expanded(
+                              child: _VideoCardTextBlock(video: video),
+                            )
+                          : const SizedBox.shrink()),
+                  if (!constraints.hasBoundedWidth)
+                    SizedBox(
+                      width: 220,
+                      child: _VideoCardTextBlock(video: video),
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.center,
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 40,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
                       children: [
-                        Text(
-                          video.title,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                color: CupertinoColors.label.resolveFrom(
-                                  context,
-                                ),
-                                letterSpacing: -0.1,
-                              ),
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          cleanArtistName(video.author),
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w400,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
-                              ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        if (effectiveIsDownloaded)
+                          const Icon(
+                            CupertinoIcons.arrow_down_circle_fill,
+                            size: 14,
+                            color: CupertinoColors.systemGreen,
+                          )
+                        else
+                          const SizedBox(width: 14),
+                        const SizedBox(width: 6),
+                        SizedBox(
+                          width: 14,
+                          child: Center(
+                            child: FavoritesStarBadge(
+                              videoId: video.id.value,
+                              size: 14,
+                            ),
+                          ),
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(width: 150),
-                  if (effectiveIsDownloaded) ...[
-                    const Icon(
-                      CupertinoIcons.arrow_down_circle_fill,
-                      size: 14,
-                      color: CupertinoColors.systemGreen,
-                    ),
-                    const SizedBox(width: 8),
-                  ],
                 ],
               ),
             ),
@@ -5953,6 +6087,7 @@ class _VideoCard extends StatelessWidget {
     );
 
     final contextMenuWrapped = _SearchVideoContextMenu(
+      videoId: video.id.value,
       onContextAction: onContextAction,
       child: card,
     );
@@ -6072,21 +6207,28 @@ class _YouTubeStyleVideoCard extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            video.title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: CupertinoTheme.of(context)
-                                .textTheme
-                                .textStyle
-                                .copyWith(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                  color: CupertinoColors.label.resolveFrom(
-                                    context,
-                                  ),
-                                  letterSpacing: -0.1,
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  video.title,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: CupertinoTheme.of(context)
+                                      .textTheme
+                                      .textStyle
+                                      .copyWith(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w700,
+                                        color: CupertinoColors.label
+                                            .resolveFrom(context),
+                                        letterSpacing: -0.1,
+                                      ),
                                 ),
+                              ),
+                              const SizedBox(width: 6),
+                              FavoritesStarBadge(videoId: video.id.value),
+                            ],
                           ),
                           const SizedBox(height: 4),
                           Text(
@@ -6116,6 +6258,7 @@ class _YouTubeStyleVideoCard extends StatelessWidget {
     );
 
     final contextMenuWrapped = _SearchVideoContextMenu(
+      videoId: video.id.value,
       onContextAction: onContextAction,
       child: card,
     );
@@ -6159,11 +6302,51 @@ class _YouTubeStyleVideoCard extends StatelessWidget {
   }
 }
 
+class _VideoCardTextBlock extends StatelessWidget {
+  final Video video;
+
+  const _VideoCardTextBlock({required this.video});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Text(
+          video.title,
+          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: CupertinoColors.label.resolveFrom(context),
+            letterSpacing: -0.1,
+          ),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          cleanArtistName(video.author),
+          style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
+            fontSize: 11,
+            fontWeight: FontWeight.w400,
+            color: CupertinoColors.secondaryLabel.resolveFrom(context),
+          ),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+}
+
 class _SearchVideoContextMenu extends StatelessWidget {
+  final String videoId;
   final Future<void> Function(_SearchVideoContextAction action) onContextAction;
   final Widget child;
 
   const _SearchVideoContextMenu({
+    required this.videoId,
     required this.onContextAction,
     required this.child,
   });
@@ -6176,39 +6359,34 @@ class _SearchVideoContextMenu extends StatelessWidget {
 
     final actions = <Widget>[
       CupertinoContextMenuAction(
-        onPressed: () {
-          Navigator.of(context).pop();
-          unawaited(onContextAction(_SearchVideoContextAction.addToFavorites));
-        },
-        child: _ContextMenuActionContent(
-          label: 'Añadir a Favoritos',
-          icon: CupertinoIcons.star_fill,
-          textColor: textColor,
+        onPressed: () {},
+        child: _ContextQuickActionsRow(
+          videoId: videoId,
           iconColor: gray,
-        ),
-      ),
-      CupertinoContextMenuAction(
-        onPressed: () {
-          Navigator.of(context).pop();
-          unawaited(onContextAction(_SearchVideoContextAction.addToPlaylist));
-        },
-        child: _ContextMenuActionContent(
-          label: 'Añadir a playlist',
-          icon: CupertinoIcons.music_note_list,
-          textColor: textColor,
-          iconColor: gray,
-        ),
-      ),
-      CupertinoContextMenuAction(
-        onPressed: () {
-          Navigator.of(context).pop();
-          unawaited(onContextAction(_SearchVideoContextAction.addNext));
-        },
-        child: _ContextMenuActionContent(
-          label: 'Añadir como siguiente',
-          icon: CupertinoIcons.text_insert,
-          textColor: textColor,
-          iconColor: gray,
+          onFavorite: () {
+            Navigator.of(context).pop();
+            unawaited(
+              onContextAction(_SearchVideoContextAction.addToFavorites),
+            );
+          },
+          onUnfavorite: () {
+            Navigator.of(context).pop();
+            unawaited(
+              onContextAction(_SearchVideoContextAction.removeFromFavorites),
+            );
+          },
+          onQueueNext: () {
+            Navigator.of(context).pop();
+            unawaited(onContextAction(_SearchVideoContextAction.addNext));
+          },
+          onAddToPlaylist: () {
+            Navigator.of(context).pop();
+            unawaited(onContextAction(_SearchVideoContextAction.addToPlaylist));
+          },
+          onShare: () {
+            Navigator.of(context).pop();
+            unawaited(onContextAction(_SearchVideoContextAction.share));
+          },
         ),
       ),
       CupertinoContextMenuAction(
@@ -6219,18 +6397,6 @@ class _SearchVideoContextMenu extends StatelessWidget {
         child: _ContextMenuActionContent(
           label: 'Añadir al final',
           icon: CupertinoIcons.text_append,
-          textColor: textColor,
-          iconColor: gray,
-        ),
-      ),
-      CupertinoContextMenuAction(
-        onPressed: () {
-          Navigator.of(context).pop();
-          unawaited(onContextAction(_SearchVideoContextAction.share));
-        },
-        child: _ContextMenuActionContent(
-          label: 'Compartir',
-          icon: CupertinoIcons.square_arrow_up,
           textColor: textColor,
           iconColor: gray,
         ),
@@ -6314,6 +6480,139 @@ class _ContextMenuActionContent extends StatelessWidget {
         ),
         Icon(icon, color: iconColor, size: 20),
       ],
+    );
+  }
+}
+
+class _ContextQuickActionsRow extends StatefulWidget {
+  final String videoId;
+  final Color iconColor;
+  final VoidCallback onFavorite;
+  final VoidCallback onUnfavorite;
+  final VoidCallback onQueueNext;
+  final VoidCallback onAddToPlaylist;
+  final VoidCallback onShare;
+  const _ContextQuickActionsRow({
+    required this.videoId,
+    required this.iconColor,
+    required this.onFavorite,
+    required this.onUnfavorite,
+    required this.onQueueNext,
+    required this.onAddToPlaylist,
+    required this.onShare,
+  });
+
+  @override
+  State<_ContextQuickActionsRow> createState() =>
+      _ContextQuickActionsRowState();
+}
+
+class _ContextQuickActionsRowState extends State<_ContextQuickActionsRow> {
+  bool _isFavorite = false;
+  bool _isInAnyPlaylist = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadPlaylistMembershipFlags());
+  }
+
+  Future<void> _loadPlaylistMembershipFlags() async {
+    final cleanId = widget.videoId.trim();
+    if (cleanId.isEmpty) return;
+    try {
+      final playlistService = context.read<PlaylistService>();
+      final playlists = await playlistService.getPlaylists();
+      if (!mounted) return;
+
+      var isFavorite = false;
+      var isInAnyPlaylist = false;
+      for (final playlist in playlists) {
+        final containsVideo = playlist.videos.any((v) => v.videoId == cleanId);
+        if (!containsVideo) continue;
+        isInAnyPlaylist = true;
+        if (PlaylistService.isFavoritesPlaylistName(playlist.name)) {
+          isFavorite = true;
+        }
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _isFavorite = isFavorite;
+        _isInAnyPlaylist = isInAnyPlaylist;
+      });
+    } catch (_) {
+      // Best effort para estado visual del menú.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget quickButton({
+      required IconData icon,
+      required VoidCallback onTap,
+      String? semanticLabel,
+    }) {
+      return CupertinoButton(
+        padding: EdgeInsets.zero,
+        minimumSize: const Size(36, 36),
+        onPressed: onTap,
+        child: Icon(
+          icon,
+          size: 24,
+          color: widget.iconColor,
+          semanticLabel: semanticLabel,
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          quickButton(
+            icon: _isFavorite ? CupertinoIcons.star_fill : CupertinoIcons.star,
+            onTap: () {
+              final wasFavorite = _isFavorite;
+              setState(() {
+                _isFavorite = !wasFavorite;
+                if (!wasFavorite) {
+                  _isInAnyPlaylist = true;
+                }
+              });
+              if (wasFavorite) {
+                widget.onUnfavorite();
+              } else {
+                widget.onFavorite();
+              }
+            },
+            semanticLabel: 'Añadir a Favoritos',
+          ),
+          quickButton(
+            icon: CupertinoIcons.text_insert,
+            onTap: widget.onQueueNext,
+            semanticLabel: 'Añadir como siguiente',
+          ),
+          quickButton(
+            icon: _isInAnyPlaylist
+                ? CupertinoIcons.check_mark
+                : CupertinoIcons.plus,
+            onTap: () {
+              if (_isInAnyPlaylist) return;
+              widget.onAddToPlaylist();
+            },
+            semanticLabel: _isInAnyPlaylist
+                ? 'Ya está en playlist'
+                : 'Añadir a playlist',
+          ),
+          quickButton(
+            icon: CupertinoIcons.square_arrow_up,
+            onTap: widget.onShare,
+            semanticLabel: 'Compartir',
+          ),
+        ],
+      ),
     );
   }
 }
@@ -8314,18 +8613,25 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                                   ),
                                 ),
                                 const SizedBox(height: 10),
-                                Text(
-                                  video.title,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontFamily: '.SF Pro Text',
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700,
-                                    color: CupertinoColors.label.resolveFrom(
-                                      context,
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        video.title,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontFamily: '.SF Pro Text',
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w700,
+                                          color: CupertinoColors.label
+                                              .resolveFrom(context),
+                                        ),
+                                      ),
                                     ),
-                                  ),
+                                    const SizedBox(width: 6),
+                                    FavoritesStarBadge(videoId: video.id.value),
+                                  ],
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
@@ -8519,11 +8825,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
               padding: const EdgeInsets.fromLTRB(12, 0, 16, 10),
               child: Row(
                 children: [
-                  CupertinoButton(
-                    padding: EdgeInsets.zero,
-                    minimumSize: const Size(34, 34),
+                  AppBackCircleButton(
                     onPressed: _closeAllTopSongs,
-                    child: const Icon(CupertinoIcons.back),
+                    forceWhiteIcon: true,
                   ),
                   const SizedBox(width: 6),
                   Expanded(
@@ -8644,14 +8948,33 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
                     ],
                   ),
                 ),
-                if (isDownloaded) ...[
-                  const SizedBox(width: 8),
-                  const Icon(
-                    CupertinoIcons.arrow_down_circle_fill,
-                    size: 14,
-                    color: CupertinoColors.systemGreen,
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 40,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      if (isDownloaded)
+                        const Icon(
+                          CupertinoIcons.arrow_down_circle_fill,
+                          size: 14,
+                          color: CupertinoColors.systemGreen,
+                        )
+                      else
+                        const SizedBox(width: 14),
+                      const SizedBox(width: 6),
+                      SizedBox(
+                        width: 14,
+                        child: Center(
+                          child: FavoritesStarBadge(
+                            videoId: video.id.value,
+                            size: 14,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ],
             ),
           ),
@@ -8659,12 +8982,17 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       ),
     );
     final withContextMenu = _SearchVideoContextMenu(
+      videoId: video.id.value,
       onContextAction: (action) async {
         if (action == _SearchVideoContextAction.addToFavorites) {
           await _addVideoToPlaylist(
             video,
             PlaylistService.favoritesPlaylistName,
           );
+          return;
+        }
+        if (action == _SearchVideoContextAction.removeFromFavorites) {
+          await _removeVideoFromFavorites(video.id.value);
           return;
         }
         if (action == _SearchVideoContextAction.addToPlaylist) {
@@ -9043,6 +9371,22 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
     );
   }
 
+  Future<void> _removeVideoFromFavorites(String videoId) async {
+    final cleanId = videoId.trim();
+    if (cleanId.isEmpty) return;
+    final playlistService = context.read<PlaylistService>();
+    await playlistService.removeVideoFromPlaylist(
+      PlaylistService.favoritesPlaylistName,
+      cleanId,
+    );
+    if (!mounted) return;
+    _showIosTopToast(
+      context,
+      message: 'Eliminada de Favoritos',
+      icon: CupertinoIcons.star_lefthalf_fill,
+    );
+  }
+
   Future<void> _playRandomTrack() async {
     if (_videos.isEmpty) return;
     final randomIndex = math.Random().nextInt(_videos.length);
@@ -9228,6 +9572,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
       context,
       hasMiniPlayer: hasMiniPlayer,
     );
+    final adjustedBottomReserve = math.max(0.0, bottomReserve - 40);
     final content = _loading
         ? const SliverFillRemaining(
             hasScrollBody: false,
@@ -9252,7 +9597,7 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
               _buildTopSongsSection(context),
               _buildArtistAlbumsSection(context),
               _buildArtistVideosSection(context),
-              SizedBox(height: bottomReserve),
+              SizedBox(height: adjustedBottomReserve),
             ]),
           );
 
@@ -9272,11 +9617,9 @@ class _ChannelVideosPageState extends State<ChannelVideosPage> {
           Positioned(
             top: MediaQuery.of(context).padding.top + 2,
             left: 6,
-            child: CupertinoButton(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-              minimumSize: const Size(32, 32),
+            child: AppBackCircleButton(
               onPressed: widget.onBack,
-              child: const Icon(CupertinoIcons.back),
+              forceWhiteIcon: true,
             ),
           ),
       ],
@@ -10070,6 +10413,10 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       await _addVideoToPlaylist(video, PlaylistService.favoritesPlaylistName);
       return;
     }
+    if (action == _SearchVideoContextAction.removeFromFavorites) {
+      await _removeVideoFromFavorites(video.id.value);
+      return;
+    }
     if (action == _SearchVideoContextAction.addToPlaylist) {
       await _showPlaylistPicker(video);
       return;
@@ -10278,6 +10625,22 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       icon: PlaylistService.isFavoritesPlaylistName(playlistName)
           ? CupertinoIcons.star_fill
           : CupertinoIcons.check_mark_circled_solid,
+    );
+  }
+
+  Future<void> _removeVideoFromFavorites(String videoId) async {
+    final cleanId = videoId.trim();
+    if (cleanId.isEmpty) return;
+    final playlistService = context.read<PlaylistService>();
+    await playlistService.removeVideoFromPlaylist(
+      PlaylistService.favoritesPlaylistName,
+      cleanId,
+    );
+    if (!mounted) return;
+    _showIosTopToast(
+      context,
+      message: 'Eliminada de Favoritos',
+      icon: CupertinoIcons.star_lefthalf_fill,
     );
   }
 
@@ -10688,14 +11051,33 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (isDownloaded) ...[
-                            const Icon(
-                              CupertinoIcons.arrow_down_circle_fill,
-                              size: 16,
-                              color: CupertinoColors.systemGreen,
+                          SizedBox(
+                            width: 44,
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                if (isDownloaded)
+                                  const Icon(
+                                    CupertinoIcons.arrow_down_circle_fill,
+                                    size: 16,
+                                    color: CupertinoColors.systemGreen,
+                                  )
+                                else
+                                  const SizedBox(width: 16),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 16,
+                                  child: Center(
+                                    child: FavoritesStarBadge(
+                                      videoId: video.id.value,
+                                      size: 16,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(width: 8),
-                          ],
+                          ),
+                          const SizedBox(width: 8),
                           CupertinoButton(
                             padding: EdgeInsets.zero,
                             minimumSize: const Size(30, 30),
@@ -10723,21 +11105,55 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       enableHapticFeedback: true,
       actions: [
         CupertinoContextMenuAction(
-          onPressed: () {
-            Navigator.of(context).pop();
-            unawaited(
-              _handleAlbumTrackContextAction(
-                video,
-                _SearchVideoContextAction.addNext,
-              ),
-            );
-          },
-          child: const Row(
-            children: [
-              Expanded(child: Text('Añadir como siguiente')),
-              SizedBox(width: 16),
-              Icon(CupertinoIcons.text_insert, size: 20),
-            ],
+          onPressed: () {},
+          child: _ContextQuickActionsRow(
+            videoId: video.id.value,
+            iconColor: CupertinoColors.systemGrey.resolveFrom(context),
+            onFavorite: () {
+              Navigator.of(context).pop();
+              unawaited(
+                _handleAlbumTrackContextAction(
+                  video,
+                  _SearchVideoContextAction.addToFavorites,
+                ),
+              );
+            },
+            onUnfavorite: () {
+              Navigator.of(context).pop();
+              unawaited(
+                _handleAlbumTrackContextAction(
+                  video,
+                  _SearchVideoContextAction.removeFromFavorites,
+                ),
+              );
+            },
+            onQueueNext: () {
+              Navigator.of(context).pop();
+              unawaited(
+                _handleAlbumTrackContextAction(
+                  video,
+                  _SearchVideoContextAction.addNext,
+                ),
+              );
+            },
+            onAddToPlaylist: () {
+              Navigator.of(context).pop();
+              unawaited(
+                _handleAlbumTrackContextAction(
+                  video,
+                  _SearchVideoContextAction.addToPlaylist,
+                ),
+              );
+            },
+            onShare: () {
+              Navigator.of(context).pop();
+              unawaited(
+                _handleAlbumTrackContextAction(
+                  video,
+                  _SearchVideoContextAction.share,
+                ),
+              );
+            },
           ),
         ),
         CupertinoContextMenuAction(
@@ -10752,45 +11168,6 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
             );
           },
           child: const Text('Añadir al final'),
-        ),
-        CupertinoContextMenuAction(
-          trailingIcon: CupertinoIcons.star_fill,
-          onPressed: () {
-            Navigator.of(context).pop();
-            unawaited(
-              _handleAlbumTrackContextAction(
-                video,
-                _SearchVideoContextAction.addToFavorites,
-              ),
-            );
-          },
-          child: const Text('Añadir a Favoritos'),
-        ),
-        CupertinoContextMenuAction(
-          trailingIcon: CupertinoIcons.music_note_list,
-          onPressed: () {
-            Navigator.of(context).pop();
-            unawaited(
-              _handleAlbumTrackContextAction(
-                video,
-                _SearchVideoContextAction.addToPlaylist,
-              ),
-            );
-          },
-          child: const Text('Añadir a playlist'),
-        ),
-        CupertinoContextMenuAction(
-          trailingIcon: CupertinoIcons.square_arrow_up,
-          onPressed: () {
-            Navigator.of(context).pop();
-            unawaited(
-              _handleAlbumTrackContextAction(
-                video,
-                _SearchVideoContextAction.share,
-              ),
-            );
-          },
-          child: const Text('Compartir'),
         ),
       ],
       child: card,
@@ -10848,6 +11225,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
       context,
       hasMiniPlayer: hasMiniPlayer,
     );
+    final adjustedBottomReserve = math.max(0.0, bottomReserve - 61);
     final libraryAlbums =
         context.watch<LibraryAlbumsService?>()?.albums ??
         const <LibraryAlbum>[];
@@ -10874,7 +11252,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
                 padding: EdgeInsets.symmetric(vertical: 18),
                 child: Center(child: CupertinoActivityIndicator(radius: 14)),
               ),
-              SizedBox(height: bottomReserve),
+              SizedBox(height: adjustedBottomReserve),
             ]),
           )
         : _error
@@ -10927,7 +11305,7 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
                 );
               }
               if (index == _tracks.length + 1) {
-                return SizedBox(height: bottomReserve);
+                return SizedBox(height: adjustedBottomReserve);
               }
               final video = _tracks[index - 1];
               return Padding(
@@ -10952,19 +11330,15 @@ class _AlbumTracksPageState extends State<AlbumTracksPage>
             Positioned(
               top: MediaQuery.of(context).padding.top + 2,
               left: 6,
-              child: CupertinoButton(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-                minimumSize: const Size(32, 32),
+              child: AppBackCircleButton(
                 onPressed: _triggerBackFromAlbum,
-                child: const Icon(CupertinoIcons.back),
+                forceWhiteIcon: true,
               ),
             ),
           Positioned(
             top: MediaQuery.of(context).padding.top + 2,
             right: 6,
-            child: CupertinoButton(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-              minimumSize: const Size(32, 32),
+            child: AppCircleOutlineIconButton(
               onPressed: _tracks.isEmpty || isAlbumDownloadInProgress
                   ? null
                   : (allAlbumTracksDownloaded
@@ -11325,5 +11699,38 @@ class _AlbumAnimatedCoverState extends State<_AlbumAnimatedCover>
         ],
       ),
     );
+  }
+}
+
+class _GradientOutlinePainter extends CustomPainter {
+  final Gradient gradient;
+  final double radius;
+  final double strokeWidth;
+
+  const _GradientOutlinePainter({
+    required this.gradient,
+    required this.radius,
+    required this.strokeWidth,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final rrect = RRect.fromRectAndRadius(
+      rect.deflate(strokeWidth / 2),
+      Radius.circular(radius),
+    );
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..shader = gradient.createShader(rect);
+    canvas.drawRRect(rrect, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _GradientOutlinePainter oldDelegate) {
+    return oldDelegate.gradient != gradient ||
+        oldDelegate.radius != radius ||
+        oldDelegate.strokeWidth != strokeWidth;
   }
 }

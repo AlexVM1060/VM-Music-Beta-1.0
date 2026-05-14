@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:myapp/services/profile_service.dart';
@@ -86,6 +87,12 @@ class SocialService extends ChangeNotifier {
   bool _isReady = false;
   static const String _profilePhotosBucket = 'profile-photos';
   static const String _musicNoteReactionsTable = 'music_note_reactions';
+  static const String _rpcClaimSession = 'claim_profile_session';
+  static const String _rpcSyncClaimedProfile = 'sync_claimed_profile';
+  String? _activeProfileId;
+  String? _activeProfileSessionToken;
+  String? _activeProfileUsername;
+  String? _activeProfilePassword;
 
   bool get isReady => _isReady;
   SupabaseClient get _db {
@@ -132,21 +139,23 @@ class SocialService extends ChangeNotifier {
     required String currentArtist,
     required String? currentVideoId,
     required bool isPlaying,
+    String? profilePassword,
   }) async {
     await ensureReady();
-    final userId = myUserId;
-    if (userId == null) {
+    final authUserId = myUserId;
+    final targetUserId = _activeProfileId ?? authUserId;
+    if (targetUserId == null) {
       throw Exception('No fue posible identificar tu sesión.');
     }
 
     final photoUrl = await _uploadProfilePhotoIfAvailable(
-      userId: userId,
+      userId: targetUserId,
       localPhotoPath: profile.photoPath,
     );
 
     final username = profile.username.trim().replaceFirst('@', '');
-    await _db.from('users').upsert({
-      'id': userId,
+    final payload = <String, dynamic>{
+      'id': targetUserId,
       'name': profile.name.trim(),
       'username': username,
       'photo_url': photoUrl,
@@ -161,7 +170,74 @@ class SocialService extends ChangeNotifier {
           : currentVideoId!.trim(),
       'is_playing': isPlaying,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
-    });
+    };
+    final cleanPassword = (profilePassword ?? '').trim();
+    String? rotatedSessionToken;
+    if (cleanPassword.isNotEmpty) {
+      payload['password'] = cleanPassword;
+      final ownerId = authUserId;
+      if (ownerId != null) {
+        rotatedSessionToken = _newSessionToken();
+        payload['active_session_token'] = rotatedSessionToken;
+        payload['active_session_owner_id'] = ownerId;
+      }
+    }
+    if (_activeProfileId != null) {
+      // Para cuentas reclamadas (de otra persona), sincronizamos via RPC
+      // para evitar bloqueo por RLS al actualizar rows ajenos.
+      final authId = myUserId;
+      if (authId != null &&
+          _activeProfileId != authId &&
+          _activeProfileSessionToken != null) {
+        await _syncClaimedProfileViaRpc(
+          profileId: targetUserId,
+          sessionToken: _activeProfileSessionToken!,
+          payload: payload,
+        );
+        if (rotatedSessionToken != null) {
+          _activeProfileId = targetUserId;
+          _activeProfileSessionToken = rotatedSessionToken;
+        }
+        return;
+      }
+
+      Map<String, dynamic>? updated;
+      if (_activeProfileSessionToken != null) {
+        updated = await _db
+            .from('users')
+            .update(payload)
+            .eq('id', targetUserId)
+            .eq('active_session_token', _activeProfileSessionToken!)
+            .select('id')
+            .maybeSingle();
+      } else if ((_activeProfileUsername ?? '').isNotEmpty &&
+          (_activeProfilePassword ?? '').isNotEmpty) {
+        updated = await _db
+            .from('users')
+            .update(payload)
+            .eq('id', targetUserId)
+            .eq('username', _activeProfileUsername!)
+            .eq('password', _activeProfilePassword!)
+            .select('id')
+            .maybeSingle();
+      }
+      if (updated == null) {
+        _clearClaimedProfileSession();
+        throw Exception(
+          'Tu sesión de perfil fue cerrada porque la cuenta se abrió en otro dispositivo.',
+        );
+      }
+      if (rotatedSessionToken != null) {
+        _activeProfileId = targetUserId;
+        _activeProfileSessionToken = rotatedSessionToken;
+      }
+      return;
+    }
+    await _db.from('users').upsert(payload);
+    if (rotatedSessionToken != null) {
+      _activeProfileId = targetUserId;
+      _activeProfileSessionToken = rotatedSessionToken;
+    }
   }
 
   Future<void> syncNowPlaying({
@@ -172,12 +248,12 @@ class SocialService extends ChangeNotifier {
     required bool isPlaying,
   }) async {
     await ensureReady();
-    final userId = myUserId;
-    if (userId == null) return;
+    final authUserId = myUserId;
+    final targetUserId = _activeProfileId ?? authUserId;
+    if (targetUserId == null) return;
     final username = profile.username.trim().replaceFirst('@', '');
-
-    await _db.from('users').upsert({
-      'id': userId,
+    final payload = <String, dynamic>{
+      'id': targetUserId,
       'name': profile.name.trim(),
       'username': username,
       'frame_url': (profile.frameUrl ?? '').trim().isEmpty
@@ -191,7 +267,51 @@ class SocialService extends ChangeNotifier {
           : currentVideoId!.trim(),
       'is_playing': isPlaying,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
-    }, onConflict: 'id');
+    };
+
+    if (_activeProfileId != null) {
+      final authId = myUserId;
+      if (authId != null &&
+          _activeProfileId != authId &&
+          _activeProfileSessionToken != null) {
+        await _syncClaimedProfileViaRpc(
+          profileId: targetUserId,
+          sessionToken: _activeProfileSessionToken!,
+          payload: payload,
+        );
+        return;
+      }
+
+      Map<String, dynamic>? updated;
+      if (_activeProfileSessionToken != null) {
+        updated = await _db
+            .from('users')
+            .update(payload)
+            .eq('id', targetUserId)
+            .eq('active_session_token', _activeProfileSessionToken!)
+            .select('id')
+            .maybeSingle();
+      } else if ((_activeProfileUsername ?? '').isNotEmpty &&
+          (_activeProfilePassword ?? '').isNotEmpty) {
+        updated = await _db
+            .from('users')
+            .update(payload)
+            .eq('id', targetUserId)
+            .eq('username', _activeProfileUsername!)
+            .eq('password', _activeProfilePassword!)
+            .select('id')
+            .maybeSingle();
+      }
+      if (updated == null) {
+        _clearClaimedProfileSession();
+        throw Exception(
+          'Tu sesión de perfil fue cerrada porque la cuenta se abrió en otro dispositivo.',
+        );
+      }
+      return;
+    }
+
+    await _db.from('users').upsert(payload, onConflict: 'id');
   }
 
   Future<String?> _uploadProfilePhotoIfAvailable({
@@ -237,6 +357,146 @@ class SocialService extends ChangeNotifier {
         .map((e) => SocialUser.fromMap(Map<String, dynamic>.from(e)))
         .where((u) => u.id != myUserId)
         .toList();
+  }
+
+  Future<SocialUser?> loginWithUsernamePassword({
+    required String username,
+    required String password,
+  }) async {
+    await ensureReady();
+    final cleanUsername = username.trim().replaceFirst('@', '');
+    final cleanPassword = password.trim();
+    if (cleanUsername.isEmpty || cleanPassword.isEmpty) return null;
+
+    final rows = await _db
+        .from('users')
+        .select()
+        .eq('username', cleanUsername)
+        .eq('password', cleanPassword)
+        .limit(1);
+    final list = (rows as List)
+        .map((e) => SocialUser.fromMap(Map<String, dynamic>.from(e)))
+        .toList(growable: false);
+    if (list.isEmpty) return null;
+    final claimed = list.first;
+    final sessionToken = _newSessionToken();
+    final ownerId = myUserId;
+    if (ownerId == null) return null;
+    try {
+      final updated = await _claimProfileSessionViaRpc(
+        profileId: claimed.id,
+        username: cleanUsername,
+        password: cleanPassword,
+        sessionToken: sessionToken,
+        sessionOwnerId: ownerId,
+      );
+      if (updated == null) return null;
+      _activeProfileId = claimed.id;
+      _activeProfileSessionToken = sessionToken;
+      _activeProfileUsername = cleanUsername;
+      _activeProfilePassword = cleanPassword;
+      return SocialUser.fromMap(Map<String, dynamic>.from(updated));
+    } catch (_) {
+      // Fallback: permite login aunque la política RLS impida rotar token.
+      // En este modo no se aplica expulsión de sesión remota.
+      _activeProfileId = claimed.id;
+      _activeProfileSessionToken = null;
+      _activeProfileUsername = cleanUsername;
+      _activeProfilePassword = cleanPassword;
+      return claimed;
+    }
+  }
+
+  String _newSessionToken() {
+    final random = Random.secure();
+    final a = random.nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
+    final b = random.nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
+    final c = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
+    return '$a$b$c';
+  }
+
+  void _clearClaimedProfileSession() {
+    _activeProfileId = null;
+    _activeProfileSessionToken = null;
+    _activeProfileUsername = null;
+    _activeProfilePassword = null;
+  }
+
+  Future<bool> verifyClaimedSessionStillActive() async {
+    await ensureReady();
+    if (_activeProfileId == null) return true;
+    final token = (_activeProfileSessionToken ?? '').trim();
+    if (token.isEmpty) return true;
+    final row = await _db
+        .from('users')
+        .select('active_session_token')
+        .eq('id', _activeProfileId!)
+        .maybeSingle();
+    if (row == null) {
+      _clearClaimedProfileSession();
+      return false;
+    }
+    final currentToken = (row['active_session_token'] ?? '').toString().trim();
+    final active = currentToken.isNotEmpty && currentToken == token;
+    if (!active) {
+      _clearClaimedProfileSession();
+    }
+    return active;
+  }
+
+  Future<Map<String, dynamic>?> _claimProfileSessionViaRpc({
+    required String profileId,
+    required String username,
+    required String password,
+    required String sessionToken,
+    required String sessionOwnerId,
+  }) async {
+    final result = await _db.rpc(
+      _rpcClaimSession,
+      params: <String, dynamic>{
+        'p_profile_id': profileId,
+        'p_username': username,
+        'p_password': password,
+        'p_session_token': sessionToken,
+        'p_session_owner_id': sessionOwnerId,
+      },
+    );
+    if (result == null) return null;
+    if (result is Map<String, dynamic>) return result;
+    if (result is Map) {
+      return Map<String, dynamic>.from(result);
+    }
+    return null;
+  }
+
+  Future<void> _syncClaimedProfileViaRpc({
+    required String profileId,
+    required String sessionToken,
+    required Map<String, dynamic> payload,
+  }) async {
+    final result = await _db.rpc(
+      _rpcSyncClaimedProfile,
+      params: <String, dynamic>{
+        'p_profile_id': profileId,
+        'p_session_token': sessionToken,
+        'p_name': payload['name'],
+        'p_username': payload['username'],
+        'p_photo_url': payload['photo_url'],
+        'p_frame_url': payload['frame_url'],
+        'p_note_profile': payload['note_profile'],
+        'p_current_song': payload['current_song'],
+        'p_current_artist': payload['current_artist'],
+        'p_current_video_id': payload['current_video_id'],
+        'p_is_playing': payload['is_playing'],
+      },
+    );
+    final ok = result == true || result == 1 || result == '1';
+    if (!ok) {
+      _clearClaimedProfileSession();
+      throw Exception(
+        'Tu sesión de perfil fue cerrada porque la cuenta se abrió en otro dispositivo.',
+      );
+    }
   }
 
   Future<void> followUser(String followedId) async {

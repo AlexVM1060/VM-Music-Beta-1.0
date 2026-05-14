@@ -102,7 +102,14 @@ void main() async {
           },
         ),
         Provider(create: (_) => HistoryService()),
-        Provider(create: (_) => PlaylistService()),
+        Provider<PlaylistService>(
+          lazy: false,
+          create: (_) {
+            final service = PlaylistService();
+            service.startAutoSync();
+            return service;
+          },
+        ),
         ChangeNotifierProvider(
           create: (_) => DownloadService(appSettingsService),
         ),
@@ -823,9 +830,24 @@ class _CupertinoRootTabBar extends StatelessWidget {
     final photoPath = context.select<ProfileService, String?>(
       (service) => service.photoPath,
     );
+    final photoUrl = context.select<ProfileService, String?>(
+      (service) => service.photoUrl,
+    );
     final cleanPhotoPath = (photoPath ?? '').trim();
+    final cleanPhotoUrl = (photoUrl ?? '').trim();
     final hasLocalPhoto =
         cleanPhotoPath.isNotEmpty && File(cleanPhotoPath).existsSync();
+    final hasRemotePhoto = cleanPhotoUrl.isNotEmpty;
+
+    final bubbleBg = isDark
+        ? Colors.white.withValues(alpha: 0.13)
+        : const Color(0xFFD1D5DB).withValues(alpha: 0.72);
+    final bubbleBorder = isDark
+        ? Colors.white.withValues(alpha: 0.22)
+        : const Color(0xFFCBD5E1).withValues(alpha: 0.96);
+    final alignmentX = items.length == 1
+        ? 0.0
+        : ((currentIndex / (items.length - 1)) * 2) - 1;
 
     final barContent = Container(
       padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
@@ -858,35 +880,74 @@ class _CupertinoRootTabBar extends StatelessWidget {
           ),
         ],
       ),
-      child: Row(
-        children: List.generate(items.length, (index) {
-          final selected = index == currentIndex;
-          return Expanded(
-            child: _LiquidTabButton(
-              icon: items[index].icon,
-              iconWidget: index == items.length - 1 && hasLocalPhoto
-                  ? ClipOval(
-                      child: Image.file(
-                        File(cleanPhotoPath),
-                        width: 22,
-                        height: 22,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, _, _) => Icon(
-                          items[index].icon,
-                          size: 22,
-                          color: selected ? active : inactive,
-                        ),
-                      ),
-                    )
-                  : null,
-              label: items[index].label,
-              selected: selected,
-              activeColor: active,
-              inactiveColor: inactive,
-              onPressed: () => onTap(index),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: AnimatedAlign(
+              duration: const Duration(milliseconds: 320),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment(alignmentX.clamp(-1.0, 1.0), 0),
+              child: FractionallySizedBox(
+                widthFactor: 1 / items.length,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 3),
+                  child: Container(
+                    height: double.infinity,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(18),
+                      color: bubbleBg,
+                      border: Border.all(color: bubbleBorder, width: 0.7),
+                    ),
+                  ),
+                ),
+              ),
             ),
-          );
-        }),
+          ),
+          Row(
+            children: List.generate(items.length, (index) {
+              final selected = index == currentIndex;
+              return Expanded(
+                child: _LiquidTabButton(
+                  icon: items[index].icon,
+                  iconWidget:
+                      index == items.length - 1 &&
+                          (hasLocalPhoto || hasRemotePhoto)
+                      ? ClipOval(
+                          child: hasLocalPhoto
+                              ? Image.file(
+                                  File(cleanPhotoPath),
+                                  width: 22,
+                                  height: 22,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, _, _) => Icon(
+                                    items[index].icon,
+                                    size: 22,
+                                    color: selected ? active : inactive,
+                                  ),
+                                )
+                              : Image.network(
+                                  cleanPhotoUrl,
+                                  width: 22,
+                                  height: 22,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, _, _) => Icon(
+                                    items[index].icon,
+                                    size: 22,
+                                    color: selected ? active : inactive,
+                                  ),
+                                ),
+                        )
+                      : null,
+                  label: items[index].label,
+                  selected: selected,
+                  activeColor: active,
+                  inactiveColor: inactive,
+                  onPressed: () => onTap(index),
+                ),
+              );
+            }),
+          ),
+        ],
       ),
     );
 
@@ -930,30 +991,14 @@ class _LiquidTabButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final selectedBg = isDark
-        ? Colors.white.withValues(alpha: 0.13)
-        : const Color(0xFFD1D5DB).withValues(alpha: 0.72);
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      margin: const EdgeInsets.symmetric(horizontal: 3),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(18),
-        color: selected ? selectedBg : Colors.transparent,
-        border: selected
-            ? Border.all(
-                color: isDark
-                    ? Colors.white.withValues(alpha: 0.20)
-                    : const Color(0xFFCBD5E1).withValues(alpha: 0.94),
-                width: 0.7,
-              )
-            : null,
-      ),
-      child: CupertinoButton(
-        padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 6),
-        minimumSize: Size.zero,
-        onPressed: onPressed,
+    return CupertinoButton(
+      padding: const EdgeInsets.symmetric(vertical: 7, horizontal: 6),
+      minimumSize: Size.zero,
+      onPressed: onPressed,
+      child: AnimatedScale(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutBack,
+        scale: selected ? 1.0 : 0.96,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [

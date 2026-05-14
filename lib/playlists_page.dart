@@ -10,6 +10,7 @@ import 'package:myapp/models/playlist.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/app_back_circle_button.dart';
 import 'package:myapp/widgets/ios_notice.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:path/path.dart' as p;
@@ -123,15 +124,7 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
                     child: Row(
                       children: [
-                        CupertinoButton(
-                          padding: EdgeInsets.zero,
-                          minimumSize: const Size(34, 34),
-                          onPressed: widget.onBack,
-                          child: Icon(
-                            CupertinoIcons.chevron_left,
-                            color: CupertinoColors.label.resolveFrom(context),
-                          ),
-                        ),
+                        AppBackCircleButton(onPressed: widget.onBack),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(

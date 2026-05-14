@@ -18,6 +18,7 @@ import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/services/profile_service.dart';
 import 'package:myapp/services/social_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/ios_notice.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -405,6 +406,209 @@ class _AccountPageState extends State<AccountPage> {
     setState(() => _isEditingNoteInline = false);
   }
 
+  Future<void> _showProfileLoginDialog() async {
+    final usernameController = TextEditingController();
+    final passwordController = TextEditingController();
+    String? errorText;
+    bool isLoading = false;
+
+    await showCupertinoModalPopup<void>(
+      context: context,
+      builder: (dialogContext) {
+        final cardColor = CupertinoColors.secondarySystemGroupedBackground
+            .resolveFrom(dialogContext);
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return CupertinoActionSheet(
+              title: const Text('Iniciar sesion'),
+              message: SizedBox(
+                width: double.infinity,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 2, bottom: 8),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'DATOS DE ACCESO',
+                          style: TextStyle(
+                            fontSize: 12,
+                            letterSpacing: 0.3,
+                            color: CupertinoColors.secondaryLabel.resolveFrom(
+                              context,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: cardColor,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      child: Column(
+                        children: [
+                          CupertinoTextField(
+                            controller: usernameController,
+                            placeholder: 'Nombre de usuario',
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 12,
+                            ),
+                            prefix: const Padding(
+                              padding: EdgeInsets.only(left: 2, right: 2),
+                              child: Text(
+                                '@',
+                                style: TextStyle(
+                                  fontSize: 22,
+                                  color: CupertinoColors.label,
+                                ),
+                              ),
+                            ),
+                            decoration: const BoxDecoration(),
+                          ),
+                          Container(
+                            height: 0.5,
+                            color: CupertinoColors.separator.resolveFrom(
+                              context,
+                            ),
+                          ),
+                          CupertinoTextField(
+                            controller: passwordController,
+                            obscureText: true,
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            placeholder: 'Contrasena',
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 12,
+                            ),
+                            decoration: const BoxDecoration(),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if ((errorText ?? '').isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          errorText!,
+                          style: const TextStyle(
+                            color: CupertinoColors.systemRed,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: CupertinoButton.filled(
+                        onPressed: isLoading
+                            ? null
+                            : () async {
+                                final username = usernameController.text.trim();
+                                final password = passwordController.text.trim();
+                                if (username.isEmpty || password.isEmpty) {
+                                  setDialogState(() {
+                                    errorText =
+                                        'Ingresa usuario y contrasena para continuar.';
+                                  });
+                                  return;
+                                }
+
+                                setDialogState(() {
+                                  isLoading = true;
+                                  errorText = null;
+                                });
+
+                                try {
+                                  final social = context.read<SocialService>();
+                                  final profile = context.read<ProfileService>();
+                                  final remoteUser =
+                                      await social.loginWithUsernamePassword(
+                                        username: username,
+                                        password: password,
+                                      );
+                                  if (remoteUser == null) {
+                                    setDialogState(() {
+                                      errorText =
+                                          'Usuario o contrasena incorrectos.';
+                                      isLoading = false;
+                                    });
+                                    return;
+                                  }
+
+                                  await profile.applyRemoteProfile(
+                                    name: remoteUser.name,
+                                    username: remoteUser.username,
+                                    bio: remoteUser.note,
+                                    photoUrl: remoteUser.photoUrl,
+                                    frameUrl: remoteUser.frameUrl,
+                                  );
+                                  if (!mounted || !dialogContext.mounted) {
+                                    return;
+                                  }
+                                  final playlistService = context
+                                      .read<PlaylistService>();
+                                  await playlistService.setCloudOwnerId(
+                                    remoteUser.id,
+                                  );
+                                  await playlistService
+                                      .replaceLocalPlaylistsFromCloud(
+                                        ownerId: remoteUser.id,
+                                      );
+                                  if (!mounted || !dialogContext.mounted) {
+                                    return;
+                                  }
+                                  setState(_refreshData);
+                                  Navigator.of(dialogContext).pop();
+                                  showIosNotice(
+                                    context,
+                                    'Sesion iniciada como @${remoteUser.username}',
+                                  );
+                                } catch (e) {
+                                  setDialogState(() {
+                                    errorText = 'No se pudo iniciar sesion: $e';
+                                    isLoading = false;
+                                  });
+                                }
+                              },
+                        child: isLoading
+                            ? const CupertinoActivityIndicator(radius: 10)
+                            : const Text(
+                                'Entrar',
+                                style: TextStyle(fontWeight: FontWeight.w600),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              cancelButton: CupertinoActionSheetAction(
+                onPressed: () {
+                  if (isLoading) return;
+                  Navigator.of(dialogContext).pop();
+                },
+                child: const Text('Cancelar'),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    usernameController.dispose();
+    passwordController.dispose();
+  }
+
   Duration _estimatePlayedDuration(List<VideoHistory> history) {
     if (history.isEmpty) return Duration.zero;
     return Duration(minutes: history.length * 4);
@@ -587,6 +791,14 @@ class _AccountPageState extends State<AccountPage> {
                                         CupertinoButton(
                                           padding: EdgeInsets.zero,
                                           minimumSize: const Size(34, 34),
+                                          onPressed: _showProfileLoginDialog,
+                                          child: const Icon(
+                                            CupertinoIcons.person_crop_circle_badge_checkmark,
+                                          ),
+                                        ),
+                                        CupertinoButton(
+                                          padding: EdgeInsets.zero,
+                                          minimumSize: const Size(34, 34),
                                           onPressed: () {
                                             Navigator.of(context).push(
                                               MaterialPageRoute<void>(
@@ -617,6 +829,16 @@ class _AccountPageState extends State<AccountPage> {
                                           builder: (context) {
                                             final frameUrl =
                                                 (profile.frameUrl ?? '').trim();
+                                            final localPhotoPath =
+                                                (profile.photoPath ?? '').trim();
+                                            final remotePhotoUrl =
+                                                (profile.photoUrl ?? '').trim();
+                                            final hasLocalPhoto =
+                                                localPhotoPath.isNotEmpty &&
+                                                File(localPhotoPath)
+                                                    .existsSync();
+                                            final hasRemotePhoto =
+                                                remotePhotoUrl.isNotEmpty;
                                             return SizedBox(
                                               width: 260,
                                               height: 188,
@@ -643,28 +865,20 @@ class _AccountPageState extends State<AccountPage> {
                                                                         context,
                                                                       ),
                                                               backgroundImage:
-                                                                  (profile.photoPath !=
-                                                                          null &&
-                                                                      profile
-                                                                          .photoPath!
-                                                                          .isNotEmpty &&
-                                                                      File(
-                                                                        profile
-                                                                            .photoPath!,
-                                                                      ).existsSync())
+                                                                  hasLocalPhoto
                                                                   ? FileImage(
                                                                       File(
-                                                                        profile
-                                                                            .photoPath!,
+                                                                        localPhotoPath,
                                                                       ),
+                                                                    )
+                                                                  : hasRemotePhoto
+                                                                  ? NetworkImage(
+                                                                      remotePhotoUrl,
                                                                     )
                                                                   : null,
                                                               child:
-                                                                  (profile.photoPath ==
-                                                                          null ||
-                                                                      profile
-                                                                          .photoPath!
-                                                                          .isEmpty)
+                                                                  !hasLocalPhoto &&
+                                                                      !hasRemotePhoto
                                                                   ? const Icon(
                                                                       CupertinoIcons
                                                                           .person_crop_circle_fill,

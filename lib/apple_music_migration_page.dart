@@ -7,6 +7,7 @@ import 'package:flutter/material.dart' show Theme;
 import 'package:myapp/services/apple_music_library_service.dart';
 import 'package:myapp/services/apple_music_playlist_migration_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/widgets/app_back_circle_button.dart';
 import 'package:myapp/widgets/ios_notice.dart';
 import 'package:provider/provider.dart';
 
@@ -217,6 +218,12 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
     if (!_appleMusicService.isSupportedPlatform) {
       return CupertinoPageScaffold(
         navigationBar: CupertinoNavigationBar(
+          automaticallyImplyLeading: false,
+          leading: Navigator.of(context).canPop()
+              ? AppBackCircleButton(
+                  onPressed: () => Navigator.of(context).maybePop(),
+                )
+              : null,
           middle: Text(
             'Migrar Apple Music',
             style: TextStyle(color: textPrimary),
@@ -248,6 +255,12 @@ class _AppleMusicMigrationPageState extends State<AppleMusicMigrationPage> {
 
     return CupertinoPageScaffold(
       navigationBar: CupertinoNavigationBar(
+        automaticallyImplyLeading: false,
+        leading: Navigator.of(context).canPop()
+            ? AppBackCircleButton(
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
         middle: Column(
           mainAxisSize: MainAxisSize.min,
           children: [

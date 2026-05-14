@@ -12,6 +12,8 @@ import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/app_back_circle_button.dart';
+import 'package:myapp/widgets/favorites_star_badge.dart';
 import 'package:myapp/widgets/ios_notice.dart';
 import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
@@ -106,23 +108,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             ),
           ),
           leading: widget.onBack != null
-              ? CupertinoButton(
-                  padding: EdgeInsets.zero,
-                  minimumSize: const Size(28, 28),
-                  onPressed: widget.onBack,
-                  child: const Icon(CupertinoIcons.back, size: 22),
-                )
+              ? AppBackCircleButton(onPressed: widget.onBack)
               : null,
           trailing: _isFavoritesPlaylist
               ? null
-              : CupertinoButton(
-                  padding: EdgeInsets.zero,
-                  minimumSize: const Size(28, 28),
+              : AppCircleOutlineIconButton(
                   onPressed: () => _openEditPlaylistPage(
                     playlistService: playlistService,
                     downloadService: downloadService,
                   ),
-                  child: const Icon(CupertinoIcons.pencil, size: 20),
+                  child: const Icon(CupertinoIcons.pencil, size: 19),
                 ),
         ),
         body: FutureBuilder<List<DownloadedVideo>>(
@@ -416,10 +411,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                                   ),
                                             const SizedBox(width: 8),
                                             ConstrainedBox(
-                                              constraints:
-                                                  const BoxConstraints(
-                                                    maxWidth: 228,
-                                                  ),
+                                              constraints: const BoxConstraints(
+                                                maxWidth: 228,
+                                              ),
                                               child: Column(
                                                 crossAxisAlignment:
                                                     CrossAxisAlignment.start,
@@ -429,8 +423,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                                   Text(
                                                     video.title,
                                                     maxLines: 2,
-                                                    overflow: TextOverflow
-                                                        .ellipsis,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
                                                     style: const TextStyle(
                                                       fontFamily:
                                                           '.SF Pro Text',
@@ -443,17 +437,15 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                                   Text(
                                                     video.channelTitle,
                                                     maxLines: 1,
-                                                    overflow: TextOverflow
-                                                        .ellipsis,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
                                                     style: TextStyle(
                                                       fontFamily:
                                                           '.SF Pro Text',
                                                       fontSize: 11,
                                                       color: CupertinoColors
                                                           .secondaryLabel
-                                                          .resolveFrom(
-                                                            context,
-                                                          ),
+                                                          .resolveFrom(context),
                                                     ),
                                                   ),
                                                 ],
@@ -461,17 +453,38 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                             ),
                                           ],
                                         ),
-                                        if (isDownloading)
-                                          const CupertinoActivityIndicator(
-                                            radius: 8,
-                                          )
-                                        else if (isDownloaded)
-                                          const Icon(
-                                            CupertinoIcons
-                                                .arrow_down_circle_fill,
-                                            size: 14,
-                                            color: CupertinoColors.systemGreen,
+                                        SizedBox(
+                                          width: 40,
+                                          child: Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.end,
+                                            children: [
+                                              if (isDownloading)
+                                                const CupertinoActivityIndicator(
+                                                  radius: 8,
+                                                )
+                                              else if (isDownloaded)
+                                                const Icon(
+                                                  CupertinoIcons
+                                                      .arrow_down_circle_fill,
+                                                  size: 14,
+                                                  color: CupertinoColors
+                                                      .systemGreen,
+                                                )
+                                              else
+                                                const SizedBox(width: 14),
+                                              const SizedBox(width: 6),
+                                              SizedBox(
+                                                width: 14,
+                                                child: Center(
+                                                  child: FavoritesStarBadge(
+                                                    videoId: video.videoId,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
                                           ),
+                                        ),
                                       ],
                                     ),
                                   ),

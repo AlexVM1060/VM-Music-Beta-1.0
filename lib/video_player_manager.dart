@@ -308,6 +308,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _resumeSiriPlayTimer;
   bool _isConsumingPendingSharedSong = false;
   bool _isConsumingPendingSiriPlay = false;
+  String? _lastHandledSharedSongVideoId;
+  DateTime _lastHandledSharedSongAt = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastPendingSharedSongConsumeAt =
       DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastPendingSiriPlayConsumeAt = DateTime.fromMillisecondsSinceEpoch(
@@ -1323,6 +1325,14 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _playSharedSongPayload(Map<String, dynamic> payload) async {
     final videoId = (payload['videoId'] ?? '').toString().trim();
     if (videoId.isEmpty) return;
+    final now = DateTime.now();
+    if (_lastHandledSharedSongVideoId == videoId &&
+        now.difference(_lastHandledSharedSongAt) <
+            const Duration(seconds: 3)) {
+      return;
+    }
+    _lastHandledSharedSongVideoId = videoId;
+    _lastHandledSharedSongAt = now;
     final title = (payload['title'] ?? '').toString().trim();
     final artist = (payload['artist'] ?? '').toString().trim();
     final thumbnailUrl = (payload['thumbnailUrl'] ?? '').toString().trim();
@@ -5980,6 +5990,46 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     _playbackQueue = const [];
     _queueSeedVideoId = null;
     _queueTitle = 'En cola';
+    _clearPreloadedNextTrack();
+    unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+    unawaited(_maybePreloadUpcomingQueueTrack());
+    _maybePrefetchQueueSongCacheBatchOnTrackStart();
+    notifyListeners();
+  }
+
+  void reorderManualPlaybackQueue(int oldIndex, int newIndex) {
+    if (_manualPlaybackQueue.length < 2) return;
+    if (oldIndex < 0 || oldIndex >= _manualPlaybackQueue.length) return;
+    if (newIndex < 0 || newIndex > _manualPlaybackQueue.length) return;
+    var targetIndex = newIndex;
+    if (targetIndex > oldIndex) {
+      targetIndex -= 1;
+    }
+    if (targetIndex == oldIndex) return;
+    final reordered = List<PlaybackQueueItem>.from(_manualPlaybackQueue);
+    final item = reordered.removeAt(oldIndex);
+    reordered.insert(targetIndex, item);
+    _manualPlaybackQueue = reordered;
+    _clearPreloadedNextTrack();
+    unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
+    unawaited(_maybePreloadUpcomingQueueTrack());
+    _maybePrefetchQueueSongCacheBatchOnTrackStart();
+    notifyListeners();
+  }
+
+  void reorderAutoplayPlaybackQueue(int oldIndex, int newIndex) {
+    if (_playbackQueue.length < 2) return;
+    if (oldIndex < 0 || oldIndex >= _playbackQueue.length) return;
+    if (newIndex < 0 || newIndex > _playbackQueue.length) return;
+    var targetIndex = newIndex;
+    if (targetIndex > oldIndex) {
+      targetIndex -= 1;
+    }
+    if (targetIndex == oldIndex) return;
+    final reordered = List<PlaybackQueueItem>.from(_playbackQueue);
+    final item = reordered.removeAt(oldIndex);
+    reordered.insert(targetIndex, item);
+    _playbackQueue = reordered;
     _clearPreloadedNextTrack();
     unawaited(_precacheQueueArtwork(_queueArtworkCandidates()));
     unawaited(_maybePreloadUpcomingQueueTrack());

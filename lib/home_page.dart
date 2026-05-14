@@ -31,6 +31,7 @@ import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/ios_notice.dart';
+import 'package:myapp/widgets/favorites_star_badge.dart';
 import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
@@ -4596,8 +4597,13 @@ class _HomeProfileNowPlayingHeaderState
         ? 'Escribe algo...'
         : profile.bio.trim();
     final photoPath = (profile.photoPath ?? '').trim();
+    final photoUrl = (profile.photoUrl ?? '').trim();
     final frameUrl = (profile.frameUrl ?? '').trim();
     final hasLocalPhoto = photoPath.isNotEmpty && File(photoPath).existsSync();
+    final hasRemotePhoto = photoUrl.isNotEmpty;
+    final ImageProvider? myImageProvider = hasLocalPhoto
+        ? FileImage(File(photoPath))
+        : (hasRemotePhoto ? NetworkImage(photoUrl) : null);
     final myId = (context.read<SocialService>().myUserId ?? '').trim();
     final mySongKey = _songKeyForTrack(
       videoId: currentVideoId,
@@ -4721,9 +4727,7 @@ class _HomeProfileNowPlayingHeaderState
                         mySongKey: mySongKey,
                       ),
                 footerText: 'Tu',
-                imageProvider: hasLocalPhoto
-                    ? FileImage(File(photoPath))
-                    : null,
+                imageProvider: myImageProvider,
                 frameImageUrl: frameUrl.isEmpty ? null : frameUrl,
                 onTap: () => _openExpandedSocialCard(
                   titleNote: _HomeAnimatedNowPlayingNote(
@@ -4821,9 +4825,7 @@ class _HomeProfileNowPlayingHeaderState
                           mySongKey: mySongKey,
                         ),
                   footerText: 'Tu',
-                  imageProvider: hasLocalPhoto
-                      ? FileImage(File(photoPath))
-                      : null,
+                  imageProvider: myImageProvider,
                   frameImageUrl: frameUrl.isEmpty ? null : frameUrl,
                 ),
               ),
@@ -6858,18 +6860,26 @@ class _HeroTopPickCard extends StatelessWidget {
                           ),
                         ),
                       const Spacer(),
-                      Text(
-                        item.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontFamily: '.SF Pro Display',
-                          fontSize: 22,
-                          height: 1.04,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: -0.55,
-                          color: CupertinoColors.white,
-                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              item.title,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontFamily: '.SF Pro Display',
+                                fontSize: 22,
+                                height: 1.04,
+                                fontWeight: FontWeight.w800,
+                                letterSpacing: -0.55,
+                                color: CupertinoColors.white,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          FavoritesStarBadge(videoId: item.videoId, size: 16),
+                        ],
                       ),
                       if (hasBottomLabel) const SizedBox(height: 4),
                       if (hasBottomLabel)
@@ -7000,59 +7010,106 @@ class _CompactReplayCard extends StatelessWidget {
     final titleArtistGap = thin ? 2.0 : 4.0;
     final thumbTextGap = thin ? 8.0 : 10.0;
 
-    final card = ClipRRect(
-      borderRadius: BorderRadius.circular(cardRadius),
-      child: Material(
-        color: cardColor,
-        surfaceTintColor: Colors.transparent,
-        child: InkWell(
-          onTap: onTap,
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(cardRadius),
-              border: Border.all(color: cardBorder, width: 0.6),
-            ),
-            padding: EdgeInsets.symmetric(
-              horizontal: horizontalPadding,
-              vertical: verticalPadding,
-            ),
-            child: Row(
-              children: [
-                _AdaptiveThumb(item: item, size: thumbSize),
-                SizedBox(width: thumbTextGap),
-                ConstrainedBox(
-                  constraints: BoxConstraints(maxWidth: thin ? 228 : 220),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        item.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: '.SF Pro Text',
-                          fontSize: titleFontSize,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      SizedBox(height: titleArtistGap),
-                      Text(
-                        item.artist,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: '.SF Pro Text',
-                          fontSize: artistFontSize,
-                          color: CupertinoColors.secondaryLabel.resolveFrom(
-                            context,
+    final card = LayoutBuilder(
+      builder: (context, constraints) => ClipRRect(
+        borderRadius: BorderRadius.circular(cardRadius),
+        child: Material(
+          color: cardColor,
+          surfaceTintColor: Colors.transparent,
+          child: InkWell(
+            onTap: onTap,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(cardRadius),
+                border: Border.all(color: cardBorder, width: 0.6),
+              ),
+              padding: EdgeInsets.symmetric(
+                horizontal: horizontalPadding,
+                vertical: verticalPadding,
+              ),
+              child: Row(
+                children: [
+                  _AdaptiveThumb(item: item, size: thumbSize),
+                  SizedBox(width: thumbTextGap),
+                  if (constraints.hasBoundedWidth)
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            item.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontSize: titleFontSize,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                        ),
+                          SizedBox(height: titleArtistGap),
+                          Text(
+                            item.artist,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontSize: artistFontSize,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(
+                                context,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
+                    )
+                  else
+                    SizedBox(
+                      width: 220,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            item.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontSize: titleFontSize,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          SizedBox(height: titleArtistGap),
+                          Text(
+                            item.artist,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontFamily: '.SF Pro Text',
+                              fontSize: artistFontSize,
+                              color: CupertinoColors.secondaryLabel.resolveFrom(
+                                context,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(width: 8),
+                  const SizedBox(
+                    width: 14,
+                    child: Center(child: SizedBox.shrink()),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 6),
+                  SizedBox(
+                    width: 14,
+                    child: Center(
+                      child: FavoritesStarBadge(videoId: item.videoId),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

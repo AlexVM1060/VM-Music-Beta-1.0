@@ -682,6 +682,8 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                                 verticalPadding: 0,
                               ),
                             ),
+                            const _MiniAudioRouteButton(),
+                            const SizedBox(width: 6),
                             CupertinoButton(
                               padding: EdgeInsets.zero,
                               onPressed: widget.manager.togglePlayPause,
@@ -695,17 +697,6 @@ class _MiniPlayerState extends State<_MiniPlayer> {
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 6),
-                            CupertinoButton(
-                              padding: EdgeInsets.zero,
-                              onPressed: widget.manager.playNextInQueue,
-                              child: Icon(
-                                CupertinoIcons.forward_fill,
-                                size: 22,
-                                color: CupertinoColors.secondaryLabel
-                                    .resolveFrom(context),
-                              ),
-                            ),
                           ],
                         ),
                       ),
@@ -716,6 +707,136 @@ class _MiniPlayerState extends State<_MiniPlayer> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _MiniAudioRouteButton extends StatefulWidget {
+  const _MiniAudioRouteButton();
+
+  @override
+  State<_MiniAudioRouteButton> createState() => _MiniAudioRouteButtonState();
+}
+
+class _MiniAudioRouteButtonState extends State<_MiniAudioRouteButton> {
+  String _routeName = 'iPhone Speaker';
+  bool _isBluetooth = false;
+  Timer? _pollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadRouteInfo());
+    _pollTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      unawaited(_loadRouteInfo());
+    });
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadRouteInfo() async {
+    if (!Platform.isIOS) return;
+    final appInForeground = context
+        .read<VideoPlayerManager>()
+        .isAppInForeground;
+    if (!appInForeground) return;
+    try {
+      final raw = await _systemVolumeChannel
+          .invokeMethod<Map<dynamic, dynamic>>('getCurrentAudioOutputInfo');
+      if (!mounted || raw == null) return;
+      final nextName = (raw['name'] as String?)?.trim();
+      final nextIsBluetooth = raw['isBluetooth'] == true;
+      final resolvedName = (nextName == null || nextName.isEmpty)
+          ? 'Salida de audio'
+          : nextName;
+      if (resolvedName == _routeName && nextIsBluetooth == _isBluetooth) {
+        return;
+      }
+      setState(() {
+        _routeName = resolvedName;
+        _isBluetooth = nextIsBluetooth;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _openRoutePicker() async {
+    if (!Platform.isIOS) return;
+    try {
+      await _systemVolumeChannel.invokeMethod<void>('showAudioRoutePicker');
+    } catch (_) {}
+    unawaited(_loadRouteInfo());
+  }
+
+  _AudioRouteVisual _resolveRouteVisual() {
+    final raw = _routeName.trim().toLowerCase();
+    if (raw.isEmpty) {
+      return _isBluetooth
+          ? _AudioRouteVisual.bluetooth
+          : _AudioRouteVisual.airplay;
+    }
+    if (raw == 'iphone speaker' || raw == 'iphone') {
+      return _AudioRouteVisual.iphone;
+    }
+    if (raw.contains('reniiii')) {
+      return _AudioRouteVisual.airpods;
+    }
+
+    final compact = raw.replaceAll(RegExp(r'[\s\-_]+'), '');
+    final hasAirpodsWord = raw.contains('airpods') || raw.contains('airpod');
+
+    if (hasAirpodsWord) {
+      if (compact.contains('airpodsmax') || compact.contains('airpodmax')) {
+        return _AudioRouteVisual.airpodsMax;
+      }
+      if (compact.contains('airpodspro2') || compact.contains('airpodpro2')) {
+        return _AudioRouteVisual.airpodsPro;
+      }
+      if (compact.contains('airpodspro') || compact.contains('airpodpro')) {
+        return _AudioRouteVisual.airpodsPro;
+      }
+      return _AudioRouteVisual.airpods;
+    }
+
+    return _isBluetooth
+        ? _AudioRouteVisual.bluetooth
+        : _AudioRouteVisual.airplay;
+  }
+
+  Widget _buildRouteIcon(Color color) {
+    final visual = _resolveRouteVisual();
+    switch (visual) {
+      case _AudioRouteVisual.airpods:
+        return const _AirPodsIcon(size: 20, isPro: false);
+      case _AudioRouteVisual.airpodsPro:
+        return const _AirPodsIcon(size: 20, isPro: true);
+      case _AudioRouteVisual.airpodsMax:
+        return Icon(CupertinoIcons.headphones, size: 20, color: color);
+      case _AudioRouteVisual.bluetooth:
+        return Icon(Icons.bluetooth, size: 20, color: color);
+      case _AudioRouteVisual.iphone:
+        return Icon(
+          CupertinoIcons.device_phone_portrait,
+          size: 20,
+          color: color,
+        );
+      case _AudioRouteVisual.airplay:
+        return Icon(Icons.airplay, size: 20, color: color);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return CupertinoButton(
+      padding: EdgeInsets.zero,
+      minimumSize: Size.zero,
+      onPressed: _openRoutePicker,
+      child: _buildRouteIcon(
+        CupertinoColors.secondaryLabel.resolveFrom(context),
       ),
     );
   }
@@ -1198,7 +1319,6 @@ class _FullPlayerState extends State<_FullPlayer> {
         }
 
         final downloadService = context.watch<DownloadService>();
-        final settings = context.watch<AppSettingsService?>();
         final playlistService = context.read<PlaylistService>();
         final videoId = manager.currentVideoId;
         unawaited(_syncFavoriteStateForVideo(playlistService, videoId));
@@ -1208,8 +1328,6 @@ class _FullPlayerState extends State<_FullPlayer> {
             (manager.currentVideoId ?? '').isNotEmpty &&
             manager.currentVideoId == _favoritedVideoId;
         final thermalSaverMode = manager.isLowPowerModeEnabled;
-        final animatedCoverEnabled =
-            (settings?.animatedCutoutCovers ?? true) && !thermalSaverMode;
         _maybeResolveAlbumBackgroundTint();
         _syncLyricsImmersiveMode(manager.isLyricsLayout);
         final lyricsImmersive = manager.isLyricsLayout && !_lyricsChromeVisible;
@@ -1284,9 +1402,7 @@ class _FullPlayerState extends State<_FullPlayer> {
                                   .min(halfViewportSize, maxArtworkWidth)
                                   .clamp(220.0, 560.0)
                                   .toDouble();
-                              final defaultArtworkSize = animatedCoverEnabled
-                                  ? animatedArtworkSize
-                                  : 310.0;
+                              final defaultArtworkSize = animatedArtworkSize;
                               final collapsedLyricsHeight = math.max(
                                 300.0,
                                 math.min(339.0, constraints.maxHeight * 0.52),
@@ -1777,16 +1893,18 @@ class _FullPlayerState extends State<_FullPlayer> {
     );
 
     await playlistService.addVideoToPlaylist(favorites.name, track);
-    await downloadService.autoDownloadIfEnabledUsingClone(
-      favorites.name,
-      track,
-      videoManager: manager,
-    );
     if (!context.mounted) return;
     _showIosTopToast(
       context,
       message: 'Añadida a Favoritos',
       icon: CupertinoIcons.star_fill,
+    );
+    unawaited(
+      downloadService.autoDownloadIfEnabledUsingClone(
+        favorites.name,
+        track,
+        videoManager: manager,
+      ),
     );
   }
 
@@ -1801,37 +1919,64 @@ class _FullPlayerState extends State<_FullPlayer> {
     final cleanId = currentVideoId.trim();
     final isAlreadyFavorite = _favoritedVideoId == cleanId;
     if (isAlreadyFavorite) {
+      if (mounted) {
+        setState(() {
+          _favoritedVideoId = null;
+        });
+      }
       final playlists = await playlistService.getPlaylists();
       final favorites = playlists.firstWhere(
         (playlist) => PlaylistService.isFavoritesPlaylistName(playlist.name),
         orElse: () =>
             app_models.Playlist(name: PlaylistService.favoritesPlaylistName),
       );
-      await playlistService.removeVideoFromPlaylist(favorites.name, cleanId);
+      try {
+        await playlistService.removeVideoFromPlaylist(favorites.name, cleanId);
+      } catch (_) {
+        if (!mounted) return;
+        setState(() {
+          _favoritedVideoId = cleanId;
+        });
+        _showIosTopToast(
+          context,
+          message: 'No se pudo actualizar Favoritos',
+          icon: CupertinoIcons.exclamationmark_triangle_fill,
+        );
+        return;
+      }
       if (!context.mounted) return;
       _showIosTopToast(
         context,
         message: 'Eliminada de Favoritos',
         icon: CupertinoIcons.star_lefthalf_fill,
       );
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _favoritedVideoId = cleanId;
+        _favoritePulseNonce++;
+      });
+    }
+    try {
+      await _addCurrentTrackToFavorites(
+        context: context,
+        playlistService: playlistService,
+        downloadService: downloadService,
+        manager: manager,
+      );
+    } catch (_) {
       if (!mounted) return;
       setState(() {
         _favoritedVideoId = null;
       });
-      return;
+      _showIosTopToast(
+        context,
+        message: 'No se pudo actualizar Favoritos',
+        icon: CupertinoIcons.exclamationmark_triangle_fill,
+      );
     }
-
-    await _addCurrentTrackToFavorites(
-      context: context,
-      playlistService: playlistService,
-      downloadService: downloadService,
-      manager: manager,
-    );
-    if (!mounted) return;
-    setState(() {
-      _favoritedVideoId = cleanId;
-      _favoritePulseNonce++;
-    });
   }
 
   void _showIosTopToast(
@@ -2218,10 +2363,10 @@ class _InlineAudioRouteButtonState extends State<_InlineAudioRouteButton> {
         return _AudioRouteVisual.airpodsMax;
       }
       if (compact.contains('airpodspro2') || compact.contains('airpodpro2')) {
-        return _AudioRouteVisual.airpods;
+        return _AudioRouteVisual.airpodsPro;
       }
       if (compact.contains('airpodspro') || compact.contains('airpodpro')) {
-        return _AudioRouteVisual.airpods;
+        return _AudioRouteVisual.airpodsPro;
       }
       if (compact.contains('airpods3') || compact.contains('airpod3')) {
         return _AudioRouteVisual.airpods;
@@ -2241,7 +2386,9 @@ class _InlineAudioRouteButtonState extends State<_InlineAudioRouteButton> {
     final visual = _resolveRouteVisual();
     switch (visual) {
       case _AudioRouteVisual.airpods:
-        return _AirPodsIcon(color: color, size: 21);
+        return const _AirPodsIcon(size: 21, isPro: false);
+      case _AudioRouteVisual.airpodsPro:
+        return const _AirPodsIcon(size: 21, isPro: true);
       case _AudioRouteVisual.airpodsMax:
         return Icon(CupertinoIcons.headphones, size: 21, color: color);
       case _AudioRouteVisual.bluetooth:
@@ -2293,79 +2440,34 @@ class _InlineAudioRouteButtonState extends State<_InlineAudioRouteButton> {
   }
 }
 
-enum _AudioRouteVisual { airplay, bluetooth, iphone, airpods, airpodsMax }
+enum _AudioRouteVisual {
+  airplay,
+  bluetooth,
+  iphone,
+  airpods,
+  airpodsPro,
+  airpodsMax,
+}
 
 class _AirPodsIcon extends StatelessWidget {
-  final Color color;
   final double size;
+  final bool isPro;
 
-  const _AirPodsIcon({required this.color, required this.size});
+  const _AirPodsIcon({required this.size, required this.isPro});
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final assetName = isPro
+        ? (isDark
+              ? 'assets/airpodsprodarkicon.png'
+              : 'assets/airpodsproicon.png')
+        : (isDark ? 'assets/airpodsdarkicon.png' : 'assets/airpodsicon.png');
     return SizedBox(
       width: size,
       height: size,
-      child: CustomPaint(painter: _AirPodsPainter(color)),
+      child: Image.asset(assetName, fit: BoxFit.contain),
     );
-  }
-}
-
-class _AirPodsPainter extends CustomPainter {
-  final Color color;
-  const _AirPodsPainter(this.color);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..strokeWidth = size.width * 0.11;
-
-    final fill = Paint()
-      ..color = color.withValues(alpha: 0.18)
-      ..style = PaintingStyle.fill;
-
-    final leftBud = RRect.fromRectAndRadius(
-      Rect.fromLTWH(
-        size.width * 0.12,
-        size.height * 0.16,
-        size.width * 0.27,
-        size.height * 0.36,
-      ),
-      Radius.circular(size.width * 0.12),
-    );
-    canvas.drawRRect(leftBud, fill);
-    canvas.drawRRect(leftBud, paint);
-    canvas.drawLine(
-      Offset(size.width * 0.26, size.height * 0.50),
-      Offset(size.width * 0.22, size.height * 0.89),
-      paint,
-    );
-
-    final rightBud = RRect.fromRectAndRadius(
-      Rect.fromLTWH(
-        size.width * 0.61,
-        size.height * 0.16,
-        size.width * 0.27,
-        size.height * 0.36,
-      ),
-      Radius.circular(size.width * 0.12),
-    );
-    canvas.drawRRect(rightBud, fill);
-    canvas.drawRRect(rightBud, paint);
-    canvas.drawLine(
-      Offset(size.width * 0.74, size.height * 0.50),
-      Offset(size.width * 0.78, size.height * 0.89),
-      paint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _AirPodsPainter oldDelegate) {
-    return oldDelegate.color != color;
   }
 }
 
@@ -3638,7 +3740,7 @@ class _QueueSectionState extends State<_QueueSection> {
   }
 
   void _onReorder(int oldIndex, int newIndex) {
-    manager.reorderPlaybackQueue(oldIndex, newIndex);
+    manager.reorderManualPlaybackQueue(oldIndex, newIndex);
     unawaited(HapticFeedback.lightImpact());
   }
 
@@ -3804,10 +3906,32 @@ class _QueueSectionState extends State<_QueueSection> {
               subtitle: '${autoplayQueue.length} autoplay',
             ),
             const SizedBox(height: 10),
-            ListView.builder(
+            ReorderableListView.builder(
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               itemCount: autoplayQueue.length,
+              buildDefaultDragHandles: false,
+              proxyDecorator: (child, index, animation) {
+                return FadeTransition(
+                  opacity: Tween<double>(
+                    begin: 0.96,
+                    end: 1,
+                  ).animate(animation),
+                  child: ScaleTransition(
+                    scale: Tween<double>(
+                      begin: 0.992,
+                      end: 1,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                );
+              },
+              onReorderStart: _onReorderStart,
+              onReorderEnd: _onReorderEnd,
+              onReorder: (oldIndex, newIndex) {
+                manager.reorderAutoplayPlaybackQueue(oldIndex, newIndex);
+                unawaited(HapticFeedback.lightImpact());
+              },
               itemBuilder: (context, index) {
                 final item = autoplayQueue[index];
                 return _QueueRow(
@@ -3816,7 +3940,8 @@ class _QueueSectionState extends State<_QueueSection> {
                   manager: manager,
                   index: index,
                   showNextBadge: manualQueue.isEmpty && index == 0,
-                  canReorder: false,
+                  canReorder: true,
+                  onDragPointerMove: _onDragPointerMove,
                 );
               },
             ),
@@ -4598,28 +4723,64 @@ class _SystemVolumeSlider extends StatefulWidget {
   State<_SystemVolumeSlider> createState() => _SystemVolumeSliderState();
 }
 
-class _SystemVolumeSliderState extends State<_SystemVolumeSlider> {
+class _SystemVolumeSliderState extends State<_SystemVolumeSlider>
+    with WidgetsBindingObserver {
   double _volume = 0.5;
   bool _isLoaded = false;
+  Timer? _volumeSyncTimer;
+  bool _isSettingSystemVolume = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     unawaited(_loadVolume());
+    _startVolumeSync();
   }
 
-  Future<void> _loadVolume() async {
+  void _startVolumeSync() {
+    _volumeSyncTimer?.cancel();
+    _volumeSyncTimer = Timer.periodic(const Duration(milliseconds: 350), (_) {
+      if (!mounted || _isSettingSystemVolume) return;
+      unawaited(_loadVolume(silent: true));
+    });
+  }
+
+  void _stopVolumeSync() {
+    _volumeSyncTimer?.cancel();
+    _volumeSyncTimer = null;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        unawaited(_loadVolume(silent: true));
+        _startVolumeSync();
+        break;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.detached:
+        _stopVolumeSync();
+        break;
+    }
+  }
+
+  Future<void> _loadVolume({bool silent = false}) async {
     try {
       final raw = await _systemVolumeChannel.invokeMethod<double>(
         'getSystemVolume',
       );
       if (!mounted || raw == null) return;
+      final next = raw.clamp(0.0, 1.0);
+      if ((next - _volume).abs() < 0.002 && _isLoaded) return;
       setState(() {
-        _volume = raw.clamp(0.0, 1.0);
+        _volume = next;
         _isLoaded = true;
       });
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted || silent) return;
       setState(() {
         _isLoaded = true;
       });
@@ -4631,11 +4792,23 @@ class _SystemVolumeSliderState extends State<_SystemVolumeSlider> {
     setState(() {
       _volume = clamped;
     });
+    _isSettingSystemVolume = true;
     try {
       await _systemVolumeChannel.invokeMethod<void>('setSystemVolume', {
         'value': clamped,
       });
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _isSettingSystemVolume = false;
+      unawaited(_loadVolume(silent: true));
+    }
+  }
+
+  @override
+  void dispose() {
+    _stopVolumeSync();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   @override
@@ -4681,15 +4854,20 @@ class _SystemVolumeSliderState extends State<_SystemVolumeSlider> {
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
-                      FractionallySizedBox(
+                      AnimatedFractionallySizedBox(
+                        duration: const Duration(milliseconds: 180),
+                        curve: Curves.easeOutCubic,
                         widthFactor: _volume,
-                        child: Container(
-                          height: 7,
-                          decoration: BoxDecoration(
-                            color: CupertinoColors.white.withValues(
-                              alpha: 0.98,
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Container(
+                            height: 7,
+                            decoration: BoxDecoration(
+                              color: CupertinoColors.white.withValues(
+                                alpha: 0.98,
+                              ),
+                              borderRadius: BorderRadius.circular(999),
                             ),
-                            borderRadius: BorderRadius.circular(999),
                           ),
                         ),
                       ),

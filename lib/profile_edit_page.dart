@@ -7,6 +7,7 @@ import 'package:myapp/services/profile_frames_service.dart';
 import 'package:myapp/services/profile_service.dart';
 import 'package:myapp/services/social_service.dart';
 import 'package:myapp/video_player_manager.dart';
+import 'package:myapp/widgets/app_back_circle_button.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
@@ -180,7 +181,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     }
   }
 
-  Future<void> _publishProfile() async {
+  Future<void> _publishProfileWithPassword({String? profilePassword}) async {
     if (_isPublishing) return;
     setState(() => _isPublishing = true);
     try {
@@ -196,6 +197,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
         currentArtist: currentArtist,
         currentVideoId: currentVideoId,
         isPlaying: isPlaying,
+        profilePassword: profilePassword,
       );
       if (!mounted) return;
       showCupertinoDialog<void>(
@@ -229,6 +231,46 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
     } finally {
       if (mounted) setState(() => _isPublishing = false);
     }
+  }
+
+  Future<String?> _askPublicProfilePassword() async {
+    final controller = TextEditingController();
+    String? password;
+    await showCupertinoDialog<void>(
+      context: context,
+      builder: (dialogContext) => CupertinoAlertDialog(
+        title: const Text('Contrasena del perfil'),
+        content: Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: CupertinoTextField(
+            controller: controller,
+            autofocus: true,
+            obscureText: true,
+            autocorrect: false,
+            enableSuggestions: false,
+            placeholder: 'Escribe una contrasena',
+          ),
+        ),
+        actions: [
+          CupertinoDialogAction(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancelar'),
+          ),
+          CupertinoDialogAction(
+            isDefaultAction: true,
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isEmpty) return;
+              password = value;
+              Navigator.of(dialogContext).pop();
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return password;
   }
 
   Future<void> _pickFrame() async {
@@ -280,7 +322,9 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
                   const SizedBox(height: 10),
                   Expanded(
                     child: frames.isEmpty
-                        ? const Center(child: Text('No hay Stickers disponibles'))
+                        ? const Center(
+                            child: Text('No hay Stickers disponibles'),
+                          )
                         : filteredFrames.isEmpty
                         ? const Center(
                             child: Text('No hay stickers en este filtro'),
@@ -353,6 +397,13 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
 
   Future<void> _onTogglePublicProfile(bool enabled) async {
     if (_isPublishing || _isSaving) return;
+    String? publicPassword;
+    if (enabled) {
+      publicPassword = await _askPublicProfilePassword();
+      if (publicPassword == null || publicPassword.isEmpty) {
+        return;
+      }
+    }
     setState(() {
       _isPublicProfileEnabled = enabled;
     });
@@ -363,7 +414,7 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
       }
       await widget.profile.setPublicProfileEnabled(enabled);
       if (!enabled) return;
-      await _publishProfile();
+      await _publishProfileWithPassword(profilePassword: publicPassword);
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -384,6 +435,12 @@ class _ProfileEditPageState extends State<ProfileEditPage> {
         context,
       ),
       navigationBar: CupertinoNavigationBar(
+        automaticallyImplyLeading: false,
+        leading: Navigator.of(context).canPop()
+            ? AppBackCircleButton(
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
         middle: const Text('Editar perfil'),
         trailing: CupertinoButton(
           padding: EdgeInsets.zero,

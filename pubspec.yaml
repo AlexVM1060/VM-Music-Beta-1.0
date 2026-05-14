@@ -63,6 +63,10 @@ flutter:
   uses-material-design: true
   assets:
     - assets/iconloadscreen.png
+    - assets/airpodsicon.png
+    - assets/airpodsdarkicon.png
+    - assets/airpodsproicon.png
+    - assets/airpodsprodarkicon.png
 
 flutter_launcher_icons:
   android: true

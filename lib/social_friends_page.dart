@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:myapp/services/social_service.dart';
+import 'package:myapp/widgets/app_back_circle_button.dart';
 import 'package:provider/provider.dart';
 
 class SocialFriendsPage extends StatefulWidget {
@@ -96,6 +97,12 @@ class _SocialFriendsPageState extends State<SocialFriendsPage> {
     return CupertinoPageScaffold(
       backgroundColor: bg,
       navigationBar: CupertinoNavigationBar(
+        automaticallyImplyLeading: false,
+        leading: Navigator.of(context).canPop()
+            ? AppBackCircleButton(
+                onPressed: () => Navigator.of(context).maybePop(),
+              )
+            : null,
         middle: const Text('Amigos'),
         trailing: CupertinoButton(
           padding: EdgeInsets.zero,
