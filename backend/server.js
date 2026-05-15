@@ -48,6 +48,11 @@ const YTEXPLODE_DART_SCRIPT = path.join(
   "bin",
   "yt_resolve.dart"
 );
+const YTEXPLODE_DART_SEARCH_SCRIPT = path.join(
+  YTEXPLODE_DART_ROOT,
+  "bin",
+  "yt_search.dart"
+);
 // eslint-disable-next-line no-console
 console.info(
   `[resolver] startup youtubeExplodeDartScript=${fs.existsSync(
@@ -149,6 +154,78 @@ async function runYoutubeExplodeDart(videoId) {
         reject(
           new Error(
             `youtube_explode_dart_parse_failed: ${String(
+              error?.message || error
+            )} | raw=${raw || stderr || stdout || "empty"}`
+          )
+        );
+      }
+    });
+  });
+}
+
+async function runYoutubeExplodeSearchDart(query, limit = 30) {
+  if (!fs.existsSync(YTEXPLODE_DART_SEARCH_SCRIPT)) {
+    const err = new Error("youtube_explode_dart_search_script_missing");
+    err.code = "youtube_explode_dart_search_script_missing";
+    throw err;
+  }
+  return await new Promise((resolve, reject) => {
+    const args = [
+      "--disable-analytics",
+      "run",
+      "bin/yt_search.dart",
+      "--query",
+      query,
+      "--limit",
+      String(limit),
+    ];
+    const child = spawn(DART_BINARY, args, {
+      cwd: YTEXPLODE_DART_ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      const err = new Error("youtube_explode_dart_search_timeout");
+      err.code = "youtube_explode_dart_search_timeout";
+      reject(err);
+    }, YTEXPLODE_DART_TIMEOUT_MS);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const lines = String(stdout || "")
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const raw = lines.length ? lines[lines.length - 1] : "";
+      if (code !== 0) {
+        reject(
+          new Error(
+            `youtube_explode_dart_search_failed_${code}: ${
+              raw || stderr || stdout || "no_output"
+            }`
+          )
+        );
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch (error) {
+        reject(
+          new Error(
+            `youtube_explode_dart_search_parse_failed: ${String(
               error?.message || error
             )} | raw=${raw || stderr || stdout || "empty"}`
           )
@@ -568,6 +645,37 @@ app.get("/info", authMiddleware, async (req, res) => {
     return res.status(500).json({
       ok: false,
       error: "info_failed",
+      detail: String(error?.message || error),
+    });
+  }
+});
+
+app.get("/search", authMiddleware, async (req, res) => {
+  const query = String(req.query?.q || "").trim();
+  const limitRaw = String(req.query?.limit || "30").trim();
+  const limit = Math.max(1, Math.min(80, Number(limitRaw) || 30));
+  if (!query) {
+    return res.status(400).json({ ok: false, error: "missing_query" });
+  }
+
+  try {
+    const result = await runYoutubeExplodeSearchDart(query, limit);
+    if (!result || result.ok !== true) {
+      return res.status(502).json({
+        ok: false,
+        error: String(result?.error || "search_failed"),
+        detail: String(result?.detail || "unknown"),
+      });
+    }
+    return res.json({
+      ok: true,
+      query,
+      items: Array.isArray(result.items) ? result.items : [],
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "search_failed",
       detail: String(error?.message || error),
     });
   }
