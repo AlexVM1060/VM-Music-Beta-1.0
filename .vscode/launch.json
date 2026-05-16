@@ -7,19 +7,28 @@
         {
             "name": "myapp",
             "request": "launch",
-            "type": "dart"
+            "type": "dart",
+            "toolArgs": [
+                "--dart-define=YOUTUBE_DATA_API_KEY=AIzaSyB1J6EvWN5iL7ADLAitdSXzcIEHUXCm70o"
+            ]
         },
         {
             "name": "myapp (profile mode)",
             "request": "launch",
             "type": "dart",
-            "flutterMode": "profile"
+            "flutterMode": "profile",
+            "toolArgs": [
+                "--dart-define=YOUTUBE_DATA_API_KEY=AIzaSyB1J6EvWN5iL7ADLAitdSXzcIEHUXCm70o"
+            ]
         },
         {
             "name": "myapp (release mode)",
             "request": "launch",
             "type": "dart",
-            "flutterMode": "release"
+            "flutterMode": "release",
+            "toolArgs": [
+                "--dart-define=YOUTUBE_DATA_API_KEY=AIzaSyB1J6EvWN5iL7ADLAitdSXzcIEHUXCm70o"
+            ]
         }
     ]
 }

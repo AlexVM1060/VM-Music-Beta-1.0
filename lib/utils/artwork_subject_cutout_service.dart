@@ -182,17 +182,17 @@ class ArtworkSubjectCutoutService {
 
   static String _persistentFilenameFor(String cacheKey) {
     final payload = '$cacheKey|$_persistentCacheVersion';
-    return _fnv1a64(payload).toRadixString(16);
+    return _fnv1a32(payload).toRadixString(16);
   }
 
-  static int _fnv1a64(String input) {
-    const int fnvOffsetBasis = 0xcbf29ce484222325;
-    const int fnvPrime = 0x100000001b3;
+  static int _fnv1a32(String input) {
+    const int fnvOffsetBasis = 0x811C9DC5;
+    const int fnvPrime = 0x01000193;
     var hash = fnvOffsetBasis;
     final bytes = input.codeUnits;
     for (final b in bytes) {
       hash ^= b;
-      hash = (hash * fnvPrime) & 0xFFFFFFFFFFFFFFFF;
+      hash = (hash * fnvPrime) & 0xFFFFFFFF;
     }
     return hash;
   }

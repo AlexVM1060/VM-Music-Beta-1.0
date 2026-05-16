@@ -11,22 +11,37 @@ import 'package:myapp/models/playlist.dart';
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/services/playlist_service.dart';
+import 'package:myapp/search_view_state.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/app_back_circle_button.dart';
 import 'package:myapp/widgets/favorites_star_badge.dart';
 import 'package:myapp/widgets/ios_notice.dart';
+import 'package:myapp/widgets/playlist_picker_sheet.dart';
 import 'package:myapp/widgets/queue_swipe_action_button.dart';
 import 'package:myapp/widgets/square_thumbnail.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart'
+    show YoutubeExplode;
 import 'package:collection/collection.dart';
 
 class PlaylistDetailPage extends StatefulWidget {
   final Playlist playlist;
   final VoidCallback? onBack;
+  final bool readOnly;
+  final Future<void> Function(Playlist playlist)? onSaveToMyPlaylists;
+  final Future<bool> Function(Playlist playlist)? isAlreadySavedToMyPlaylists;
 
-  const PlaylistDetailPage({super.key, required this.playlist, this.onBack});
+  const PlaylistDetailPage({
+    super.key,
+    required this.playlist,
+    this.onBack,
+    this.readOnly = false,
+    this.onSaveToMyPlaylists,
+    this.isAlreadySavedToMyPlaylists,
+  });
 
   @override
   State<PlaylistDetailPage> createState() => _PlaylistDetailPageState();
@@ -34,7 +49,9 @@ class PlaylistDetailPage extends StatefulWidget {
 
 class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   late Playlist _currentPlaylist;
+  final YoutubeExplode _yt = YoutubeExplode();
   bool _autoSyncRunning = false;
+  bool _savedToMyPlaylists = false;
   bool get _isFavoritesPlaylist {
     return PlaylistService.isFavoritesPlaylistName(_currentPlaylist.name);
   }
@@ -62,6 +79,145 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         );
       }
     });
+    unawaited(_syncSavedState());
+  }
+
+  Future<void> _syncSavedState() async {
+    if (!widget.readOnly || widget.isAlreadySavedToMyPlaylists == null) return;
+    final already = await widget.isAlreadySavedToMyPlaylists!(widget.playlist);
+    if (!mounted) return;
+    setState(() {
+      _savedToMyPlaylists = already;
+    });
+  }
+
+  @override
+  void dispose() {
+    _yt.close();
+    super.dispose();
+  }
+
+  Rect _shareOriginFromContext(BuildContext context) {
+    final renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox != null && renderBox.hasSize) {
+      return renderBox.localToGlobal(Offset.zero) & renderBox.size;
+    }
+    return const Rect.fromLTWH(1, 1, 1, 1);
+  }
+
+  Future<void> _addVideoToFavorites(VideoHistory video) async {
+    final playlistService = context.read<PlaylistService>();
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    await playlistService.addVideoToPlaylist(
+      PlaylistService.favoritesPlaylistName,
+      video,
+    );
+    await downloadService.autoDownloadIfEnabledUsingClone(
+      PlaylistService.favoritesPlaylistName,
+      video,
+      videoManager: videoManager,
+    );
+    if (!mounted) return;
+    _showQueueIosToast(
+      context,
+      message: 'Añadida a Favoritos',
+      icon: CupertinoIcons.star_fill,
+    );
+  }
+
+  Future<void> _removeVideoFromFavorites(String videoId) async {
+    final cleanId = videoId.trim();
+    if (cleanId.isEmpty) return;
+    final playlistService = context.read<PlaylistService>();
+    await playlistService.removeVideoFromPlaylist(
+      PlaylistService.favoritesPlaylistName,
+      cleanId,
+    );
+    if (!mounted) return;
+    _showQueueIosToast(
+      context,
+      message: 'Eliminada de Favoritos',
+      icon: CupertinoIcons.star_lefthalf_fill,
+    );
+  }
+
+  Future<void> _addVideoToAnyPlaylist(VideoHistory video) async {
+    final playlistService = context.read<PlaylistService>();
+    final playlists = await playlistService.getPlaylists();
+    if (!mounted || playlists.isEmpty) return;
+    final selectedName = await showGlassPlaylistPickerSheet(
+      context: context,
+      playlists: playlists,
+      subtitle: video.title,
+    );
+    if (!mounted || selectedName == null || selectedName.isEmpty) return;
+    final downloadService = context.read<DownloadService>();
+    final videoManager = context.read<VideoPlayerManager>();
+    await playlistService.addVideoToPlaylist(selectedName, video);
+    await downloadService.autoDownloadIfEnabledUsingClone(
+      selectedName,
+      video,
+      videoManager: videoManager,
+    );
+    if (!mounted) return;
+    _showQueueIosToast(
+      context,
+      message: PlaylistService.isFavoritesPlaylistName(selectedName)
+          ? 'Añadida a Favoritos'
+          : 'Añadida a $selectedName',
+      icon: PlaylistService.isFavoritesPlaylistName(selectedName)
+          ? CupertinoIcons.star_fill
+          : CupertinoIcons.check_mark_circled_solid,
+    );
+  }
+
+  Future<void> _shareVideoDeepLink(VideoHistory video) async {
+    final videoId = video.videoId.trim();
+    if (videoId.isEmpty) return;
+    final title = video.title.trim();
+    final artist = video.channelTitle.trim();
+    final thumbnailUrl = video.thumbnailUrl.trim();
+    final deepLink = Uri(
+      scheme: 'vmmusic',
+      host: 'song',
+      queryParameters: <String, String>{
+        'videoId': videoId,
+        if (title.isNotEmpty) 'title': title,
+        if (artist.isNotEmpty) 'artist': artist,
+        if (thumbnailUrl.isNotEmpty) 'thumbnailUrl': thumbnailUrl,
+      },
+    ).toString();
+    final label = artist.isEmpty ? title : '$title · $artist';
+    await SharePlus.instance.share(
+      ShareParams(
+        subject: 'VM Music',
+        text: '$label\n$deepLink',
+        sharePositionOrigin: _shareOriginFromContext(context),
+      ),
+    );
+  }
+
+  Future<void> _openArtistFromVideo(VideoHistory video) async {
+    final videoId = video.videoId.trim();
+    if (videoId.isEmpty) return;
+    try {
+      final details = await _yt.channels.getByVideo(videoId);
+      if (!mounted) return;
+      final channelId = details.id.value.trim();
+      if (channelId.isEmpty) return;
+      context.read<SearchViewState>().requestOpenArtistProfile(
+        PendingArtistProfile(
+          channelId: channelId,
+          channelName: details.title,
+          channelThumbnailUrl: details.logoUrl,
+        ),
+      );
+      Navigator.of(context).maybePop();
+    } catch (_) {
+      if (!mounted) return;
+      showIosNotice(context, 'No se pudo abrir el perfil del artista.');
+    }
   }
 
   @override
@@ -110,15 +266,38 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           leading: widget.onBack != null
               ? AppBackCircleButton(onPressed: widget.onBack)
               : null,
-          trailing: _isFavoritesPlaylist
-              ? null
-              : AppCircleOutlineIconButton(
-                  onPressed: () => _openEditPlaylistPage(
-                    playlistService: playlistService,
-                    downloadService: downloadService,
+          trailing: widget.readOnly && widget.onSaveToMyPlaylists != null
+              ? CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: const Size(34, 34),
+                  onPressed: _savedToMyPlaylists
+                      ? null
+                      : () async {
+                          await widget.onSaveToMyPlaylists!(_currentPlaylist);
+                          if (!mounted) return;
+                          setState(() {
+                            _savedToMyPlaylists = true;
+                          });
+                        },
+                  child: Icon(
+                    _savedToMyPlaylists
+                        ? CupertinoIcons.check_mark_circled_solid
+                        : CupertinoIcons.add_circled_solid,
+                    size: 22,
+                    color: _savedToMyPlaylists
+                        ? CupertinoColors.systemGreen.resolveFrom(context)
+                        : CupertinoColors.activeBlue.resolveFrom(context),
                   ),
-                  child: const Icon(CupertinoIcons.pencil, size: 19),
-                ),
+                )
+              : (_isFavoritesPlaylist
+                    ? null
+                    : AppCircleOutlineIconButton(
+                        onPressed: () => _openEditPlaylistPage(
+                          playlistService: playlistService,
+                          downloadService: downloadService,
+                        ),
+                        child: const Icon(CupertinoIcons.pencil, size: 19),
+                      )),
         ),
         body: FutureBuilder<List<DownloadedVideo>>(
           future: downloadService.getDownloadedVideos(),
@@ -137,10 +316,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 ? videos.reversed.toList(growable: false)
                 : videos;
             final isEmpty = displayVideos.isEmpty;
+            final indexOffset = widget.readOnly ? 1 : 2;
 
             return ListView.builder(
               padding: EdgeInsets.only(bottom: _bottomOverlayReserve(context)),
-              itemCount: isEmpty ? 3 : displayVideos.length + 2,
+              itemCount: isEmpty
+                  ? (widget.readOnly ? 2 : 3)
+                  : displayVideos.length + indexOffset,
               itemBuilder: (context, index) {
                 if (index == 0) {
                   return _buildPlaylistCoverHeader(
@@ -152,7 +334,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   );
                 }
 
-                if (index == 1) {
+                if (index == 1 && !widget.readOnly) {
                   return _buildAutoDownloadCard(
                     context: context,
                     downloadService: downloadService,
@@ -170,7 +352,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   );
                 }
 
-                final videoIndex = index - 2;
+                final videoIndex = index - indexOffset;
                 final video = displayVideos[videoIndex];
                 final downloadedVideo = downloadedVideos.firstWhereOrNull(
                   (v) => v.videoId == video.videoId,
@@ -275,24 +457,43 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       enableHapticFeedback: true,
                       actions: [
                         CupertinoContextMenuAction(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            final added = _queuePlaylistVideo(
-                              video,
-                              downloadedVideo: downloadedVideo,
-                              insertMode: ManualQueueInsertMode.next,
-                            );
-                            _showQueueIosToast(
-                              context,
-                              message: added
-                                  ? 'Se añadió como siguiente'
-                                  : 'Esta canción ya está en cola',
-                              icon: added
-                                  ? CupertinoIcons.check_mark_circled_solid
-                                  : CupertinoIcons.info_circle_fill,
-                            );
-                          },
-                          child: const Text('Añadir como siguiente'),
+                          onPressed: () {},
+                          child: _PlaylistContextQuickActionsRow(
+                            videoId: video.videoId,
+                            onFavorite: () {
+                              Navigator.of(context).pop();
+                              unawaited(_addVideoToFavorites(video));
+                            },
+                            onUnfavorite: () {
+                              Navigator.of(context).pop();
+                              unawaited(_removeVideoFromFavorites(video.videoId));
+                            },
+                            onQueueNext: () {
+                              Navigator.of(context).pop();
+                              final added = _queuePlaylistVideo(
+                                video,
+                                downloadedVideo: downloadedVideo,
+                                insertMode: ManualQueueInsertMode.next,
+                              );
+                              _showQueueIosToast(
+                                context,
+                                message: added
+                                    ? 'Se añadió como siguiente'
+                                    : 'Esta canción ya está en cola',
+                                icon: added
+                                    ? CupertinoIcons.check_mark_circled_solid
+                                    : CupertinoIcons.info_circle_fill,
+                              );
+                            },
+                            onAddToPlaylist: () {
+                              Navigator.of(context).pop();
+                              unawaited(_addVideoToAnyPlaylist(video));
+                            },
+                            onShare: () {
+                              Navigator.of(context).pop();
+                              unawaited(_shareVideoDeepLink(video));
+                            },
+                          ),
                         ),
                         CupertinoContextMenuAction(
                           onPressed: () {
@@ -312,20 +513,51 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                                   : CupertinoIcons.info_circle_fill,
                             );
                           },
-                          child: const Text('Añadir al final'),
+                          child: _PlaylistContextMenuActionContent(
+                            label: 'Añadir al final',
+                            icon: CupertinoIcons.text_append,
+                          ),
                         ),
                         CupertinoContextMenuAction(
-                          isDestructiveAction: true,
-                          onPressed: () async {
+                          onPressed: () {
                             Navigator.of(context).pop();
-                            await _removeTrackFromPlaylistAndLocal(
-                              video: video,
-                              playlistService: playlistService,
-                              downloadService: downloadService,
+                            unawaited(_openArtistFromVideo(video));
+                          },
+                          child: _PlaylistContextMenuActionContent(
+                            label: 'Ir al artista',
+                            icon: CupertinoIcons.person_crop_circle,
+                          ),
+                        ),
+                        CupertinoContextMenuAction(
+                          onPressed: () {
+                            Navigator.of(context).pop();
+                            showIosNotice(
+                              context,
+                              'Abrir álbum estará disponible aquí pronto.',
                             );
                           },
-                          child: const Text('Eliminar de la playlist'),
+                          child: _PlaylistContextMenuActionContent(
+                            label: 'Ir al álbum',
+                            icon: CupertinoIcons.rectangle_stack_fill,
+                          ),
                         ),
+                        if (!widget.readOnly)
+                          CupertinoContextMenuAction(
+                            isDestructiveAction: true,
+                            onPressed: () async {
+                              Navigator.of(context).pop();
+                              await _removeTrackFromPlaylistAndLocal(
+                                video: video,
+                                playlistService: playlistService,
+                                downloadService: downloadService,
+                              );
+                            },
+                            child: _PlaylistContextMenuActionContent(
+                              label: 'Eliminar de la playlist',
+                              icon: CupertinoIcons.trash,
+                              destructive: true,
+                            ),
+                          ),
                       ],
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(12),
@@ -1218,6 +1450,171 @@ class _PlaylistActionButton extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _PlaylistContextQuickActionsRow extends StatefulWidget {
+  final String videoId;
+  final VoidCallback onFavorite;
+  final VoidCallback onUnfavorite;
+  final VoidCallback onQueueNext;
+  final VoidCallback onAddToPlaylist;
+  final VoidCallback onShare;
+
+  const _PlaylistContextQuickActionsRow({
+    required this.videoId,
+    required this.onFavorite,
+    required this.onUnfavorite,
+    required this.onQueueNext,
+    required this.onAddToPlaylist,
+    required this.onShare,
+  });
+
+  @override
+  State<_PlaylistContextQuickActionsRow> createState() =>
+      _PlaylistContextQuickActionsRowState();
+}
+
+class _PlaylistContextQuickActionsRowState
+    extends State<_PlaylistContextQuickActionsRow> {
+  bool _isFavorite = false;
+  bool _isInAnyPlaylist = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadPlaylistMembershipFlags());
+  }
+
+  Future<void> _loadPlaylistMembershipFlags() async {
+    final cleanId = widget.videoId.trim();
+    if (cleanId.isEmpty) return;
+    try {
+      final playlistService = context.read<PlaylistService>();
+      final playlists = await playlistService.getPlaylists();
+      if (!mounted) return;
+      var isFavorite = false;
+      var isInAnyPlaylist = false;
+      for (final playlist in playlists) {
+        final containsVideo = playlist.videos.any((v) => v.videoId == cleanId);
+        if (!containsVideo) continue;
+        isInAnyPlaylist = true;
+        if (PlaylistService.isFavoritesPlaylistName(playlist.name)) {
+          isFavorite = true;
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _isFavorite = isFavorite;
+        _isInAnyPlaylist = isInAnyPlaylist;
+      });
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final iconColor = CupertinoColors.systemGrey.resolveFrom(context);
+
+    Widget quickButton({
+      required IconData icon,
+      required VoidCallback onTap,
+      String? semanticLabel,
+    }) {
+      return CupertinoButton(
+        padding: EdgeInsets.zero,
+        minimumSize: const Size(36, 36),
+        onPressed: onTap,
+        child: Icon(
+          icon,
+          size: 24,
+          color: iconColor,
+          semanticLabel: semanticLabel,
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          quickButton(
+            icon: _isFavorite ? CupertinoIcons.star_fill : CupertinoIcons.star,
+            onTap: () {
+              final wasFavorite = _isFavorite;
+              setState(() {
+                _isFavorite = !wasFavorite;
+                if (!wasFavorite) _isInAnyPlaylist = true;
+              });
+              if (wasFavorite) {
+                widget.onUnfavorite();
+              } else {
+                widget.onFavorite();
+              }
+            },
+            semanticLabel: 'Añadir a Favoritos',
+          ),
+          quickButton(
+            icon: CupertinoIcons.text_insert,
+            onTap: widget.onQueueNext,
+            semanticLabel: 'Añadir como siguiente',
+          ),
+          quickButton(
+            icon: _isInAnyPlaylist
+                ? CupertinoIcons.check_mark
+                : CupertinoIcons.plus,
+            onTap: () {
+              if (_isInAnyPlaylist) return;
+              widget.onAddToPlaylist();
+            },
+            semanticLabel: _isInAnyPlaylist
+                ? 'Ya está en playlist'
+                : 'Añadir a playlist',
+          ),
+          quickButton(
+            icon: CupertinoIcons.square_arrow_up,
+            onTap: widget.onShare,
+            semanticLabel: 'Compartir',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PlaylistContextMenuActionContent extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool destructive;
+
+  const _PlaylistContextMenuActionContent({
+    required this.label,
+    required this.icon,
+    this.destructive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textColor = destructive
+        ? CupertinoColors.systemRed.resolveFrom(context)
+        : (isDark ? CupertinoColors.white : CupertinoColors.black);
+    final iconColor = destructive
+        ? CupertinoColors.systemRed.resolveFrom(context)
+        : CupertinoColors.systemGrey.resolveFrom(context);
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: textColor),
+          ),
+        ),
+        Icon(icon, color: iconColor, size: 20),
+      ],
     );
   }
 }

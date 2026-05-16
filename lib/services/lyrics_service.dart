@@ -1,13 +1,13 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 
 class SyncedLyricLine {
   final Duration timestamp;
   final String text;
 
-  const SyncedLyricLine({
-    required this.timestamp,
-    required this.text,
-  });
+  const SyncedLyricLine({required this.timestamp, required this.text});
 }
 
 class LyricsResult {
@@ -25,7 +25,19 @@ class LyricsResult {
 }
 
 class LyricsService {
-  LyricsService({Dio? dio}) : _dio = dio ?? Dio();
+  LyricsService({Dio? dio}) : _dio = dio ?? Dio() {
+    final adapter = _dio.httpClientAdapter;
+    if (adapter is IOHttpClientAdapter) {
+      adapter.createHttpClient = () {
+        final client = HttpClient();
+        client.badCertificateCallback = (cert, host, port) {
+          // Bypass SSL temporal solo para LRCLIB.
+          return host == 'lrclib.net';
+        };
+        return client;
+      };
+    }
+  }
 
   final Dio _dio;
 
@@ -66,10 +78,7 @@ class LyricsService {
     try {
       final response = await _dio.get<Map<String, dynamic>>(
         'https://lrclib.net/api/get',
-        queryParameters: {
-          'track_name': title,
-          'artist_name': artist,
-        },
+        queryParameters: {'track_name': title, 'artist_name': artist},
         options: Options(
           sendTimeout: const Duration(seconds: 8),
           receiveTimeout: const Duration(seconds: 12),
@@ -87,10 +96,7 @@ class LyricsService {
     try {
       final response = await _dio.get<List<dynamic>>(
         'https://lrclib.net/api/search',
-        queryParameters: {
-          'track_name': title,
-          'artist_name': artist,
-        },
+        queryParameters: {'track_name': title, 'artist_name': artist},
         options: Options(
           sendTimeout: const Duration(seconds: 8),
           receiveTimeout: const Duration(seconds: 12),
@@ -140,7 +146,10 @@ class LyricsService {
     out = out.replaceAll(RegExp(r'\[[^\]]*\]'), ' ');
     out = out.replaceAll(RegExp(r'\([^)]*\)'), ' ');
     out = out.replaceAll(
-      RegExp(r'\b(official|video|audio|lyrics?|lyric video)\b', caseSensitive: false),
+      RegExp(
+        r'\b(official|video|audio|lyrics?|lyric video)\b',
+        caseSensitive: false,
+      ),
       ' ',
     );
     out = out.replaceAll(RegExp(r'\s+'), ' ').trim();
@@ -197,7 +206,11 @@ class LyricsService {
 
         output.add(
           SyncedLyricLine(
-            timestamp: Duration(minutes: min, seconds: sec, milliseconds: millis),
+            timestamp: Duration(
+              minutes: min,
+              seconds: sec,
+              milliseconds: millis,
+            ),
             text: text,
           ),
         );

@@ -145,17 +145,17 @@ class NowPlayingArtworkService {
     required String source,
   }) {
     final payload = '$videoId|$source|$_zoom|$_outputSize|$_cacheVersion';
-    return _fnv1a64(payload).toRadixString(16);
+    return _fnv1a32(payload).toRadixString(16);
   }
 
-  int _fnv1a64(String input) {
-    const int fnvOffsetBasis = 0xcbf29ce484222325;
-    const int fnvPrime = 0x100000001b3;
+  int _fnv1a32(String input) {
+    const int fnvOffsetBasis = 0x811C9DC5;
+    const int fnvPrime = 0x01000193;
     var hash = fnvOffsetBasis;
     final bytes = input.codeUnits;
     for (final b in bytes) {
       hash ^= b;
-      hash = (hash * fnvPrime) & 0xFFFFFFFFFFFFFFFF;
+      hash = (hash * fnvPrime) & 0xFFFFFFFF;
     }
     return hash;
   }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
 import 'dart:math' as math;
@@ -9,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:myapp/app_tab_state.dart';
 import 'package:myapp/models/video_history.dart';
@@ -32,9 +34,14 @@ import 'package:provider/provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+import 'package:youtube_explode_dart_plus/youtube_explode_dart_plus.dart'
+    as ytp;
 
 const MethodChannel _systemVolumeChannel = MethodChannel(
   'com.vm.music.beta/system_volume',
+);
+const MethodChannel _videoPipChannel = MethodChannel(
+  'com.vm.music.beta/video_pip',
 );
 
 class MusicPlayerPage extends StatefulWidget {
@@ -285,9 +292,10 @@ class _MiniPlayerState extends State<_MiniPlayer> {
           ),
         );
     final bottomInset = MediaQuery.of(context).padding.bottom;
+    final isMacOs = !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     const miniPlayerHeight = 58.0;
-    const miniPlayerBottomNavReserve = 53.0;
+    final miniPlayerBottomNavReserve = isMacOs ? 0.0 : 53.0;
     final progress = _dragProgress;
     final dynamicRadius = 24 - (2 * progress);
     final dynamicShadowOpacity = 0.08 + (0.12 * progress);
@@ -948,14 +956,40 @@ class _FullPlayerState extends State<_FullPlayer> {
   int _favoritePulseNonce = 0;
   String? _lastFavoriteSyncedVideoId;
   int _favoriteSyncRequestId = 0;
+  bool _lastAppliedFullscreenUi = false;
 
   VideoPlayerManager get manager => widget.manager;
 
   @override
   void dispose() {
+    unawaited(_applyFullscreenSystemUi(false));
     _lyricsUiHideTimer?.cancel();
     _contentScrollController.dispose();
     super.dispose();
+  }
+
+  Future<void> _applyFullscreenSystemUi(bool isFullscreen) async {
+    if (kIsWeb) return;
+    if (!(Platform.isIOS || Platform.isAndroid)) return;
+    try {
+      if (isFullscreen) {
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+        await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+      } else {
+        await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+        await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.portraitDown,
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+      }
+    } catch (_) {
+      // Best effort across platforms.
+    }
   }
 
   void _maybeResolveAlbumBackgroundTint() {
@@ -1297,12 +1331,18 @@ class _FullPlayerState extends State<_FullPlayer> {
         isFullScreen: manager.isFullScreen,
       ),
       builder: (context, _, child) {
+        final isMacOs =
+            !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
         final embeddedVideoController = manager.foregroundVideoController;
         final canShowEmbeddedVideo =
             manager.preferForegroundVideoPlayback &&
             embeddedVideoController != null &&
             embeddedVideoController.value.isInitialized;
         final isVideoFullScreen = manager.isFullScreen && canShowEmbeddedVideo;
+        if (_lastAppliedFullscreenUi != isVideoFullScreen) {
+          _lastAppliedFullscreenUi = isVideoFullScreen;
+          unawaited(_applyFullscreenSystemUi(isVideoFullScreen));
+        }
 
         if (manager.isFullScreen && !canShowEmbeddedVideo) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -1313,6 +1353,7 @@ class _FullPlayerState extends State<_FullPlayer> {
 
         if (isVideoFullScreen) {
           return _FullscreenVideoStage(
+            manager: manager,
             controller: embeddedVideoController,
             onExitFullscreen: () => manager.setFullScreen(false),
           );
@@ -1332,7 +1373,7 @@ class _FullPlayerState extends State<_FullPlayer> {
         _syncLyricsImmersiveMode(manager.isLyricsLayout);
         final lyricsImmersive = manager.isLyricsLayout && !_lyricsChromeVisible;
         final showLyricsControls =
-            !manager.isLyricsLayout || _lyricsChromeVisible;
+            isMacOs || !manager.isLyricsLayout || _lyricsChromeVisible;
         final avoidVideoHeroOverlap = canShowEmbeddedVideo;
 
         return SizedBox.expand(
@@ -1363,428 +1404,570 @@ class _FullPlayerState extends State<_FullPlayer> {
                             ),
                           ),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 22),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
-                            children: [
-                              _TopGlassIconButton(
-                                icon: CupertinoIcons.square_arrow_up,
-                                onPressed: () =>
-                                    unawaited(_shareCurrentSongLink(context)),
-                              ),
-                              if (canDownload)
-                                _DownloadButton(
-                                  videoId: videoId,
-                                  title: manager.trackTitle ?? 'Sin título',
-                                  thumbnailUrl: manager.trackThumbnailUrl ?? '',
-                                  channelTitle: manager.trackArtist ?? '',
-                                  sourceUrl: manager.currentStreamUrl,
-                                  isVideoSource: manager.isUsingVideoFallback,
-                                  downloadService: downloadService,
+                        if (!canShowEmbeddedVideo)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 22),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.end,
+                              children: [
+                                _TopGlassIconButton(
+                                  icon: CupertinoIcons.square_arrow_up,
+                                  onPressed: () =>
+                                      unawaited(_shareCurrentSongLink(context)),
                                 ),
-                            ],
+                                if (canDownload)
+                                  _DownloadButton(
+                                    videoId: videoId,
+                                    title: manager.trackTitle ?? 'Sin título',
+                                    thumbnailUrl:
+                                        manager.trackThumbnailUrl ?? '',
+                                    channelTitle: manager.trackArtist ?? '',
+                                    sourceUrl: manager.currentStreamUrl,
+                                    isVideoSource: manager.isUsingVideoFallback,
+                                    downloadService: downloadService,
+                                  ),
+                              ],
+                            ),
                           ),
-                        ),
                         Expanded(
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final screenWidth = MediaQuery.sizeOf(
-                                context,
-                              ).width;
-                              final maxArtworkWidth = math.max(
-                                220.0,
-                                screenWidth - 48,
-                              );
-                              final halfViewportSize =
-                                  constraints.maxHeight * 0.5;
-                              final animatedArtworkSize = math
-                                  .min(halfViewportSize, maxArtworkWidth)
-                                  .clamp(220.0, 560.0)
-                                  .toDouble();
-                              final defaultArtworkSize = animatedArtworkSize;
-                              final collapsedLyricsHeight = math.max(
-                                300.0,
-                                math.min(339.0, constraints.maxHeight * 0.52),
-                              );
-                              final expandedLyricsHeight = math.max(
-                                collapsedLyricsHeight + 120,
-                                constraints.maxHeight * 0.90,
-                              );
-                              return NotificationListener<ScrollNotification>(
-                                onNotification:
-                                    _handleContentScrollNotification,
-                                child: SingleChildScrollView(
-                                  controller: _contentScrollController,
-                                  physics: const ClampingScrollPhysics(
-                                    parent: AlwaysScrollableScrollPhysics(),
-                                  ),
-                                  clipBehavior: Clip.none,
-                                  padding: const EdgeInsets.fromLTRB(
-                                    24,
-                                    8,
-                                    24,
-                                    32,
-                                  ),
-                                  child: ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                      minHeight: constraints.maxHeight - 40,
+                          child: Builder(
+                            builder: (context) {
+                              final scrollableContent = LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final contentMaxWidth = isMacOs
+                                      ? math.min(540.0, constraints.maxWidth)
+                                      : constraints.maxWidth;
+                                  final maxArtworkWidth = math.max(
+                                    220.0,
+                                    contentMaxWidth - 48,
+                                  );
+                                  final halfViewportSize =
+                                      constraints.maxHeight * 0.5;
+                                  final animatedArtworkSize = math
+                                      .min(halfViewportSize, maxArtworkWidth)
+                                      .clamp(220.0, 560.0)
+                                      .toDouble();
+                                                          final defaultArtworkSize =
+                                                              animatedArtworkSize;
+                                                          final embeddedVideoSize =
+                                                              (contentMaxWidth - 4)
+                                                                  .clamp(
+                                                                    260.0,
+                                                                    700.0,
+                                                                  )
+                                                                  .toDouble();
+                                  final collapsedLyricsHeight = math.max(
+                                    300.0,
+                                    math.min(
+                                      339.0,
+                                      constraints.maxHeight * 0.52,
                                     ),
-                                    child: Column(
-                                      children: [
-                                        TweenAnimationBuilder<double>(
-                                          key: ValueKey(
-                                            'full-hero-entry-${manager.currentVideoId}-${manager.isLyricsLayout}',
-                                          ),
-                                          tween: Tween<double>(
-                                            begin: 0,
-                                            end: 1,
-                                          ),
-                                          duration: const Duration(
-                                            milliseconds: 440,
-                                          ),
-                                          curve: Curves.easeOutCubic,
-                                          builder: (context, value, child) {
-                                            final lift = (1 - value) * 40;
-                                            final scale = 0.90 + (0.10 * value);
-                                            return Opacity(
-                                              opacity: value,
-                                              child: Transform.translate(
-                                                offset: Offset(0, lift),
-                                                child: Transform.scale(
-                                                  alignment:
-                                                      Alignment.topCenter,
-                                                  scale: scale,
-                                                  child: child,
-                                                ),
-                                              ),
-                                            );
-                                          },
-                                          child: AnimatedSwitcher(
-                                            duration: avoidVideoHeroOverlap
-                                                ? Duration.zero
-                                                : const Duration(
-                                                    milliseconds: 420,
+                                  );
+                                  final expandedLyricsHeight = math.max(
+                                    collapsedLyricsHeight + 120,
+                                    constraints.maxHeight * 0.90,
+                                  );
+                                  return NotificationListener<
+                                    ScrollNotification
+                                  >(
+                                    onNotification:
+                                        _handleContentScrollNotification,
+                                    child: SingleChildScrollView(
+                                      controller: _contentScrollController,
+                                      physics: const ClampingScrollPhysics(
+                                        parent: AlwaysScrollableScrollPhysics(),
+                                      ),
+                                      clipBehavior: Clip.none,
+                                      padding: EdgeInsets.fromLTRB(
+                                        canShowEmbeddedVideo ? 10 : 24,
+                                        8,
+                                        canShowEmbeddedVideo ? 10 : 24,
+                                        32,
+                                      ),
+                                      child: ConstrainedBox(
+                                        constraints: BoxConstraints(
+                                          minHeight: constraints.maxHeight - 40,
+                                        ),
+                                        child: Align(
+                                          alignment: Alignment.topCenter,
+                                          child: ConstrainedBox(
+                                            constraints: BoxConstraints(
+                                              maxWidth: contentMaxWidth,
+                                            ),
+                                            child: Column(
+                                              children: [
+                                                TweenAnimationBuilder<double>(
+                                                  key: ValueKey(
+                                                    'full-hero-entry-${manager.currentVideoId}-${manager.isLyricsLayout}',
                                                   ),
-                                            switchInCurve: Curves.easeOutCubic,
-                                            switchOutCurve: Curves.easeInCubic,
-                                            layoutBuilder:
-                                                (
-                                                  currentChild,
-                                                  previousChildren,
-                                                ) {
-                                                  if (avoidVideoHeroOverlap) {
-                                                    return currentChild ??
-                                                        const SizedBox.shrink();
-                                                  }
-                                                  return Stack(
-                                                    clipBehavior: Clip.none,
+                                                  tween: Tween<double>(
+                                                    begin: 0,
+                                                    end: 1,
+                                                  ),
+                                                  duration: const Duration(
+                                                    milliseconds: 440,
+                                                  ),
+                                                  curve: Curves.easeOutCubic,
+                                                  builder: (context, value, child) {
+                                                    final lift =
+                                                        (1 - value) * 40;
+                                                    final scale =
+                                                        0.90 + (0.10 * value);
+                                                    return Opacity(
+                                                      opacity: value,
+                                                      child: Transform.translate(
+                                                        offset: Offset(0, lift),
+                                                        child: Transform.scale(
+                                                          alignment: Alignment
+                                                              .topCenter,
+                                                          scale: scale,
+                                                          child: child,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  },
+                                                  child: AnimatedSwitcher(
+                                                    duration:
+                                                        avoidVideoHeroOverlap
+                                                        ? Duration.zero
+                                                        : const Duration(
+                                                            milliseconds: 420,
+                                                          ),
+                                                    switchInCurve:
+                                                        Curves.easeOutCubic,
+                                                    switchOutCurve:
+                                                        Curves.easeInCubic,
+                                                    layoutBuilder:
+                                                        (
+                                                          currentChild,
+                                                          previousChildren,
+                                                        ) {
+                                                          if (avoidVideoHeroOverlap) {
+                                                            return currentChild ??
+                                                                const SizedBox.shrink();
+                                                          }
+                                                          return Stack(
+                                                            clipBehavior:
+                                                                Clip.none,
+                                                            alignment: Alignment
+                                                                .topCenter,
+                                                            children: <Widget>[
+                                                              ...previousChildren,
+                                                              if (currentChild !=
+                                                                  null)
+                                                                currentChild,
+                                                            ],
+                                                          );
+                                                        },
+                                                    transitionBuilder:
+                                                        (child, animation) {
+                                                          final slide =
+                                                              Tween<Offset>(
+                                                                begin:
+                                                                    const Offset(
+                                                                      0,
+                                                                      0.06,
+                                                                    ),
+                                                                end:
+                                                                    Offset.zero,
+                                                              ).animate(
+                                                                CurvedAnimation(
+                                                                  parent:
+                                                                      animation,
+                                                                  curve: Curves
+                                                                      .easeOutCubic,
+                                                                ),
+                                                              );
+                                                          return FadeTransition(
+                                                            opacity: animation,
+                                                            child:
+                                                                SlideTransition(
+                                                                  position:
+                                                                      slide,
+                                                                  child: child,
+                                                                ),
+                                                          );
+                                                        },
+                                                    child:
+                                                        (manager.isLyricsLayout &&
+                                                            !isMacOs)
+                                                        ? _CompactNowPlayingHeader(
+                                                            key: const ValueKey(
+                                                              'compact_now_playing_header',
+                                                            ),
+                                                            manager: manager,
+                                                            preferStaticArtwork:
+                                                                thermalSaverMode,
+                                                            onArtworkTap: manager
+                                                                .toggleLyricsLayout,
+                                                            onArtistTap: () =>
+                                                                _openArtistProfile(
+                                                                  context,
+                                                                ),
+                                                            canAddToPlaylist:
+                                                                canAddToPlaylist,
+                                                            onAddToPlaylist: () =>
+                                                                _showAddToPlaylistSheet(
+                                                                  context:
+                                                                      context,
+                                                                  playlistService:
+                                                                      playlistService,
+                                                                  downloadService:
+                                                                      downloadService,
+                                                                  manager:
+                                                                      manager,
+                                                                ),
+                                                            onAddToFavorites: () =>
+                                                                _handleToggleFavorites(
+                                                                  context:
+                                                                      context,
+                                                                  playlistService:
+                                                                      playlistService,
+                                                                  downloadService:
+                                                                      downloadService,
+                                                                  manager:
+                                                                      manager,
+                                                                ),
+                                                            favoriteButtonActive:
+                                                                isCurrentTrackFavorited,
+                                                            favoritePulseNonce:
+                                                                _favoritePulseNonce,
+                                                          )
+                                                        : canShowEmbeddedVideo
+                                                        ? _EmbeddedNowPlayingVideoHero(
+                                                            key: const ValueKey(
+                                                              'embedded_now_playing_video_hero',
+                                                            ),
+                                                            manager: manager,
+                                                            controller:
+                                                                embeddedVideoController,
+                                                            artworkSize:
+                                                                embeddedVideoSize,
+                                                            onToggleFullscreen:
+                                                                () => manager
+                                                                    .setFullScreen(
+                                                                      true,
+                                                                    ),
+                                                            onArtistTap: () =>
+                                                                _openArtistProfile(
+                                                                  context,
+                                                                ),
+                                                            canAddToPlaylist:
+                                                                canAddToPlaylist,
+                                                            onAddToPlaylist: () =>
+                                                                _showAddToPlaylistSheet(
+                                                                  context:
+                                                                      context,
+                                                                  playlistService:
+                                                                      playlistService,
+                                                                  downloadService:
+                                                                      downloadService,
+                                                                  manager:
+                                                                      manager,
+                                                                ),
+                                                            onAddToFavorites: () =>
+                                                                _handleToggleFavorites(
+                                                                  context:
+                                                                      context,
+                                                                  playlistService:
+                                                                      playlistService,
+                                                                  downloadService:
+                                                                      downloadService,
+                                                                  manager:
+                                                                      manager,
+                                                                ),
+                                                            favoriteButtonActive:
+                                                                isCurrentTrackFavorited,
+                                                            favoritePulseNonce:
+                                                                _favoritePulseNonce,
+                                                            onShare: () =>
+                                                                unawaited(
+                                                                  _shareCurrentSongLink(
+                                                                    context,
+                                                                  ),
+                                                                ),
+                                                            canDownload:
+                                                                canDownload,
+                                                            videoId: videoId,
+                                                            downloadService:
+                                                                downloadService,
+                                                          )
+                                                        : _DefaultNowPlayingHero(
+                                                            key: const ValueKey(
+                                                              'default_now_playing_hero',
+                                                            ),
+                                                            manager: manager,
+                                                            artworkSize:
+                                                                defaultArtworkSize,
+                                                            preferStaticArtwork:
+                                                                thermalSaverMode,
+                                                            onArtistTap: () =>
+                                                                _openArtistProfile(
+                                                                  context,
+                                                                ),
+                                                            canAddToPlaylist:
+                                                                canAddToPlaylist,
+                                                            onAddToPlaylist: () =>
+                                                                _showAddToPlaylistSheet(
+                                                                  context:
+                                                                      context,
+                                                                  playlistService:
+                                                                      playlistService,
+                                                                  downloadService:
+                                                                      downloadService,
+                                                                  manager:
+                                                                      manager,
+                                                                ),
+                                                            onAddToFavorites: () =>
+                                                                _handleToggleFavorites(
+                                                                  context:
+                                                                      context,
+                                                                  playlistService:
+                                                                      playlistService,
+                                                                  downloadService:
+                                                                      downloadService,
+                                                                  manager:
+                                                                      manager,
+                                                                ),
+                                                            favoriteButtonActive:
+                                                                isCurrentTrackFavorited,
+                                                            favoritePulseNonce:
+                                                                _favoritePulseNonce,
+                                                          ),
+                                                  ),
+                                                ),
+                                                if (manager.isLyricsLayout &&
+                                                    !isMacOs) ...[
+                                                  const SizedBox(height: 14),
+                                                  AnimatedContainer(
+                                                    duration: const Duration(
+                                                      milliseconds: 420,
+                                                    ),
+                                                    curve: Curves
+                                                        .easeInOutCubicEmphasized,
+                                                    height: lyricsImmersive
+                                                        ? expandedLyricsHeight
+                                                        : collapsedLyricsHeight,
+                                                    child: _LyricsPanel(
+                                                      manager: manager,
+                                                      immersiveMode:
+                                                          lyricsImmersive,
+                                                      onInteraction:
+                                                          _onLyricsPanelInteraction,
+                                                      onRevealRequest:
+                                                          _onLyricsPanelRevealRequest,
+                                                      onImmersiveRequest:
+                                                          _onLyricsPanelImmersiveRequest,
+                                                    ),
+                                                  ),
+                                                ],
+                                                ClipRect(
+                                                  child: AnimatedAlign(
+                                                    duration: const Duration(
+                                                      milliseconds: 420,
+                                                    ),
+                                                    curve: Curves
+                                                        .easeInOutCubicEmphasized,
                                                     alignment:
                                                         Alignment.topCenter,
-                                                    children: <Widget>[
-                                                      ...previousChildren,
-                                                      if (currentChild != null)
-                                                        currentChild,
-                                                    ],
-                                                  );
-                                                },
-                                            transitionBuilder:
-                                                (child, animation) {
-                                                  final slide =
-                                                      Tween<Offset>(
-                                                        begin: const Offset(
-                                                          0,
-                                                          0.06,
-                                                        ),
-                                                        end: Offset.zero,
-                                                      ).animate(
-                                                        CurvedAnimation(
-                                                          parent: animation,
-                                                          curve: Curves
-                                                              .easeOutCubic,
-                                                        ),
-                                                      );
-                                                  return FadeTransition(
-                                                    opacity: animation,
-                                                    child: SlideTransition(
-                                                      position: slide,
-                                                      child: child,
-                                                    ),
-                                                  );
-                                                },
-                                            child: manager.isLyricsLayout
-                                                ? _CompactNowPlayingHeader(
-                                                    key: const ValueKey(
-                                                      'compact_now_playing_header',
-                                                    ),
-                                                    manager: manager,
-                                                    preferStaticArtwork:
-                                                        thermalSaverMode,
-                                                    onArtworkTap: manager
-                                                        .toggleLyricsLayout,
-                                                    onArtistTap: () =>
-                                                        _openArtistProfile(
-                                                          context,
-                                                        ),
-                                                    canAddToPlaylist:
-                                                        canAddToPlaylist,
-                                                    onAddToPlaylist: () =>
-                                                        _showAddToPlaylistSheet(
-                                                          context: context,
-                                                          playlistService:
-                                                              playlistService,
-                                                          downloadService:
-                                                              downloadService,
-                                                          manager: manager,
-                                                        ),
-                                                    onAddToFavorites: () =>
-                                                        _handleToggleFavorites(
-                                                          context: context,
-                                                          playlistService:
-                                                              playlistService,
-                                                          downloadService:
-                                                              downloadService,
-                                                          manager: manager,
-                                                        ),
-                                                    favoriteButtonActive:
-                                                        isCurrentTrackFavorited,
-                                                    favoritePulseNonce:
-                                                        _favoritePulseNonce,
-                                                  )
-                                                : canShowEmbeddedVideo
-                                                ? _EmbeddedNowPlayingVideoHero(
-                                                    key: const ValueKey(
-                                                      'embedded_now_playing_video_hero',
-                                                    ),
-                                                    manager: manager,
-                                                    controller:
-                                                        embeddedVideoController,
-                                                    artworkSize:
-                                                        defaultArtworkSize,
-                                                    onToggleFullscreen: () =>
-                                                        manager.setFullScreen(
-                                                          true,
-                                                        ),
-                                                    onArtistTap: () =>
-                                                        _openArtistProfile(
-                                                          context,
-                                                        ),
-                                                    canAddToPlaylist:
-                                                        canAddToPlaylist,
-                                                    onAddToPlaylist: () =>
-                                                        _showAddToPlaylistSheet(
-                                                          context: context,
-                                                          playlistService:
-                                                              playlistService,
-                                                          downloadService:
-                                                              downloadService,
-                                                          manager: manager,
-                                                        ),
-                                                    onAddToFavorites: () =>
-                                                        _handleToggleFavorites(
-                                                          context: context,
-                                                          playlistService:
-                                                              playlistService,
-                                                          downloadService:
-                                                              downloadService,
-                                                          manager: manager,
-                                                        ),
-                                                    favoriteButtonActive:
-                                                        isCurrentTrackFavorited,
-                                                    favoritePulseNonce:
-                                                        _favoritePulseNonce,
-                                                  )
-                                                : _DefaultNowPlayingHero(
-                                                    key: const ValueKey(
-                                                      'default_now_playing_hero',
-                                                    ),
-                                                    manager: manager,
-                                                    artworkSize:
-                                                        defaultArtworkSize,
-                                                    preferStaticArtwork:
-                                                        thermalSaverMode,
-                                                    onArtistTap: () =>
-                                                        _openArtistProfile(
-                                                          context,
-                                                        ),
-                                                    canAddToPlaylist:
-                                                        canAddToPlaylist,
-                                                    onAddToPlaylist: () =>
-                                                        _showAddToPlaylistSheet(
-                                                          context: context,
-                                                          playlistService:
-                                                              playlistService,
-                                                          downloadService:
-                                                              downloadService,
-                                                          manager: manager,
-                                                        ),
-                                                    onAddToFavorites: () =>
-                                                        _handleToggleFavorites(
-                                                          context: context,
-                                                          playlistService:
-                                                              playlistService,
-                                                          downloadService:
-                                                              downloadService,
-                                                          manager: manager,
-                                                        ),
-                                                    favoriteButtonActive:
-                                                        isCurrentTrackFavorited,
-                                                    favoritePulseNonce:
-                                                        _favoritePulseNonce,
-                                                  ),
-                                          ),
-                                        ),
-                                        if (manager.isLyricsLayout) ...[
-                                          const SizedBox(height: 14),
-                                          AnimatedContainer(
-                                            duration: const Duration(
-                                              milliseconds: 420,
-                                            ),
-                                            curve:
-                                                Curves.easeInOutCubicEmphasized,
-                                            height: lyricsImmersive
-                                                ? expandedLyricsHeight
-                                                : collapsedLyricsHeight,
-                                            child: _LyricsPanel(
-                                              manager: manager,
-                                              immersiveMode: lyricsImmersive,
-                                              onInteraction:
-                                                  _onLyricsPanelInteraction,
-                                              onRevealRequest:
-                                                  _onLyricsPanelRevealRequest,
-                                              onImmersiveRequest:
-                                                  _onLyricsPanelImmersiveRequest,
-                                            ),
-                                          ),
-                                        ],
-                                        ClipRect(
-                                          child: AnimatedAlign(
-                                            duration: const Duration(
-                                              milliseconds: 420,
-                                            ),
-                                            curve:
-                                                Curves.easeInOutCubicEmphasized,
-                                            alignment: Alignment.topCenter,
-                                            heightFactor: showLyricsControls
-                                                ? 1
-                                                : 0,
-                                            child: AnimatedOpacity(
-                                              duration: const Duration(
-                                                milliseconds: 260,
-                                              ),
-                                              curve: Curves.easeInOutCubic,
-                                              opacity: showLyricsControls
-                                                  ? 1
-                                                  : 0,
-                                              child: IgnorePointer(
-                                                ignoring: !showLyricsControls,
-                                                child: AnimatedSlide(
-                                                  duration: const Duration(
-                                                    milliseconds: 420,
-                                                  ),
-                                                  curve: Curves
-                                                      .easeInOutCubicEmphasized,
-                                                  offset: Offset.zero,
-                                                  child: Column(
-                                                    children: [
-                                                      const SizedBox(
-                                                        height: 10,
+                                                    heightFactor:
+                                                        showLyricsControls
+                                                        ? 1
+                                                        : 0,
+                                                    child: AnimatedOpacity(
+                                                      duration: const Duration(
+                                                        milliseconds: 260,
                                                       ),
-                                                      if (manager.isLoading &&
-                                                          !manager.isPlaying)
-                                                        const Padding(
-                                                          padding:
-                                                              EdgeInsets.symmetric(
-                                                                vertical: 20,
+                                                      curve:
+                                                          Curves.easeInOutCubic,
+                                                      opacity:
+                                                          showLyricsControls
+                                                          ? 1
+                                                          : 0,
+                                                      child: IgnorePointer(
+                                                        ignoring:
+                                                            !showLyricsControls,
+                                                        child: AnimatedSlide(
+                                                          duration:
+                                                              const Duration(
+                                                                milliseconds:
+                                                                    420,
                                                               ),
-                                                          child:
-                                                              _IosLoadingControls(),
-                                                        )
-                                                      else ...[
-                                                        const _ProgressSection(),
-                                                        const SizedBox(
-                                                          height: 10,
-                                                        ),
-                                                        Row(
-                                                          mainAxisAlignment:
-                                                              MainAxisAlignment
-                                                                  .spaceEvenly,
-                                                          children: [
-                                                            _NativeControlButton(
-                                                              icon: CupertinoIcons
-                                                                  .backward_fill,
-                                                              onPressed: manager
-                                                                  .playPreviousInQueue,
-                                                            ),
-                                                            _NativePrimaryPlayButton(
-                                                              isPlaying: manager
-                                                                  .isPlaying,
-                                                              onPressed: manager
-                                                                  .togglePlayPause,
-                                                            ),
-                                                            _NativeControlButton(
-                                                              icon: CupertinoIcons
-                                                                  .forward_fill,
-                                                              onPressed: manager
-                                                                  .playNextInQueue,
-                                                            ),
-                                                          ],
-                                                        ),
-                                                        const SizedBox(
-                                                          height: 6,
-                                                        ),
-                                                        SizedBox(height: 28),
-                                                        if (Platform.isIOS) ...[
-                                                          const _SystemVolumeSlider(),
-                                                          const SizedBox(
-                                                            height: 14,
+                                                          curve: Curves
+                                                              .easeInOutCubicEmphasized,
+                                                          offset: Offset.zero,
+                                                          child: Column(
+                                                            children: [
+                                                              const SizedBox(
+                                                                height: 10,
+                                                              ),
+                                                              if (manager
+                                                                      .isLoading &&
+                                                                  !manager
+                                                                      .isPlaying)
+                                                                const Padding(
+                                                                  padding:
+                                                                      EdgeInsets.symmetric(
+                                                                        vertical:
+                                                                            20,
+                                                                      ),
+                                                                  child:
+                                                                      _IosLoadingControls(),
+                                                                )
+                                                              else ...[
+                                                                if (canShowEmbeddedVideo &&
+                                                                    videoId !=
+                                                                        null) ...[
+                                                                  _EmbeddedVideoCommentsSection(
+                                                                    videoId:
+                                                                        videoId,
+                                                                  ),
+                                                                  const SizedBox(
+                                                                    height: 12,
+                                                                  ),
+                                                                ],
+                                                                if (!canShowEmbeddedVideo) ...[
+                                                                  const _ProgressSection(),
+                                                                  const SizedBox(
+                                                                    height: 10,
+                                                                  ),
+                                                                  Row(
+                                                                    mainAxisAlignment:
+                                                                        MainAxisAlignment
+                                                                            .spaceEvenly,
+                                                                    children: [
+                                                                      _NativeControlButton(
+                                                                        icon: CupertinoIcons
+                                                                            .backward_fill,
+                                                                        onPressed:
+                                                                            manager
+                                                                                .playPreviousInQueue,
+                                                                      ),
+                                                                      _NativePrimaryPlayButton(
+                                                                        isPlaying:
+                                                                            manager
+                                                                                .isPlaying,
+                                                                        onPressed:
+                                                                            manager
+                                                                                .togglePlayPause,
+                                                                      ),
+                                                                      _NativeControlButton(
+                                                                        icon: CupertinoIcons
+                                                                            .forward_fill,
+                                                                        onPressed:
+                                                                            manager
+                                                                                .playNextInQueue,
+                                                                      ),
+                                                                    ],
+                                                                  ),
+                                                                  const SizedBox(
+                                                                    height: 6,
+                                                                  ),
+                                                                  SizedBox(
+                                                                    height: 28,
+                                                                  ),
+                                                                ],
+                                                                if (!canShowEmbeddedVideo &&
+                                                                    Platform
+                                                                        .isIOS) ...[
+                                                                  const _SystemVolumeSlider(),
+                                                                  const SizedBox(
+                                                                    height: 14,
+                                                                  ),
+                                                                ],
+
+                                                                if (!canShowEmbeddedVideo)
+                                                                  Row(
+                                                                    children: [
+                                                                      const SizedBox(
+                                                                        width: 34,
+                                                                      ),
+                                                                      _InlineLyricsButton(
+                                                                        isActive:
+                                                                            manager
+                                                                                .isLyricsLayout,
+                                                                        onPressed:
+                                                                            manager
+                                                                                .toggleLyricsLayout,
+                                                                      ),
+                                                                      const Spacer(),
+                                                                      const _InlineAudioRouteButton.withLabel(),
+                                                                      const Spacer(),
+                                                                      _InlineAutoplayButton(
+                                                                        isActive:
+                                                                            manager
+                                                                                .autoplayEnabled,
+                                                                        onPressed:
+                                                                            manager
+                                                                                .toggleAutoplay,
+                                                                      ),
+                                                                    ],
+                                                                  ),
+
+                                                                SizedBox(
+                                                                  height:
+                                                                      MediaQuery.of(
+                                                                        context,
+                                                                      ).padding.bottom +
+                                                                      50,
+                                                                ),
+                                                              ],
+                                                              if (!isMacOs)
+                                                                const _QueueSection(),
+                                                            ],
                                                           ),
-                                                        ],
-
-                                                        Row(
-                                                          children: [
-                                                            const SizedBox(
-                                                              width: 34,
-                                                            ),
-                                                            _InlineLyricsButton(
-                                                              isActive: manager
-                                                                  .isLyricsLayout,
-                                                              onPressed: manager
-                                                                  .toggleLyricsLayout,
-                                                            ),
-                                                            const Spacer(),
-                                                            const _InlineAudioRouteButton(),
-                                                            const Spacer(),
-                                                            _InlineAutoplayButton(
-                                                              isActive: manager
-                                                                  .autoplayEnabled,
-                                                              onPressed: manager
-                                                                  .toggleAutoplay,
-                                                            ),
-                                                          ],
                                                         ),
-
-                                                        SizedBox(
-                                                          height:
-                                                              MediaQuery.of(
-                                                                context,
-                                                              ).padding.bottom +
-                                                              50,
-                                                        ),
-                                                      ],
-                                                      // Removed SizedBox(height: 26),
-                                                      const _QueueSection(),
-                                                    ],
+                                                      ),
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
+                                              ],
                                             ),
                                           ),
                                         ),
-                                      ],
+                                      ),
                                     ),
+                                  );
+                                },
+                              );
+                              if (!isMacOs) return scrollableContent;
+                              final showQueuePane = !manager.isLyricsLayout;
+                              final showLyricsPane = manager.isLyricsLayout;
+                              final viewportWidth = MediaQuery.sizeOf(
+                                context,
+                              ).width;
+                              final leftPaneWidth = math.min(
+                                620.0,
+                                math.max(420.0, viewportWidth * 0.36),
+                              );
+                              return Row(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  SizedBox(
+                                    width: leftPaneWidth,
+                                    child: scrollableContent,
                                   ),
-                                ),
+                                  if (showQueuePane || showLyricsPane)
+                                    const SizedBox(width: 16),
+                                  if (showQueuePane || showLyricsPane)
+                                    Expanded(
+                                      child: _MacQueuePane(
+                                        scrollable: showQueuePane,
+                                        child: showLyricsPane
+                                            ? _LyricsPanel(
+                                                manager: manager,
+                                                immersiveMode: true,
+                                                onInteraction:
+                                                    _onLyricsPanelInteraction,
+                                                onRevealRequest:
+                                                    _onLyricsPanelRevealRequest,
+                                                onImmersiveRequest:
+                                                    _onLyricsPanelImmersiveRequest,
+                                              )
+                                            : const _QueueSection(),
+                                      ),
+                                    ),
+                                ],
                               );
                             },
                           ),
@@ -2281,7 +2464,10 @@ class _InlineLyricsButton extends StatelessWidget {
 }
 
 class _InlineAudioRouteButton extends StatefulWidget {
-  const _InlineAudioRouteButton();
+  final bool showDeviceName;
+
+  const _InlineAudioRouteButton() : showDeviceName = false;
+  const _InlineAudioRouteButton.withLabel() : showDeviceName = true;
 
   @override
   State<_InlineAudioRouteButton> createState() =>
@@ -2382,59 +2568,59 @@ class _InlineAudioRouteButtonState extends State<_InlineAudioRouteButton> {
         : _AudioRouteVisual.airplay;
   }
 
-  Widget _buildRouteIcon(Color color) {
+  Widget _buildRouteIcon(Color color, {double size = 21}) {
     final visual = _resolveRouteVisual();
     switch (visual) {
       case _AudioRouteVisual.airpods:
-        return const _AirPodsIcon(size: 21, isPro: false);
+        return _AirPodsIcon(size: size, isPro: false);
       case _AudioRouteVisual.airpodsPro:
-        return const _AirPodsIcon(size: 21, isPro: true);
+        return _AirPodsIcon(size: size, isPro: true);
       case _AudioRouteVisual.airpodsMax:
-        return Icon(CupertinoIcons.headphones, size: 21, color: color);
+        return Icon(CupertinoIcons.headphones, size: size, color: color);
       case _AudioRouteVisual.bluetooth:
-        return Icon(Icons.bluetooth, size: 21, color: color);
+        return Icon(Icons.bluetooth, size: size, color: color);
       case _AudioRouteVisual.iphone:
         return Icon(
           CupertinoIcons.device_phone_portrait,
-          size: 21,
+          size: size,
           color: color,
         );
       case _AudioRouteVisual.airplay:
-        return Icon(Icons.airplay, size: 21, color: color);
+        return Icon(Icons.airplay, size: size, color: color);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final labelColor = CupertinoColors.white.withValues(alpha: 0.86);
     final iconColor = CupertinoColors.white;
+    final showName = widget.showDeviceName;
+    final routeLabel = _routeName.trim().isEmpty ? 'Salida de audio' : _routeName;
     return CupertinoButton(
-      padding: EdgeInsets.zero,
+      padding: EdgeInsets.symmetric(horizontal: showName ? 10 : 8, vertical: 8),
       minimumSize: Size.zero,
       onPressed: _openRoutePicker,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minWidth: 94, maxWidth: 146),
-        child: Transform.translate(
-          offset: const Offset(0, 4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildRouteIcon(iconColor),
-              const SizedBox(height: 2),
-              Text(
-                _routeName,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _buildRouteIcon(iconColor, size: 18),
+          if (showName) ...[
+            const SizedBox(width: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 130),
+              child: Text(
+                routeLabel,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: CupertinoTheme.of(context).textTheme.textStyle.copyWith(
-                  fontSize: 11,
+                style: const TextStyle(
+                  fontFamily: '.SF Pro Text',
+                  fontSize: 12,
                   fontWeight: FontWeight.w600,
-                  color: labelColor,
+                  color: CupertinoColors.white,
                 ),
               ),
-            ],
-          ),
-        ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -2794,6 +2980,10 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
   final VoidCallback onAddToFavorites;
   final bool favoriteButtonActive;
   final int favoritePulseNonce;
+  final VoidCallback onShare;
+  final bool canDownload;
+  final String? videoId;
+  final DownloadService downloadService;
 
   const _EmbeddedNowPlayingVideoHero({
     super.key,
@@ -2807,12 +2997,29 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
     required this.onAddToFavorites,
     required this.favoriteButtonActive,
     required this.favoritePulseNonce,
+    required this.onShare,
+    required this.canDownload,
+    required this.videoId,
+    required this.downloadService,
   });
 
   @override
   Widget build(BuildContext context) {
     final transitionDx = manager.trackTransitionDirection < 0 ? -0.03 : 0.03;
-    const ratio = 240 / 140;
+    const ratio = 16 / 9;
+    final titleStyle = CupertinoTheme.of(
+      context,
+    ).textTheme.textStyle.copyWith(
+      fontSize: 20,
+      fontWeight: FontWeight.w700,
+      color: CupertinoColors.white,
+    );
+    final subtitleStyle = CupertinoTheme.of(
+      context,
+    ).textTheme.textStyle.copyWith(
+      fontSize: 14,
+      color: CupertinoColors.white.withValues(alpha: 0.78),
+    );
     return Column(
       key: key,
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -2820,25 +3027,634 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
         Center(
           child: SizedBox(
             width: artworkSize,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(20),
-              child: Stack(
-                alignment: Alignment.bottomRight,
-                children: [
-                  AspectRatio(
-                    aspectRatio: ratio,
-                    child: VideoPlayer(controller),
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(22),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.22),
+                    blurRadius: 22,
+                    offset: const Offset(0, 10),
                   ),
-                  SafeArea(
-                    minimum: const EdgeInsets.all(8),
-                    child: CupertinoButton(
-                      minimumSize: Size.zero,
-                      padding: const EdgeInsets.all(8),
-                      onPressed: onToggleFullscreen,
-                      child: const Icon(
-                        CupertinoIcons.fullscreen,
-                        size: 20,
-                        color: CupertinoColors.white,
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(22),
+                child: Stack(
+                  children: [
+                    AspectRatio(
+                      aspectRatio: ratio,
+                      child: VideoPlayer(controller),
+                    ),
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.black.withValues(alpha: 0.5),
+                                Colors.transparent,
+                                Colors.black.withValues(alpha: 0.62),
+                              ],
+                              stops: const [0.0, 0.42, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      top: 10,
+                      left: 10,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: CupertinoColors.systemRed.withValues(
+                            alpha: 0.92,
+                          ),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: const Text(
+                          'VIDEO',
+                          style: TextStyle(
+                            color: CupertinoColors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.6,
+                          ),
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                      child: _EmbeddedVideoOverlayControls(
+                        manager: manager,
+                        controller: controller,
+                        onToggleFullscreen: onToggleFullscreen,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Container(
+          width: artworkSize,
+          margin: const EdgeInsets.symmetric(horizontal: 2),
+          padding: const EdgeInsets.fromLTRB(2, 2, 2, 0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: CupertinoColors.systemGrey.withValues(alpha: 0.26),
+                  shape: BoxShape.circle,
+                ),
+                alignment: Alignment.center,
+                child: const Icon(
+                  CupertinoIcons.play_rectangle_fill,
+                  size: 18,
+                  color: CupertinoColors.white,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 300),
+                      switchInCurve: Curves.easeOutCubic,
+                      switchOutCurve: Curves.easeInCubic,
+                      transitionBuilder: (child, animation) => FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(
+                          position: Tween<Offset>(
+                            begin: Offset(transitionDx, 0),
+                            end: Offset.zero,
+                          ).animate(animation),
+                          child: child,
+                        ),
+                      ),
+                      child: SizedBox(
+                        key: ValueKey(
+                          'video_hero_title_${manager.currentVideoId ?? ''}',
+                        ),
+                        width: double.infinity,
+                        child: _AutoScrollText(
+                          text: manager.trackTitle ?? 'Cargando video...',
+                          style: titleStyle,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onArtistTap,
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 280),
+                        switchInCurve: Curves.easeOutCubic,
+                        switchOutCurve: Curves.easeInCubic,
+                        layoutBuilder: (currentChild, previousChildren) {
+                          return Stack(
+                            alignment: Alignment.centerLeft,
+                            children: <Widget>[
+                              ...previousChildren,
+                              if (currentChild != null) currentChild,
+                            ],
+                          );
+                        },
+                        transitionBuilder: (child, animation) => FadeTransition(
+                          opacity: animation,
+                          child: SlideTransition(
+                            position: Tween<Offset>(
+                              begin: Offset(transitionDx, 0),
+                              end: Offset.zero,
+                            ).animate(animation),
+                            child: child,
+                          ),
+                        ),
+                        child: KeyedSubtree(
+                          key: ValueKey(
+                            'video_hero_artist_${manager.currentVideoId ?? ''}',
+                          ),
+                          child: _AutoScrollText(
+                            text: manager.trackArtist ?? 'Artista desconocido',
+                            style: subtitleStyle,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 220),
+          child: Row(
+            key: ValueKey('video_hero_actions_${manager.currentVideoId ?? ''}'),
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (canAddToPlaylist) ...[
+                const SizedBox(width: 8),
+                _InlineArtistActionButton(
+                  icon: CupertinoIcons.square_arrow_up,
+                  onPressed: onShare,
+                ),
+                if (canDownload && videoId != null) ...[
+                  const SizedBox(width: 6),
+                  _DownloadButton(
+                    videoId: videoId!,
+                    title: manager.trackTitle ?? 'Sin título',
+                    thumbnailUrl: manager.trackThumbnailUrl ?? '',
+                    channelTitle: manager.trackArtist ?? '',
+                    sourceUrl: manager.currentStreamUrl,
+                    isVideoSource: manager.isUsingVideoFallback,
+                    downloadService: downloadService,
+                  ),
+                ],
+                const SizedBox(width: 6),
+                _InlineArtistActionButton(
+                  icon: CupertinoIcons.add,
+                  onPressed: onAddToPlaylist,
+                ),
+                const SizedBox(width: 6),
+                _InlineArtistActionButton(
+                  icon: CupertinoIcons.star_fill,
+                  onPressed: onAddToFavorites,
+                  isActiveFavorite: favoriteButtonActive,
+                  pulseNonce: favoritePulseNonce,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _EmbeddedVideoOverlayControls extends StatefulWidget {
+  final VideoPlayerManager manager;
+  final VideoPlayerController controller;
+  final VoidCallback onToggleFullscreen;
+
+  const _EmbeddedVideoOverlayControls({
+    required this.manager,
+    required this.controller,
+    required this.onToggleFullscreen,
+  });
+
+  @override
+  State<_EmbeddedVideoOverlayControls> createState() =>
+      _EmbeddedVideoOverlayControlsState();
+}
+
+class _EmbeddedVideoOverlayControlsState
+    extends State<_EmbeddedVideoOverlayControls> {
+  static const Duration _autoHideDelay = Duration(seconds: 3);
+  Timer? _hideTimer;
+  bool _visible = true;
+  bool _iosPiPEntered = false;
+  bool _resumePlaybackAfterPiP = false;
+  bool _syncingBackFromPiP = false;
+
+  late final WidgetsBindingObserver _pipLifecycleObserver = _PiPLifecycleObserver(
+    onResumed: _syncBackFromPictureInPictureIfNeeded,
+  );
+
+  Future<void> _seekBy(Duration delta) async {
+    final value = widget.controller.value;
+    final total = value.duration;
+    if (total <= Duration.zero) return;
+    final targetMs = (value.position.inMilliseconds + delta.inMilliseconds)
+        .clamp(0, total.inMilliseconds);
+    await widget.manager.seekTo(Duration(milliseconds: targetMs));
+    _showControls();
+  }
+
+  String _fmt(Duration d) {
+    final totalSeconds = d.inSeconds;
+    final hours = totalSeconds ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    final seconds = totalSeconds % 60;
+    if (hours > 0) {
+      return '${hours.toString().padLeft(2, '0')}:${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    }
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _enterPictureInPicture() async {
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
+      if (!mounted) return;
+      showIosNotice(context, 'PiP no disponible en esta plataforma.');
+      return;
+    }
+    try {
+      final wasPlayingBeforePiP =
+          widget.controller.value.isPlaying || widget.manager.isPlaying;
+      if (Platform.isIOS && wasPlayingBeforePiP) {
+        await widget.manager.muteForExternalPictureInPicture();
+      }
+      final value = widget.controller.value;
+      final ratio = value.isInitialized && value.aspectRatio > 0
+          ? value.aspectRatio
+          : (16 / 9);
+      final width = (ratio * 1000).round().clamp(1, 100000);
+      const height = 1000;
+      final streamUrl = widget.manager.currentStreamUrl?.trim() ?? '';
+      if (streamUrl.isEmpty) {
+        await widget.manager.unmuteAfterExternalPictureInPicture();
+        if (!mounted) return;
+        showIosNotice(context, 'PiP no disponible para esta fuente de video.');
+        return;
+      }
+      await _videoPipChannel.invokeMethod<bool>('preparePictureInPicture', {
+        'width': width,
+        'height': height,
+        'sourceUrl': streamUrl,
+        'positionMs': widget.manager.position.inMilliseconds,
+        'playing': wasPlayingBeforePiP,
+      });
+      final ok =
+          await _videoPipChannel.invokeMethod<bool>('enterPictureInPicture', {
+            'width': width,
+            'height': height,
+            'sourceUrl': streamUrl,
+            'positionMs': widget.manager.position.inMilliseconds,
+            'playing': wasPlayingBeforePiP,
+          }) ??
+          false;
+      if (!ok) {
+        await widget.manager.unmuteAfterExternalPictureInPicture();
+        _iosPiPEntered = false;
+        _resumePlaybackAfterPiP = false;
+        if (!mounted) return;
+        showIosNotice(context, 'No se pudo activar PiP.');
+        return;
+      }
+      if (Platform.isIOS) {
+        _iosPiPEntered = true;
+        _resumePlaybackAfterPiP = wasPlayingBeforePiP;
+        await SystemChannels.platform.invokeMethod<void>('SystemNavigator.pop');
+      }
+    } catch (_) {
+      await widget.manager.unmuteAfterExternalPictureInPicture();
+      _iosPiPEntered = false;
+      _resumePlaybackAfterPiP = false;
+      if (!mounted) return;
+      showIosNotice(context, 'No se pudo activar PiP.');
+    }
+  }
+
+  Future<void> _handleVideoPipCallback(MethodCall call) async {
+    if (call.method == 'onPictureInPictureStarted') {
+      if (!mounted || !Platform.isIOS) return;
+      await widget.manager.muteForExternalPictureInPicture();
+      return;
+    }
+  }
+
+  Future<void> _syncBackFromPictureInPictureIfNeeded() async {
+    if (!mounted || _syncingBackFromPiP || !Platform.isIOS || !_iosPiPEntered) {
+      return;
+    }
+    _syncingBackFromPiP = true;
+    try {
+      await widget.manager.muteForExternalPictureInPicture();
+      final raw = await _videoPipChannel.invokeMethod<Map<Object?, Object?>>(
+        'exitPictureInPictureAndGetState',
+      );
+      final map = raw == null
+          ? const <Object?, Object?>{}
+          : Map<Object?, Object?>.from(raw);
+      final positionMsRaw = map['positionMs'];
+      final wasPlayingRaw = map['wasPlaying'];
+      final positionMs = positionMsRaw is num ? positionMsRaw.toInt() : 0;
+      final wasPlaying = wasPlayingRaw == true;
+
+      if (positionMs > 0) {
+        await widget.manager.seekTo(Duration(milliseconds: positionMs));
+      }
+      final shouldResume = wasPlaying || _resumePlaybackAfterPiP;
+      if (shouldResume && !widget.manager.isPlaying) {
+        await widget.manager.togglePlayPause();
+      }
+      if (!shouldResume && widget.manager.isPlaying) {
+        await widget.manager.togglePlayPause();
+      }
+      await widget.manager.unmuteAfterExternalPictureInPicture();
+    } catch (_) {
+      await widget.manager.unmuteAfterExternalPictureInPicture();
+    } finally {
+      _iosPiPEntered = false;
+      _resumePlaybackAfterPiP = false;
+      _syncingBackFromPiP = false;
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(_pipLifecycleObserver);
+    _videoPipChannel.setMethodCallHandler(_handleVideoPipCallback);
+    _armAutoHide();
+  }
+
+  @override
+  void didUpdateWidget(covariant _EmbeddedVideoOverlayControls oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.manager.isPlaying != widget.manager.isPlaying) {
+      if (widget.manager.isPlaying) {
+        _armAutoHide();
+      } else {
+        _showControls();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _videoPipChannel.setMethodCallHandler(null);
+    WidgetsBinding.instance.removeObserver(_pipLifecycleObserver);
+    _hideTimer?.cancel();
+    super.dispose();
+  }
+
+  void _armAutoHide() {
+    _hideTimer?.cancel();
+    if (!widget.manager.isPlaying || !_visible) return;
+    _hideTimer = Timer(_autoHideDelay, () {
+      if (!mounted) return;
+      setState(() {
+        _visible = false;
+      });
+    });
+  }
+
+  void _showControls() {
+    _hideTimer?.cancel();
+    if (!_visible) {
+      setState(() {
+        _visible = true;
+      });
+    }
+    _armAutoHide();
+  }
+
+  void _toggleOverlay() {
+    _hideTimer?.cancel();
+    setState(() {
+      _visible = !_visible;
+    });
+    _armAutoHide();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _toggleOverlay,
+      child: ValueListenableBuilder<VideoPlayerValue>(
+      valueListenable: widget.controller,
+      builder: (context, value, _) {
+        final duration = value.duration;
+        final totalMs = duration.inMilliseconds <= 0
+            ? 1
+            : duration.inMilliseconds;
+        final positionMs = value.position.inMilliseconds.clamp(0, totalMs);
+        final playedRatio = positionMs / totalMs;
+
+        return IgnorePointer(
+          ignoring: !_visible,
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 180),
+            opacity: _visible ? 1 : 0,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withValues(alpha: 0.62),
+                  ],
+                ),
+              ),
+              child: Stack(
+                children: [
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: CupertinoColors.black.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: const _InlineAudioRouteButton(),
+                        ),
+                        const SizedBox(width: 8),
+                        DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: CupertinoColors.black.withValues(alpha: 0.55),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: CupertinoButton(
+                            minimumSize: Size.zero,
+                            padding: const EdgeInsets.all(8),
+                            onPressed: () {
+                              _showControls();
+                              unawaited(_enterPictureInPicture());
+                            },
+                            child: const Icon(
+                              CupertinoIcons.rectangle_on_rectangle,
+                              color: CupertinoColors.white,
+                              size: 18,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Align(
+                    alignment: Alignment.bottomCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(height: 2),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _IosVideoActionButton(
+                          icon: CupertinoIcons.gobackward_10,
+                          onPressed: () => _seekBy(const Duration(seconds: -10)),
+                        ),
+                        const SizedBox(width: 36),
+                        _IosVideoActionButton(
+                          icon: widget.manager.isPlaying
+                              ? CupertinoIcons.pause_fill
+                              : CupertinoIcons.play_fill,
+                          prominent: true,
+                          onPressed: () async {
+                            await widget.manager.togglePlayPause();
+                            _showControls();
+                          },
+                        ),
+                        const SizedBox(width: 36),
+                        _IosVideoActionButton(
+                          icon: CupertinoIcons.goforward_10,
+                          onPressed: () => _seekBy(const Duration(seconds: 10)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onHorizontalDragUpdate: (details) {
+                        final box = context.findRenderObject() as RenderBox?;
+                        if (box == null) return;
+                        final local = box.globalToLocal(details.globalPosition);
+                        final ratio = (local.dx / box.size.width).clamp(0.0, 1.0);
+                        unawaited(
+                          widget.manager.seekTo(
+                            Duration(milliseconds: (totalMs * ratio).round()),
+                          ),
+                        );
+                      },
+                      onTapDown: (details) {
+                        final box = context.findRenderObject() as RenderBox?;
+                        if (box == null) return;
+                        final ratio = (details.localPosition.dx / box.size.width)
+                            .clamp(0.0, 1.0);
+                        unawaited(
+                          widget.manager.seekTo(
+                            Duration(milliseconds: (totalMs * ratio).round()),
+                          ),
+                        );
+                      },
+                      child: SizedBox(
+                        height: 20,
+                        child: Stack(
+                          alignment: Alignment.centerLeft,
+                          children: [
+                            Container(
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: CupertinoColors.white.withValues(
+                                  alpha: 0.34,
+                                ),
+                                borderRadius: BorderRadius.circular(999),
+                              ),
+                            ),
+                            FractionallySizedBox(
+                              widthFactor: playedRatio.clamp(0.0, 1.0),
+                              child: Container(
+                                height: 4,
+                                decoration: BoxDecoration(
+                                  color: CupertinoColors.white,
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        Text(
+                          _fmt(value.position),
+                          style: const TextStyle(
+                            color: CupertinoColors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const Spacer(),
+                        Text(
+                          _fmt(duration),
+                          style: const TextStyle(
+                            color: CupertinoColors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        CupertinoButton(
+                          minimumSize: const Size(22, 22),
+                          padding: EdgeInsets.zero,
+                          onPressed: () {
+                            _showControls();
+                            widget.onToggleFullscreen();
+                          },
+                          child: const Icon(
+                            CupertinoIcons.fullscreen,
+                            size: 16,
+                            color: CupertinoColors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                        ],
                       ),
                     ),
                   ),
@@ -2846,157 +3662,1035 @@ class _EmbeddedNowPlayingVideoHero extends StatelessWidget {
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 28),
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 300),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          transitionBuilder: (child, animation) => FadeTransition(
-            opacity: animation,
-            child: SlideTransition(
-              position: Tween<Offset>(
-                begin: Offset(transitionDx, 0),
-                end: Offset.zero,
-              ).animate(animation),
-              child: child,
-            ),
-          ),
-          child: SizedBox(
-            key: ValueKey('video_hero_title_${manager.currentVideoId ?? ''}'),
-            width: double.infinity,
-            child: _AutoScrollText(
-              text: manager.trackTitle ?? 'Cargando video...',
-              style: CupertinoTheme.of(context).textTheme.navLargeTitleTextStyle
-                  .copyWith(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w700,
-                    color: CupertinoColors.white,
-                  ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 2),
-        Row(
-          children: [
-            Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: onArtistTap,
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 280),
-                  switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
-                  layoutBuilder: (currentChild, previousChildren) {
-                    return Stack(
-                      alignment: Alignment.centerLeft,
-                      children: <Widget>[
-                        ...previousChildren,
-                        if (currentChild != null) currentChild,
-                      ],
-                    );
-                  },
-                  transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: Offset(transitionDx, 0),
-                        end: Offset.zero,
-                      ).animate(animation),
-                      child: child,
-                    ),
-                  ),
-                  child: KeyedSubtree(
-                    key: ValueKey(
-                      'video_hero_artist_${manager.currentVideoId ?? ''}',
-                    ),
-                    child: _AutoScrollText(
-                      text: manager.trackArtist ?? 'Artista desconocido',
-                      style: CupertinoTheme.of(context).textTheme.textStyle
-                          .copyWith(
-                            fontSize: 17,
-                            color: CupertinoColors.white.withValues(
-                              alpha: 0.78,
-                            ),
-                          ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            if (canAddToPlaylist) ...[
-              const SizedBox(width: 8),
-              _InlineArtistActionButton(
-                icon: CupertinoIcons.add,
-                onPressed: onAddToPlaylist,
-              ),
-              const SizedBox(width: 6),
-              _InlineArtistActionButton(
-                icon: CupertinoIcons.star_fill,
-                onPressed: onAddToFavorites,
-                isActiveFavorite: favoriteButtonActive,
-                pulseNonce: favoritePulseNonce,
-              ),
-            ],
-          ],
-        ),
-      ],
+        );
+      },
+    ),
     );
   }
 }
 
-class _FullscreenVideoStage extends StatelessWidget {
+class _MacQueuePane extends StatelessWidget {
+  final Widget child;
+  final bool scrollable;
+
+  const _MacQueuePane({required this.child, this.scrollable = true});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(right: 10, bottom: 12),
+      padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+      decoration: BoxDecoration(
+        color: CupertinoColors.black.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: CupertinoColors.white.withValues(alpha: 0.14),
+          width: 0.8,
+        ),
+      ),
+      child: scrollable
+          ? SingleChildScrollView(
+              physics: const ClampingScrollPhysics(
+                parent: AlwaysScrollableScrollPhysics(),
+              ),
+              child: child,
+            )
+          : child,
+    );
+  }
+}
+
+class _EmbeddedVideoCommentsSection extends StatefulWidget {
+  final String videoId;
+
+  const _EmbeddedVideoCommentsSection({required this.videoId});
+
+  @override
+  State<_EmbeddedVideoCommentsSection> createState() =>
+      _EmbeddedVideoCommentsSectionState();
+}
+
+class _EmbeddedVideoCommentsSectionState
+    extends State<_EmbeddedVideoCommentsSection> {
+  static const String _youtubeDataApiKey = String.fromEnvironment(
+    'YOUTUBE_DATA_API_KEY',
+    defaultValue: 'AIzaSyB1J6EvWN5iL7ADLAitdSXzcIEHUXCm70o',
+  );
+  late Future<_EmbeddedVideoDiscussionData> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _fetchYoutubeComments(widget.videoId);
+  }
+
+  @override
+  void didUpdateWidget(covariant _EmbeddedVideoCommentsSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.videoId != widget.videoId) {
+      _future = _fetchYoutubeComments(widget.videoId);
+    }
+  }
+
+  Future<_EmbeddedVideoDiscussionData> _fetchYoutubeComments(
+    String videoId,
+  ) async {
+    final apiData = await _fetchYoutubeDiscussionFromDataApi(videoId);
+    if (apiData.comments.isNotEmpty) return apiData;
+
+    final yt = YoutubeExplode();
+    try {
+      final video = await yt.videos.get(VideoId(videoId));
+      final description = video.description.trim();
+      final comments = await yt.videos.comments.getComments(video);
+      if (comments == null || comments.isEmpty) {
+        final plusData = await _fetchYoutubeCommentsPlus(videoId);
+        if (description.isNotEmpty && plusData.description.isEmpty) {
+          return _EmbeddedVideoDiscussionData(
+            description: description,
+            comments: plusData.comments,
+          );
+        }
+        return plusData;
+      }
+      return _EmbeddedVideoDiscussionData(
+        description: description,
+        comments: comments
+            .take(40)
+            .map(
+              (item) =>
+                  _YoutubeCommentItem(author: item.author, text: item.text),
+            )
+            .toList(growable: false),
+      );
+    } catch (_) {
+      return await _fetchYoutubeCommentsPlus(videoId);
+    } finally {
+      yt.close();
+    }
+  }
+
+  Future<_EmbeddedVideoDiscussionData> _fetchYoutubeDiscussionFromDataApi(
+    String videoId,
+  ) async {
+    if (_youtubeDataApiKey.trim().isEmpty) {
+      return const _EmbeddedVideoDiscussionData(
+        description: '',
+        comments: <_YoutubeCommentItem>[],
+      );
+    }
+    try {
+      final detailsUri = Uri.https('www.googleapis.com', '/youtube/v3/videos', {
+        'part': 'snippet',
+        'id': videoId,
+        'key': _youtubeDataApiKey,
+      });
+      final commentsUri = Uri.https(
+        'www.googleapis.com',
+        '/youtube/v3/commentThreads',
+        {
+          'part': 'snippet',
+          'videoId': videoId,
+          'maxResults': '50',
+          'order': 'relevance',
+          'textFormat': 'plainText',
+          'key': _youtubeDataApiKey,
+        },
+      );
+      final responses = await Future.wait([
+        http.get(detailsUri).timeout(const Duration(seconds: 10)),
+        http.get(commentsUri).timeout(const Duration(seconds: 10)),
+      ]);
+      final detailsRes = responses[0];
+      final commentsRes = responses[1];
+      var description = '';
+      if (detailsRes.statusCode >= 200 && detailsRes.statusCode < 300) {
+        final detailsDecoded = jsonDecode(detailsRes.body);
+        if (detailsDecoded is Map<String, dynamic>) {
+          final items = detailsDecoded['items'];
+          if (items is List && items.isNotEmpty && items.first is Map) {
+            final snippet = (items.first as Map)['snippet'];
+            if (snippet is Map) {
+              description = (snippet['description'] ?? '').toString().trim();
+            }
+          }
+        }
+      }
+      if (commentsRes.statusCode < 200 || commentsRes.statusCode >= 300) {
+        return _EmbeddedVideoDiscussionData(
+          description: description,
+          comments: const <_YoutubeCommentItem>[],
+        );
+      }
+      final decoded = jsonDecode(commentsRes.body);
+      if (decoded is! Map<String, dynamic>) {
+        return _EmbeddedVideoDiscussionData(
+          description: description,
+          comments: const <_YoutubeCommentItem>[],
+        );
+      }
+      final items = decoded['items'];
+      if (items is! List) {
+        return _EmbeddedVideoDiscussionData(
+          description: description,
+          comments: const <_YoutubeCommentItem>[],
+        );
+      }
+      final out = <_YoutubeCommentItem>[];
+      for (final raw in items) {
+        if (raw is! Map) continue;
+        final snippet = raw['snippet'];
+        if (snippet is! Map) continue;
+        final top = snippet['topLevelComment'];
+        if (top is! Map) continue;
+        final topSnippet = top['snippet'];
+        if (topSnippet is! Map) continue;
+        final author = (topSnippet['authorDisplayName'] ?? '').toString().trim();
+        final text = (topSnippet['textDisplay'] ?? '').toString().trim();
+        if (author.isEmpty || text.isEmpty) continue;
+        out.add(_YoutubeCommentItem(author: author, text: text));
+        if (out.length >= 40) break;
+      }
+      return _EmbeddedVideoDiscussionData(
+        description: description,
+        comments: out,
+      );
+    } catch (_) {
+      return const _EmbeddedVideoDiscussionData(
+        description: '',
+        comments: <_YoutubeCommentItem>[],
+      );
+    }
+  }
+
+  Future<_EmbeddedVideoDiscussionData> _fetchYoutubeCommentsPlus(
+    String videoId,
+  ) async {
+    final yt = ytp.YoutubeExplode();
+    try {
+      final video = await yt.videos.get(ytp.VideoId(videoId));
+      final description = video.description.trim();
+      final comments = await yt.videos.comments.getComments(video);
+      if (comments == null || comments.isEmpty) {
+        return _EmbeddedVideoDiscussionData(
+          description: description,
+          comments: const <_YoutubeCommentItem>[],
+        );
+      }
+      return _EmbeddedVideoDiscussionData(
+        description: description,
+        comments: comments
+            .take(40)
+            .map(
+              (item) =>
+                  _YoutubeCommentItem(author: item.author, text: item.text),
+            )
+            .toList(growable: false),
+      );
+    } catch (_) {
+      return const _EmbeddedVideoDiscussionData(
+        description: '',
+        comments: <_YoutubeCommentItem>[],
+      );
+    } finally {
+      yt.close();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<_EmbeddedVideoDiscussionData>(
+      future: _future,
+      builder: (context, snapshot) {
+        final data = snapshot.data ??
+            const _EmbeddedVideoDiscussionData(
+              description: '',
+              comments: <_YoutubeCommentItem>[],
+            );
+        final items = data.comments;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (data.description.isNotEmpty) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                decoration: BoxDecoration(
+                  color: CupertinoColors.black.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: CupertinoColors.white.withValues(alpha: 0.12),
+                    width: 0.7,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Descripción',
+                      style: TextStyle(
+                        color: CupertinoColors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      data.description,
+                      maxLines: 4,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: CupertinoColors.white.withValues(alpha: 0.86),
+                        fontSize: 12,
+                        height: 1.25,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            Container(
+              width: double.infinity,
+              constraints: const BoxConstraints(minHeight: 140, maxHeight: 320),
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              decoration: BoxDecoration(
+                color: CupertinoColors.black.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: CupertinoColors.white.withValues(alpha: 0.12),
+                  width: 0.7,
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Comentarios',
+                    style: TextStyle(
+                      color: CupertinoColors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  if (snapshot.connectionState == ConnectionState.waiting)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                      child: Center(child: CupertinoActivityIndicator()),
+                    )
+                  else if (items.isEmpty)
+                    Text(
+                      _youtubeDataApiKey.trim().isEmpty
+                          ? 'No se pudieron cargar comentarios. Para una carga más confiable activa la API key oficial (YOUTUBE_DATA_API_KEY).'
+                          : 'No se pudieron cargar comentarios para este video.',
+                      style: TextStyle(
+                        color: CupertinoColors.systemGrey2.resolveFrom(context),
+                        fontSize: 12,
+                      ),
+                    )
+                  else
+                    Expanded(
+                      child: ListView.separated(
+                        padding: EdgeInsets.zero,
+                        physics: const BouncingScrollPhysics(),
+                        itemCount: items.length,
+                        separatorBuilder: (_, _) => Divider(
+                          height: 12,
+                          color: CupertinoColors.white.withValues(alpha: 0.08),
+                        ),
+                        itemBuilder: (context, index) {
+                          final item = items[index];
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item.author,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: CupertinoColors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                item.text,
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: CupertinoColors.white.withValues(
+                                    alpha: 0.9,
+                                  ),
+                                  fontSize: 12,
+                                  height: 1.25,
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _YoutubeCommentItem {
+  final String author;
+  final String text;
+
+  const _YoutubeCommentItem({required this.author, required this.text});
+}
+
+class _EmbeddedVideoDiscussionData {
+  final String description;
+  final List<_YoutubeCommentItem> comments;
+
+  const _EmbeddedVideoDiscussionData({
+    required this.description,
+    required this.comments,
+  });
+}
+
+class _FullscreenVideoStage extends StatefulWidget {
+  final VideoPlayerManager manager;
   final VideoPlayerController controller;
   final VoidCallback onExitFullscreen;
 
   const _FullscreenVideoStage({
+    required this.manager,
     required this.controller,
     required this.onExitFullscreen,
   });
 
   @override
+  State<_FullscreenVideoStage> createState() => _FullscreenVideoStageState();
+}
+
+class _FullscreenVideoStageState extends State<_FullscreenVideoStage> {
+  static const Duration _overlayAutoHideDelay = Duration(seconds: 3);
+  static const Duration _doubleTapSeekStep = Duration(seconds: 10);
+  Timer? _overlayHideTimer;
+  Timer? _pipPrepareTimer;
+  bool _controlsVisible = true;
+  bool _iosPiPEntered = false;
+  bool _resumePlaybackAfterPiP = false;
+  bool _syncingBackFromPiP = false;
+  int _lastPreparedPositionMs = -1;
+  bool _shouldPauseAppAudioWhenPipStarts = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(_pipLifecycleObserver);
+    _videoPipChannel.setMethodCallHandler(_handleVideoPipCallback);
+    _armOverlayAutoHide();
+    unawaited(_prepareNativePictureInPicture());
+    _pipPrepareTimer = Timer.periodic(const Duration(milliseconds: 1300), (_) {
+      unawaited(_prepareNativePictureInPicture());
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _FullscreenVideoStage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.manager.isPlaying != widget.manager.isPlaying) {
+      _armOverlayAutoHide();
+    }
+    unawaited(_prepareNativePictureInPicture());
+  }
+
+  @override
+  void dispose() {
+    _videoPipChannel.setMethodCallHandler(null);
+    WidgetsBinding.instance.removeObserver(_pipLifecycleObserver);
+    _overlayHideTimer?.cancel();
+    _pipPrepareTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _handleVideoPipCallback(MethodCall call) async {
+    if (call.method == 'onPictureInPictureStarted') {
+      if (!mounted || !Platform.isIOS) return;
+      await widget.manager.muteForExternalPictureInPicture();
+      return;
+    }
+  }
+
+  late final WidgetsBindingObserver _pipLifecycleObserver = _PiPLifecycleObserver(
+    onResumed: _syncBackFromPictureInPictureIfNeeded,
+  );
+
+  Future<void> _syncBackFromPictureInPictureIfNeeded() async {
+    if (!mounted || _syncingBackFromPiP || !Platform.isIOS) {
+      return;
+    }
+    _syncingBackFromPiP = true;
+    try {
+      await widget.manager.muteForExternalPictureInPicture();
+      final raw = await _videoPipChannel.invokeMethod<Map<Object?, Object?>>(
+        'exitPictureInPictureAndGetState',
+      );
+      final map = raw == null
+          ? const <Object?, Object?>{}
+          : Map<Object?, Object?>.from(raw);
+      final positionMsRaw = map['positionMs'];
+      final wasPlayingRaw = map['wasPlaying'];
+      final wasActiveRaw = map['wasActive'];
+      final positionMs = positionMsRaw is num ? positionMsRaw.toInt() : 0;
+      final wasPlaying = wasPlayingRaw == true;
+      final wasActive = wasActiveRaw == true;
+
+      if (positionMs > 0) {
+        await widget.manager.seekTo(Duration(milliseconds: positionMs));
+      }
+      // Si PiP venía reproduciendo, al volver siempre reanudamos en app.
+      final shouldResume = wasPlaying || _resumePlaybackAfterPiP;
+      if (shouldResume && !widget.manager.isPlaying) {
+        await widget.manager.togglePlayPause();
+      }
+      if (!shouldResume && widget.manager.isPlaying) {
+        await widget.manager.togglePlayPause();
+      }
+      await widget.manager.unmuteAfterExternalPictureInPicture();
+    } catch (_) {
+      await widget.manager.unmuteAfterExternalPictureInPicture();
+    } finally {
+      _iosPiPEntered = false;
+      _resumePlaybackAfterPiP = false;
+      _shouldPauseAppAudioWhenPipStarts = false;
+      _syncingBackFromPiP = false;
+    }
+  }
+
+  Future<void> _prepareNativePictureInPicture() async {
+    if (!mounted || !Platform.isIOS || _iosPiPEntered) return;
+    final streamUrl = widget.manager.currentStreamUrl?.trim() ?? '';
+    if (streamUrl.isEmpty) return;
+    final positionMs = widget.manager.position.inMilliseconds;
+    if (_lastPreparedPositionMs >= 0 &&
+        (positionMs - _lastPreparedPositionMs).abs() < 350) {
+      return;
+    }
+    _lastPreparedPositionMs = positionMs;
+    try {
+      final value = widget.controller.value;
+      final ratio = value.isInitialized && value.aspectRatio > 0
+          ? value.aspectRatio
+          : (16 / 9);
+      final width = (ratio * 1000).round().clamp(1, 100000);
+      const height = 1000;
+      await _videoPipChannel.invokeMethod<bool>('preparePictureInPicture', {
+        'width': width,
+        'height': height,
+        'sourceUrl': streamUrl,
+        'positionMs': positionMs,
+        'playing': value.isPlaying || widget.manager.isPlaying,
+      });
+    } catch (_) {}
+  }
+
+  void _armOverlayAutoHide() {
+    _overlayHideTimer?.cancel();
+    if (!widget.manager.isPlaying || !_controlsVisible) return;
+    _overlayHideTimer = Timer(_overlayAutoHideDelay, () {
+      if (!mounted) return;
+      setState(() {
+        _controlsVisible = false;
+      });
+    });
+  }
+
+  void _showControls() {
+    if (!_controlsVisible) {
+      setState(() {
+        _controlsVisible = true;
+      });
+    }
+    _armOverlayAutoHide();
+  }
+
+  void _toggleControls() {
+    setState(() {
+      _controlsVisible = !_controlsVisible;
+    });
+    _armOverlayAutoHide();
+  }
+
+  Future<void> _seekBy(Duration delta) async {
+    final duration = widget.manager.trackDuration;
+    final current = widget.manager.position;
+    final upperBound = duration > Duration.zero ? duration : current + delta;
+    var next = current + delta;
+    if (next < Duration.zero) next = Duration.zero;
+    if (upperBound > Duration.zero && next > upperBound) next = upperBound;
+    await widget.manager.seekTo(next);
+    _showControls();
+  }
+
+  String _formatTime(Duration value) {
+    final totalSeconds = value.inSeconds < 0 ? 0 : value.inSeconds;
+    final hours = totalSeconds ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    final seconds = totalSeconds % 60;
+    final mm = minutes.toString().padLeft(2, '0');
+    final ss = seconds.toString().padLeft(2, '0');
+    if (hours > 0) {
+      return '$hours:$mm:$ss';
+    }
+    return '$minutes:$ss';
+  }
+
+  Future<void> _enterPictureInPicture({bool automatic = false}) async {
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS || Platform.isMacOS)) {
+      if (!mounted) return;
+      showIosNotice(context, 'PiP no disponible en esta plataforma.');
+      return;
+    }
+    try {
+      final wasPlayingBeforePiP =
+          widget.controller.value.isPlaying || widget.manager.isPlaying;
+      if (Platform.isIOS && wasPlayingBeforePiP) {
+        await widget.manager.muteForExternalPictureInPicture();
+      }
+      final value = widget.controller.value;
+      final ratio = value.isInitialized && value.aspectRatio > 0
+          ? value.aspectRatio
+          : (16 / 9);
+      final width = (ratio * 1000).round().clamp(1, 100000);
+      const height = 1000;
+      final streamUrl = widget.manager.currentStreamUrl?.trim() ?? '';
+      if (streamUrl.isEmpty) {
+        if (!mounted) return;
+        showIosNotice(
+          context,
+          'PiP no disponible para esta fuente de video.',
+        );
+        return;
+      }
+      await _prepareNativePictureInPicture();
+      final ok =
+          await _videoPipChannel.invokeMethod<bool>('enterPictureInPicture', {
+            'width': width,
+            'height': height,
+            'sourceUrl': streamUrl,
+            'positionMs': widget.manager.position.inMilliseconds,
+            'playing': wasPlayingBeforePiP,
+          }) ??
+          false;
+      if (!mounted) return;
+      if (!ok) {
+        await widget.manager.unmuteAfterExternalPictureInPicture();
+        _iosPiPEntered = false;
+        _resumePlaybackAfterPiP = false;
+        _shouldPauseAppAudioWhenPipStarts = false;
+        if (!automatic) {
+          showIosNotice(context, 'No se pudo activar PiP.');
+        }
+        return;
+      }
+      if (Platform.isIOS) {
+        _iosPiPEntered = true;
+        _resumePlaybackAfterPiP = wasPlayingBeforePiP;
+        _shouldPauseAppAudioWhenPipStarts = wasPlayingBeforePiP;
+        await SystemChannels.platform.invokeMethod<void>('SystemNavigator.pop');
+      }
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      final details = (e.message ?? e.code).trim();
+      if (!automatic) {
+        showIosNotice(
+          context,
+          details.isEmpty
+              ? 'No se pudo activar PiP.'
+              : 'No se pudo activar PiP: $details',
+        );
+      }
+    } catch (_) {
+      if (!mounted) return;
+      if (!automatic) {
+        showIosNotice(context, 'No se pudo activar PiP.');
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final value = controller.value;
+    final value = widget.controller.value;
     final ratio = value.isInitialized && value.aspectRatio > 0
         ? value.aspectRatio
         : (16 / 9);
-    return SizedBox.expand(
-      child: ColoredBox(
-        color: Colors.black,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            Center(
-              child: AspectRatio(
-                aspectRatio: ratio,
-                child: VideoPlayer(controller),
-              ),
-            ),
-            SafeArea(
-              child: Align(
-                alignment: Alignment.topRight,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 8, right: 8),
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: CupertinoColors.black.withValues(alpha: 0.55),
-                      borderRadius: BorderRadius.circular(999),
+    final duration = widget.manager.trackDuration;
+    final position = widget.manager.position;
+    final bufferedPosition = widget.manager.bufferedPosition;
+    final totalMs = duration.inMilliseconds;
+    final safeTotal = math.max(
+      1,
+      math.max(
+        totalMs,
+        math.max(position.inMilliseconds, bufferedPosition.inMilliseconds),
+      ),
+    );
+    final positionMs = position.inMilliseconds.clamp(0, safeTotal);
+    final bufferedMs = bufferedPosition.inMilliseconds.clamp(
+      positionMs,
+      safeTotal,
+    );
+    final playedRatio = positionMs / safeTotal;
+    final bufferedRatio = bufferedMs / safeTotal;
+
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) widget.onExitFullscreen();
+      },
+      child: Focus(
+        autofocus: true,
+        onKeyEvent: (_, event) {
+          if (event is! KeyDownEvent) return KeyEventResult.ignored;
+          if (event.logicalKey == LogicalKeyboardKey.escape) {
+            widget.onExitFullscreen();
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.space) {
+            unawaited(widget.manager.togglePlayPause());
+            _showControls();
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+            unawaited(_seekBy(_doubleTapSeekStep));
+            return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+            unawaited(_seekBy(-_doubleTapSeekStep));
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: SizedBox.expand(
+          child: ColoredBox(
+            color: Colors.black,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Center(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _toggleControls,
+                    child: AspectRatio(
+                      aspectRatio: ratio,
+                      child: VideoPlayer(widget.controller),
                     ),
-                    child: CupertinoButton(
-                      minimumSize: Size.zero,
-                      padding: const EdgeInsets.all(10),
-                      onPressed: onExitFullscreen,
-                      child: const Icon(
-                        CupertinoIcons.fullscreen_exit,
-                        color: CupertinoColors.white,
-                        size: 22,
+                  ),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onDoubleTap: () => unawaited(_seekBy(-_doubleTapSeekStep)),
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                    Expanded(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onDoubleTap: () => unawaited(_seekBy(_doubleTapSeekStep)),
+                        child: const SizedBox.expand(),
+                      ),
+                    ),
+                  ],
+                ),
+                IgnorePointer(
+                  ignoring: !_controlsVisible,
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 180),
+                    opacity: _controlsVisible ? 1 : 0,
+                    child: DecoratedBox(
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Color(0x66000000), Color(0x00000000), Color(0x80000000)],
+                          stops: [0.0, 0.45, 1.0],
+                        ),
+                      ),
+                      child: SafeArea(
+                        child: Stack(
+                          children: [
+                            Align(
+                              alignment: Alignment.topRight,
+                              child: Padding(
+                                padding: const EdgeInsets.only(top: 8, right: 8),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        color: CupertinoColors.black.withValues(
+                                          alpha: 0.55,
+                                        ),
+                                        borderRadius: BorderRadius.circular(999),
+                                      ),
+                                      child: CupertinoButton(
+                                        minimumSize: Size.zero,
+                                        padding: const EdgeInsets.all(10),
+                                        onPressed: () => unawaited(
+                                          _enterPictureInPicture(),
+                                        ),
+                                        child: const Icon(
+                                          CupertinoIcons.rectangle_on_rectangle,
+                                          color: CupertinoColors.white,
+                                          size: 20,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        color: CupertinoColors.black.withValues(
+                                          alpha: 0.55,
+                                        ),
+                                        borderRadius: BorderRadius.circular(999),
+                                      ),
+                                      child: CupertinoButton(
+                                        minimumSize: Size.zero,
+                                        padding: const EdgeInsets.all(10),
+                                        onPressed: widget.onExitFullscreen,
+                                        child: const Icon(
+                                          CupertinoIcons.fullscreen_exit,
+                                          color: CupertinoColors.white,
+                                          size: 22,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            Align(
+                              alignment: Alignment.center,
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _IosVideoActionButton(
+                                    icon: CupertinoIcons.gobackward_10,
+                                    onPressed: () async {
+                                      await _seekBy(-_doubleTapSeekStep);
+                                      _showControls();
+                                    },
+                                  ),
+                                  const SizedBox(width: 60),
+                                  _IosVideoActionButton(
+                                    icon: widget.manager.isPlaying
+                                        ? CupertinoIcons.pause_fill
+                                        : CupertinoIcons.play_fill,
+                                    onPressed: () async {
+                                      await widget.manager.togglePlayPause();
+                                      _showControls();
+                                    },
+                                    prominent: true,
+                                  ),
+                                  const SizedBox(width: 60),
+                                  _IosVideoActionButton(
+                                    icon: CupertinoIcons.goforward_10,
+                                    onPressed: () async {
+                                      await _seekBy(_doubleTapSeekStep);
+                                      _showControls();
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Align(
+                              alignment: Alignment.bottomCenter,
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    LayoutBuilder(
+                                      builder: (context, constraints) {
+                                        final maxWidth = constraints.maxWidth;
+
+                                        void seekByDx(double localDx) {
+                                          if (safeTotal <= 1 || maxWidth <= 0) {
+                                            return;
+                                          }
+                                          final ratio = (localDx / maxWidth)
+                                              .clamp(0.0, 1.0);
+                                          widget.manager.seekTo(
+                                            Duration(
+                                              milliseconds:
+                                                  (safeTotal * ratio).round(),
+                                            ),
+                                          );
+                                        }
+
+                                        return GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onTapDown: (details) =>
+                                              seekByDx(details.localPosition.dx),
+                                          onHorizontalDragUpdate: (details) =>
+                                              seekByDx(details.localPosition.dx),
+                                          child: SizedBox(
+                                            height: 28,
+                                            child: Stack(
+                                              alignment: Alignment.centerLeft,
+                                              children: [
+                                                Container(
+                                                  height: 7,
+                                                  decoration: BoxDecoration(
+                                                    color: CupertinoColors
+                                                        .systemGrey4
+                                                        .resolveFrom(context)
+                                                        .withValues(alpha: 0.52),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          999,
+                                                        ),
+                                                  ),
+                                                ),
+                                                FractionallySizedBox(
+                                                  widthFactor: bufferedRatio,
+                                                  child: Container(
+                                                    height: 7,
+                                                    decoration: BoxDecoration(
+                                                      color: CupertinoColors
+                                                          .systemGrey2
+                                                          .resolveFrom(context)
+                                                          .withValues(
+                                                            alpha: 0.62,
+                                                          ),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            999,
+                                                          ),
+                                                    ),
+                                                  ),
+                                                ),
+                                                FractionallySizedBox(
+                                                  widthFactor: playedRatio,
+                                                  child: Container(
+                                                    height: 7,
+                                                    decoration: BoxDecoration(
+                                                      color:
+                                                          CupertinoColors.white
+                                                              .withValues(
+                                                                alpha: 0.98,
+                                                              ),
+                                                      borderRadius:
+                                                          BorderRadius.circular(
+                                                            999,
+                                                          ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Row(
+                                      children: [
+                                        Text(
+                                          _formatTime(position),
+                                          style: const TextStyle(
+                                            color: CupertinoColors.white,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        const Spacer(),
+                                        Text(
+                                          _formatTime(
+                                            Duration(milliseconds: safeTotal),
+                                          ),
+                                          style: const TextStyle(
+                                            color: CupertinoColors.white,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
+              ],
             ),
-          ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PiPLifecycleObserver with WidgetsBindingObserver {
+  final Future<void> Function() onResumed;
+  _PiPLifecycleObserver({required this.onResumed});
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(onResumed());
+    }
+  }
+}
+
+class _IosVideoActionButton extends StatelessWidget {
+  final IconData icon;
+  final Future<void> Function() onPressed;
+  final bool prominent;
+
+  const _IosVideoActionButton({
+    required this.icon,
+    required this.onPressed,
+    this.prominent = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size = prominent ? 56.0 : 42.0;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(999),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: CupertinoColors.black.withValues(alpha: prominent ? 0.5 : 0.36),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(
+              color: CupertinoColors.white.withValues(alpha: 0.2),
+              width: 0.6,
+            ),
+          ),
+          child: CupertinoButton(
+            minimumSize: Size.square(size),
+            padding: EdgeInsets.zero,
+            onPressed: () => unawaited(onPressed()),
+            child: Icon(
+              icon,
+              color: CupertinoColors.white,
+              size: prominent ? 24 : 19,
+            ),
+          ),
         ),
       ),
     );
@@ -3765,6 +5459,7 @@ class _QueueSectionState extends State<_QueueSection> {
             String autoplayTitle,
             List<PlaybackQueueItem> manualQueue,
             List<PlaybackQueueItem> autoplayQueue,
+            bool isEmbeddedVideoMode,
           })
         >(
           (manager) => (
@@ -3772,6 +5467,10 @@ class _QueueSectionState extends State<_QueueSection> {
             autoplayTitle: manager.queueTitle,
             manualQueue: manager.manualPlaybackQueue,
             autoplayQueue: manager.autoplayPlaybackQueue,
+            isEmbeddedVideoMode:
+                manager.preferForegroundVideoPlayback &&
+                (manager.foregroundVideoController?.value.isInitialized ??
+                    false),
           ),
         );
     final manualQueue = queueState.manualQueue;
@@ -3894,6 +5593,7 @@ class _QueueSectionState extends State<_QueueSection> {
                   index: index,
                   showNextBadge: index == 0,
                   canReorder: true,
+                  youtubeStyle: queueState.isEmbeddedVideoMode,
                   onDragPointerMove: _onDragPointerMove,
                 );
               },
@@ -3941,6 +5641,7 @@ class _QueueSectionState extends State<_QueueSection> {
                   index: index,
                   showNextBadge: manualQueue.isEmpty && index == 0,
                   canReorder: true,
+                  youtubeStyle: queueState.isEmbeddedVideoMode,
                   onDragPointerMove: _onDragPointerMove,
                 );
               },
@@ -3993,6 +5694,7 @@ class _QueueRow extends StatelessWidget {
   final int index;
   final bool showNextBadge;
   final bool canReorder;
+  final bool youtubeStyle;
   final ValueChanged<PointerMoveEvent>? onDragPointerMove;
 
   const _QueueRow({
@@ -4002,6 +5704,7 @@ class _QueueRow extends StatelessWidget {
     required this.index,
     required this.showNextBadge,
     this.canReorder = true,
+    this.youtubeStyle = false,
     this.onDragPointerMove,
   });
 
@@ -4026,129 +5729,130 @@ class _QueueRow extends StatelessWidget {
               unawaited(HapticFeedback.selectionClick());
               unawaited(manager.playQueueItem(item));
             },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-              child: Row(
-                children: [
-                  if (canReorder)
-                    Listener(
-                      onPointerMove: onDragPointerMove,
-                      child: ReorderableDelayedDragStartListener(
-                        index: index,
-                        child: Padding(
-                          padding: const EdgeInsets.only(right: 8, left: 2),
-                          child: Container(
-                            width: 24,
-                            height: 24,
-                            alignment: Alignment.center,
-                            decoration: BoxDecoration(
-                              color: CupertinoColors.white.withValues(
-                                alpha: 0.08,
+            child: Listener(
+              onPointerMove: canReorder ? onDragPointerMove : null,
+              child: ReorderableDelayedDragStartListener(
+                index: index,
+                enabled: canReorder,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 10,
+                  ),
+                  child: Row(
+                    children: [
+                      youtubeStyle
+                          ? _QueueThumbnail16x9(
+                              url: item.thumbnailUrl,
+                              large: true,
+                            )
+                          : (item.thumbnailUrl.startsWith('/')
+                                ? SquareThumbnail.file(
+                                    filePath: item.thumbnailUrl,
+                                    size: 56,
+                                    borderRadius: 10,
+                                    zoom: 1,
+                                    fallback: Container(
+                                      width: 56,
+                                      height: 56,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.surfaceContainerHighest,
+                                      alignment: Alignment.center,
+                                      child: const Icon(
+                                        Icons.music_note_rounded,
+                                      ),
+                                    ),
+                                  )
+                                : SquareThumbnail.network(
+                                    imageUrl: item.thumbnailUrl,
+                                    size: 56,
+                                    borderRadius: 10,
+                                    zoom: 1,
+                                    fallback: Container(
+                                      width: 56,
+                                      height: 56,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.surfaceContainerHighest,
+                                      alignment: Alignment.center,
+                                      child: const Icon(
+                                        Icons.music_note_rounded,
+                                      ),
+                                    ),
+                                  )),
+                      SizedBox(width: youtubeStyle ? 12 : 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (showNextBadge)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 3),
+                                child: Text(
+                                  'Siguiente',
+                                  style: CupertinoTheme.of(context)
+                                      .textTheme
+                                      .textStyle
+                                      .copyWith(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                        color: CupertinoColors.systemPink
+                                            .resolveFrom(context),
+                                      ),
+                                ),
                               ),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Icon(
-                              CupertinoIcons.line_horizontal_3,
-                              size: 15,
-                              color: subtitleColor,
-                            ),
-                          ),
-                        ),
-                      ),
-                    )
-                  else
-                    const SizedBox(width: 34),
-                  item.thumbnailUrl.startsWith('/')
-                      ? SquareThumbnail.file(
-                          filePath: item.thumbnailUrl,
-                          size: 56,
-                          borderRadius: 10,
-                          zoom: 1,
-                          fallback: Container(
-                            width: 56,
-                            height: 56,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerHighest,
-                            alignment: Alignment.center,
-                            child: const Icon(Icons.music_note_rounded),
-                          ),
-                        )
-                      : SquareThumbnail.network(
-                          imageUrl: item.thumbnailUrl,
-                          size: 56,
-                          borderRadius: 10,
-                          zoom: 1,
-                          fallback: Container(
-                            width: 56,
-                            height: 56,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerHighest,
-                            alignment: Alignment.center,
-                            child: const Icon(Icons.music_note_rounded),
-                          ),
-                        ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (showNextBadge)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 3),
-                            child: Text(
-                              'Siguiente',
-                              style: CupertinoTheme.of(context)
-                                  .textTheme
-                                  .textStyle
-                                  .copyWith(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
-                                    color: CupertinoColors.systemPink
-                                        .resolveFrom(context),
-                                  ),
-                            ),
-                          ),
-                        Text(
-                          item.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
+                            Text(
+                              item.title,
+                              maxLines: youtubeStyle ? 2 : 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: CupertinoTheme.of(
+                                context,
+                              ).textTheme.textStyle.copyWith(
+                                fontSize: youtubeStyle ? 15 : 14,
+                                fontWeight: youtubeStyle
+                                    ? FontWeight.w700
+                                    : FontWeight.w600,
                                 color: titleColor,
                               ),
+                            ),
+                            SizedBox(height: youtubeStyle ? 4 : 2),
+                            Text(
+                              item.artist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: CupertinoTheme.of(
+                                context,
+                              ).textTheme.textStyle.copyWith(
+                                fontSize: youtubeStyle ? 12.5 : 12,
+                                fontWeight: youtubeStyle
+                                    ? FontWeight.w500
+                                    : FontWeight.w400,
+                                color: subtitleColor,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          item.artist,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: CupertinoTheme.of(context).textTheme.textStyle
-                              .copyWith(fontSize: 12, color: subtitleColor),
+                      ),
+                      CupertinoButton(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 0,
                         ),
-                      ],
-                    ),
+                        minimumSize: const Size(28, 28),
+                        onPressed: () {
+                          unawaited(HapticFeedback.lightImpact());
+                          unawaited(_showActionsMenu(context));
+                        },
+                        child: Icon(
+                          CupertinoIcons.ellipsis,
+                          size: 18,
+                          color: titleColor,
+                        ),
+                      ),
+                    ],
                   ),
-                  CupertinoButton(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 0,
-                    ),
-                    minimumSize: const Size(28, 28),
-                    onPressed: () {
-                      unawaited(HapticFeedback.lightImpact());
-                      unawaited(_showActionsMenu(context));
-                    },
-                    child: Icon(
-                      CupertinoIcons.ellipsis,
-                      size: 18,
-                      color: titleColor,
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
           ),
@@ -4359,6 +6063,45 @@ class _QueueRow extends StatelessWidget {
       context,
       message,
       duration: const Duration(milliseconds: 1500),
+    );
+  }
+}
+
+class _QueueThumbnail16x9 extends StatelessWidget {
+  final String url;
+  final bool large;
+
+  const _QueueThumbnail16x9({required this.url, this.large = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final width = large ? 168.0 : 112.0;
+    final height = large ? 94.5 : 63.0;
+    final fallback = Container(
+      width: width,
+      height: height,
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      alignment: Alignment.center,
+      child: const Icon(Icons.music_note_rounded),
+    );
+    final image = url.startsWith('/')
+        ? Image.file(
+            File(url),
+            width: width,
+            height: height,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => fallback,
+          )
+        : Image.network(
+            url,
+            width: width,
+            height: height,
+            fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => fallback,
+          );
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(large ? 12 : 10),
+      child: SizedBox(width: width, height: height, child: image),
     );
   }
 }
@@ -5269,6 +7012,14 @@ class _LyricsPanelState extends State<_LyricsPanel> {
           itemBuilder: (context, index) {
             final line = syncedLyrics[index];
             final isActive = index == currentIndex;
+            final distanceToActive = currentIndex < 0
+                ? 999
+                : (index - currentIndex).abs();
+            final isNearActive = distanceToActive == 1;
+            final lineOpacity = isActive ? 1.0 : (isNearActive ? 0.72 : 0.18);
+            final inactiveBlurRadius = isActive
+                ? 0.0
+                : (isNearActive ? 0.55 : 1.35);
             double liveProgress = 0.0;
             if (isActive) {
               final lineStart = line.timestamp;
@@ -5316,7 +7067,7 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                     child: AnimatedOpacity(
                       duration: const Duration(milliseconds: 300),
                       curve: Curves.easeInOut,
-                      opacity: isActive ? 1.0 : 0.36,
+                      opacity: lineOpacity,
                       child: AnimatedDefaultTextStyle(
                         duration: const Duration(milliseconds: 320),
                         curve: Curves.easeInOutCubic,
@@ -5328,6 +7079,17 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                           color: isActive
                               ? activeLyricsColor
                               : inactiveLyricsColor,
+                          shadows: isActive
+                              ? const <Shadow>[]
+                              : <Shadow>[
+                                  Shadow(
+                                    color: CupertinoColors.black.withValues(
+                                      alpha: isNearActive ? 0.24 : 0.34,
+                                    ),
+                                    blurRadius: inactiveBlurRadius,
+                                    offset: const Offset(0, 0),
+                                  ),
+                                ],
                         ),
                         child: isActive && liveLyricsEnabled
                             ? _LiveLyricSweepText(
@@ -5347,10 +7109,16 @@ class _LyricsPanelState extends State<_LyricsPanel> {
                                   color: activeLyricsColor,
                                 ),
                               )
-                            : Text(
-                                line.text,
-                                textAlign: TextAlign.left,
-                                softWrap: true,
+                            : ImageFiltered(
+                                imageFilter: ImageFilter.blur(
+                                  sigmaX: inactiveBlurRadius,
+                                  sigmaY: inactiveBlurRadius,
+                                ),
+                                child: Text(
+                                  line.text,
+                                  textAlign: TextAlign.left,
+                                  softWrap: true,
+                                ),
                               ),
                       ),
                     ),

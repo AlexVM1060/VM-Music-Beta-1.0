@@ -463,6 +463,79 @@ class PlaylistService {
     await setCloudOwnerId(cleanOwner);
   }
 
+  Future<List<Playlist>> getCloudPlaylistsForOwner({
+    required String ownerId,
+  }) async {
+    final db = _db;
+    if (db == null) return const <Playlist>[];
+    final cleanOwner = ownerId.trim();
+    if (cleanOwner.isEmpty) return const <Playlist>[];
+
+    final rows = await db
+        .from(_cloudPlaylistsTable)
+        .select('id, name, cover_url, description, is_favorites, updated_at')
+        .eq('owner_id', cleanOwner)
+        .order('updated_at', ascending: false);
+    final cloudPlaylists = (rows as List)
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList(growable: false);
+
+    final playlistIds = cloudPlaylists
+        .map((e) => (e['id'] ?? '').toString().trim())
+        .where((id) => id.isNotEmpty)
+        .toList(growable: false);
+    final itemsByPlaylistId = <String, List<Map<String, dynamic>>>{};
+    if (playlistIds.isNotEmpty) {
+      final itemRows = await db
+          .from(_cloudPlaylistItemsTable)
+          .select('playlist_id, position, video_id, title, artist')
+          .inFilter('playlist_id', playlistIds)
+          .order('position', ascending: true);
+      for (final raw in (itemRows as List)) {
+        final map = Map<String, dynamic>.from(raw);
+        final playlistId = (map['playlist_id'] ?? '').toString().trim();
+        if (playlistId.isEmpty) continue;
+        itemsByPlaylistId.putIfAbsent(playlistId, () => <Map<String, dynamic>>[]);
+        itemsByPlaylistId[playlistId]!.add(map);
+      }
+    }
+
+    final out = <Playlist>[];
+    for (final p in cloudPlaylists) {
+      final playlistId = (p['id'] ?? '').toString().trim();
+      final name = (p['name'] ?? '').toString().trim();
+      if (name.isEmpty) continue;
+      final itemRows = itemsByPlaylistId[playlistId] ?? const <Map<String, dynamic>>[];
+      final videos = itemRows.map((row) {
+        final videoId = (row['video_id'] ?? '').toString();
+        final thumbUrl = videoId.trim().isEmpty
+            ? ''
+            : 'https://i.ytimg.com/vi/$videoId/maxresdefault.jpg';
+        return VideoHistory(
+          videoId: videoId,
+          title: (row['title'] ?? '').toString(),
+          thumbnailUrl: thumbUrl,
+          channelTitle: (row['artist'] ?? '').toString(),
+          watchedAt: DateTime.now(),
+        );
+      }).where((v) => v.videoId.trim().isNotEmpty).toList(growable: false);
+
+      out.add(
+        Playlist(
+          name: _normalizePlaylistName(name),
+          videos: videos,
+          coverUrl: (p['cover_url'] as String?)?.trim().isEmpty == true
+              ? null
+              : p['cover_url'] as String?,
+          description: (p['description'] as String?)?.trim().isEmpty == true
+              ? null
+              : p['description'] as String?,
+        ),
+      );
+    }
+    return out;
+  }
+
   Future<void> _syncLocalPlaylistsToCloudBestEffort() async {
     final db = _db;
     if (db == null) return;

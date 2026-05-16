@@ -213,6 +213,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
   bool _karaokeModeEnabled = false;
   bool _isAiStemsLoading = false;
   bool _usingAiInstrumental = false;
+  bool _mutedForExternalPictureInPicture = false;
   String? _karaokeOriginalStreamUrl;
   bool _isLyricsLayout = false;
   bool _isLyricsLoading = false;
@@ -5806,6 +5807,9 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
         effectivePreloadedStreamUrl = rememberedResolvedUrl;
       }
     }
+    final shouldKeepVideoModeForQueueItem =
+        !item.isLocal &&
+        (preferVideoPlayback || _preferForegroundVideoPlayback);
     await play(
       item.videoId,
       preferredThumbnailUrl: item.thumbnailUrl,
@@ -5813,7 +5817,7 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       preferredArtist: item.artist,
       preloadedStreamUrl: effectivePreloadedStreamUrl,
       preserveExistingQueue: true,
-      preferVideoPlayback: preferVideoPlayback,
+      preferVideoPlayback: shouldKeepVideoModeForQueueItem,
       forceBackendResolver: !hasFreshLocalCache,
     );
     log(
@@ -6861,6 +6865,71 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  Future<void> pauseForExternalPictureInPicture() async {
+    try {
+      final hidden = _hiddenVideoController;
+      if (hidden != null) {
+        try {
+          await hidden.pause();
+        } catch (_) {}
+      }
+      try {
+        await _player.pause();
+      } catch (_) {}
+      try {
+        await _crossfadePlayer.pause();
+      } catch (_) {}
+    } finally {
+      _isPlaying = false;
+      _isBuffering = false;
+      _lastUserRequestedPlaying = false;
+      _lastUserRequestedPlayingAt = DateTime.now();
+      _syncSystemPlaybackState(force: true);
+      unawaited(_persistPlaybackSession(force: true));
+      notifyListeners();
+    }
+  }
+
+  Future<void> muteForExternalPictureInPicture() async {
+    if (_mutedForExternalPictureInPicture) return;
+    try {
+      final hidden = _hiddenVideoController;
+      if (hidden != null) {
+        try {
+          await hidden.setVolume(0);
+        } catch (_) {}
+      }
+      try {
+        await _player.setVolume(0.0);
+      } catch (_) {}
+      try {
+        await _crossfadePlayer.setVolume(0.0);
+      } catch (_) {}
+      _mutedForExternalPictureInPicture = true;
+    } catch (_) {}
+  }
+
+  Future<void> unmuteAfterExternalPictureInPicture() async {
+    if (!_mutedForExternalPictureInPicture) return;
+    try {
+      final hidden = _hiddenVideoController;
+      if (hidden != null) {
+        try {
+          await hidden.setVolume(1.0);
+        } catch (_) {}
+      }
+      final targetVolume = _targetPlaybackVolume();
+      try {
+        await _player.setVolume(targetVolume);
+      } catch (_) {}
+      try {
+        await _crossfadePlayer.setVolume(0.0);
+      } catch (_) {}
+    } finally {
+      _mutedForExternalPictureInPicture = false;
+    }
+  }
+
   @override
   void dispose() {
     _isDisposed = true;
@@ -7749,7 +7818,8 @@ class VideoPlayerManager extends ChangeNotifier with WidgetsBindingObserver {
       await playQueueItem(
         next,
         preloadedStreamUrl: preloadedUrl,
-        preferVideoPlayback: triggeredByCrossfade,
+        preferVideoPlayback:
+            triggeredByCrossfade || _preferForegroundVideoPlayback,
       );
     } catch (e, s) {
       log('Error reproduciendo siguiente de la cola', error: e, stackTrace: s);

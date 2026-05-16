@@ -92,13 +92,14 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
 }
 
 @main
-@objc class AppDelegate: FlutterAppDelegate {
+@objc class AppDelegate: FlutterAppDelegate, AVPictureInPictureControllerDelegate {
   private let artworkCutoutChannelName = "com.vm.music.beta/artwork_cutout"
   private let lockScreenFavoriteChannelName = "com.vm.music.beta/ios_lock_screen_favorite"
   private let songShareChannelName = "com.vm.music.beta/song_share"
   private let siriControlChannelName = "com.vm.music.beta/siri"
   private let powerModeChannelName = "com.vm.music.beta/power_mode"
   private let systemVolumeChannelName = "com.vm.music.beta/system_volume"
+  private let videoPipChannelName = "com.vm.music.beta/video_pip"
   private let appleMusicMigrationChannelName = "com.vm.music.beta/apple_music_migration"
   private let backgroundTaskChannelName = "com.vm.music.beta/background_task"
   private let sharedSongPendingKey = "com.vm.music.beta.pending_shared_song"
@@ -108,6 +109,14 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
   private var siriControlChannel: FlutterMethodChannel?
   private var powerModeChannel: FlutterMethodChannel?
   private var systemVolumeChannel: FlutterMethodChannel?
+  private var videoPipChannel: FlutterMethodChannel?
+  private var pipPlayer: AVPlayer?
+  private var pipController: AVPictureInPictureController?
+  private var pipLayer: AVPlayerLayer?
+  private var pipHostView: UIView?
+  private var pipShouldPlayOnStart: Bool = true
+  private var pipAutoStartArmed: Bool = false
+  private var pipPreparedSource: String?
   private var activeBackgroundTasks: [String: UIBackgroundTaskIdentifier] = [:]
   private lazy var hiddenVolumeView: MPVolumeView = {
     let view = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
@@ -201,6 +210,17 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
       }
     }
 
+    if let registrar = self.registrar(forPlugin: "VideoPipChannelPlugin") {
+      let channel = FlutterMethodChannel(
+        name: videoPipChannelName,
+        binaryMessenger: registrar.messenger()
+      )
+      videoPipChannel = channel
+      channel.setMethodCallHandler { [weak self] call, result in
+        self?.handleVideoPip(call: call, result: result)
+      }
+    }
+
     if let registrar = self.registrar(forPlugin: "AppleMusicMigrationChannelPlugin") {
       let channel = FlutterMethodChannel(
         name: appleMusicMigrationChannelName,
@@ -230,6 +250,231 @@ struct VMMusicAppShortcuts: AppShortcutsProvider {
       VMMusicAppShortcuts.updateAppShortcutParameters()
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  override func applicationWillResignActive(_ application: UIApplication) {
+    super.applicationWillResignActive(application)
+    attemptAutoStartPictureInPicture()
+  }
+
+  override func applicationDidEnterBackground(_ application: UIApplication) {
+    super.applicationDidEnterBackground(application)
+    attemptAutoStartPictureInPicture()
+  }
+
+  private func attemptAutoStartPictureInPicture() {
+    guard #available(iOS 15.0, *) else { return }
+    guard pipAutoStartArmed else { return }
+    guard let controller = pipController else { return }
+    if controller.isPictureInPictureActive { return }
+    let retryDelays: [Double] = [0.0, 0.08, 0.18, 0.35, 0.55]
+    for delay in retryDelays {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        guard let self else { return }
+        guard self.pipAutoStartArmed else { return }
+        guard let retryController = self.pipController else { return }
+        if retryController.isPictureInPictureActive {
+          self.pipAutoStartArmed = false
+          return
+        }
+        if self.pipShouldPlayOnStart {
+          self.pipPlayer?.play()
+        }
+        if retryController.isPictureInPicturePossible {
+          retryController.delegate = self
+          retryController.startPictureInPicture()
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            if retryController.isPictureInPictureActive {
+              self.pipAutoStartArmed = false
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private func disposeCurrentPipResources() {
+    pipAutoStartArmed = false
+    pipPreparedSource = nil
+    pipPlayer?.pause()
+    pipLayer?.removeFromSuperlayer()
+    pipHostView?.removeFromSuperview()
+    pipLayer = nil
+    pipHostView = nil
+    pipController = nil
+    pipPlayer = nil
+  }
+
+  private func preparePictureInPicture(args: [String: Any]) -> Bool {
+    guard let source = (args["sourceUrl"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !source.isEmpty
+    else {
+      return false
+    }
+    let url: URL
+    if source.hasPrefix("/") {
+      url = URL(fileURLWithPath: source)
+    } else if let parsed = URL(string: source) {
+      url = parsed
+    } else {
+      return false
+    }
+    let positionMs = (args["positionMs"] as? NSNumber)?.doubleValue ?? 0
+    let shouldPlay = (args["playing"] as? Bool) ?? true
+    pipShouldPlayOnStart = shouldPlay
+    pipAutoStartArmed = true
+
+    guard #available(iOS 15.0, *) else { return false }
+    guard let rootView = window?.rootViewController?.view else { return false }
+
+    // Si PiP ya está activo, no tocamos la sesión para evitar "refresh" visual.
+    if let activeController = pipController, activeController.isPictureInPictureActive {
+      return true
+    }
+
+    // Reutiliza la sesión PiP si la fuente no cambió para evitar carreras
+    // de recreación justo cuando la app pasa a background.
+    if pipPreparedSource == source,
+       let existingPlayer = pipPlayer,
+       pipController != nil,
+       pipLayer != nil,
+       pipHostView != nil {
+      let target = CMTime(
+        seconds: max(0, positionMs) / 1000.0,
+        preferredTimescale: CMTimeScale(NSEC_PER_SEC)
+      )
+      existingPlayer.seek(to: target)
+      return true
+    }
+
+    disposeCurrentPipResources()
+    pipAutoStartArmed = true
+
+    let item = AVPlayerItem(url: url)
+    let player = AVPlayer(playerItem: item)
+    let layer = AVPlayerLayer(player: player)
+    layer.videoGravity = .resizeAspect
+    guard let controller = AVPictureInPictureController(playerLayer: layer) else {
+      return false
+    }
+    controller.delegate = self
+    let host = UIView(frame: CGRect(x: 8, y: 8, width: 2, height: 2))
+    host.alpha = 0.01
+    host.isUserInteractionEnabled = false
+    rootView.addSubview(host)
+    layer.frame = host.bounds
+    host.layer.addSublayer(layer)
+
+    pipPlayer = player
+    pipLayer = layer
+    pipController = controller
+    pipHostView = host
+    pipPreparedSource = source
+
+    if #available(iOS 14.2, *) {
+      controller.canStartPictureInPictureAutomaticallyFromInline = true
+    }
+
+    let target = CMTime(
+      seconds: max(0, positionMs) / 1000.0,
+      preferredTimescale: CMTimeScale(NSEC_PER_SEC)
+    )
+    player.seek(to: target)
+    player.pause()
+    return true
+  }
+
+  func pictureInPictureControllerDidStartPictureInPicture(
+    _ pictureInPictureController: AVPictureInPictureController
+  ) {
+    pipAutoStartArmed = false
+    videoPipChannel?.invokeMethod("onPictureInPictureStarted", arguments: nil)
+  }
+
+  private func handleVideoPip(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    if call.method == "preparePictureInPicture" {
+      guard let args = call.arguments as? [String: Any] else {
+        result(false)
+        return
+      }
+      result(preparePictureInPicture(args: args))
+      return
+    }
+    if call.method == "enterPictureInPicture" {
+      guard let args = call.arguments as? [String: Any] else {
+        result(false)
+        return
+      }
+      guard preparePictureInPicture(args: args) else {
+        result(false)
+        return
+      }
+      let shouldPlay = pipShouldPlayOnStart
+
+      if #available(iOS 15.0, *) {
+        guard let controller = pipController else {
+          result(false)
+          return
+        }
+        let maxAttempts = 25
+        var attempts = 0
+        func startWhenPossible() {
+          if controller.isPictureInPictureActive {
+            result(true)
+            return
+          }
+          if controller.isPictureInPicturePossible {
+            controller.startPictureInPicture()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+              if shouldPlay {
+                self.pipPlayer?.play()
+              }
+              result(controller.isPictureInPictureActive || controller.isPictureInPicturePossible)
+            }
+            return
+          }
+          attempts += 1
+          if attempts >= maxAttempts {
+            result(false)
+            return
+          }
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            startWhenPossible()
+          }
+        }
+        DispatchQueue.main.async {
+          startWhenPossible()
+        }
+        return
+      }
+      result(false)
+      return
+    }
+    if call.method == "exitPictureInPictureAndGetState" {
+      let player = pipPlayer
+      let controller = pipController
+      let seconds = player?.currentTime().seconds ?? 0
+      let positionMs = Int((seconds.isFinite ? seconds : 0) * 1000.0)
+      let wasPlaying = (player?.rate ?? 0) > 0
+      let wasActive = controller?.isPictureInPictureActive ?? false
+
+      // Silencia de inmediato el audio PiP al volver a la app.
+      player?.pause()
+      if wasActive {
+        controller?.stopPictureInPicture()
+      }
+      disposeCurrentPipResources()
+
+      result([
+        "positionMs": max(0, positionMs),
+        "wasPlaying": wasPlaying,
+        "wasActive": wasActive,
+      ])
+      return
+    }
+
+    result(FlutterMethodNotImplemented)
   }
 
   deinit {

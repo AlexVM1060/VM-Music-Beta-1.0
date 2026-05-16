@@ -13,6 +13,7 @@ import 'package:myapp/utils/artist_name_utils.dart';
 import 'package:myapp/utils/thumbnail_quality.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/ios_notice.dart';
+import 'package:myapp/widgets/ios_youtube_video_controls.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
@@ -209,6 +210,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           allowFullScreen: true,
           allowedScreenSleep: false,
           autoInitialize: true,
+          showControls: true,
+          customControls: IosYoutubeVideoControls(
+            title: _videoTitle,
+            onMinimize: _manager.minimize,
+            onClose: _manager.close,
+            onQualityPressed: _muxedStreamInfos.isNotEmpty
+                ? () => _showQualityOptions(context)
+                : null,
+          ),
         );
 
         _selectedStreamInfo = streamInfo;
@@ -532,20 +542,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                         );
                         if (!mounted) return;
                         showIosNotice(context, 'Añadido a favoritos');
-                      },
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.settings),
-                      tooltip: 'Cambiar Calidad',
-                      onPressed: () {
-                        if (_muxedStreamInfos.isNotEmpty) {
-                          _showQualityOptions(context);
-                        } else {
-                          showIosNotice(
-                            context,
-                            'No hay otras calidades disponibles.',
-                          );
-                        }
                       },
                     ),
                   ],

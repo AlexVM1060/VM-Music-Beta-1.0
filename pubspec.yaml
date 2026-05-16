@@ -29,6 +29,7 @@ dependencies:
   chewie: ^1.13.0
   hive: ^2.2.3
   hive_flutter: ^1.1.0
+  http: ^1.5.0
   dio: ^5.9.0
   collection: ^1.19.1
   palette_generator: ^0.3.3+7

@@ -370,7 +370,9 @@ class _PlaylistsPageState extends State<PlaylistsPage> {
                               ),
                             );
 
-                            if (!Platform.isIOS) return tile;
+                            if (!Platform.isIOS && !Platform.isMacOS) {
+                              return tile;
+                            }
                             final isPinned =
                                 widget.isPlaylistPinned?.call(playlist) ??
                                 false;

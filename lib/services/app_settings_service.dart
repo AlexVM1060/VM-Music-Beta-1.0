@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 
@@ -21,6 +23,8 @@ class AppSettingsService extends ChangeNotifier {
 
   late final Box _box;
   bool _initialized = false;
+  bool _persistenceAvailable = false;
+  Future<void>? _initFuture;
 
   AudioQualityPreference _audioQuality = AudioQualityPreference.high;
   bool _normalizeVolume = true;
@@ -55,7 +59,36 @@ class AppSettingsService extends ChangeNotifier {
 
   Future<void> init() async {
     if (_initialized) return;
-    _box = await Hive.openBox(_boxName);
+    final pendingInit = _initFuture;
+    if (pendingInit != null) {
+      await pendingInit;
+      return;
+    }
+
+    _initFuture = _initInternal();
+    try {
+      await _initFuture;
+    } finally {
+      _initFuture = null;
+    }
+  }
+
+  Future<void> _initInternal() async {
+    if (_initialized) return;
+
+    try {
+      if (Hive.isBoxOpen(_boxName)) {
+        _box = Hive.box(_boxName);
+      } else {
+        _box = await Hive.openBox(_boxName);
+      }
+      _persistenceAvailable = true;
+    } on FileSystemException catch (_) {
+      // If another instance still holds the lock, keep the app running with defaults.
+      _persistenceAvailable = false;
+      _initialized = true;
+      return;
+    }
     _audioQuality = _audioQualityFromRaw(
       _box.get(
         _audioQualityKey,
@@ -85,6 +118,11 @@ class AppSettingsService extends ChangeNotifier {
     _initialized = true;
   }
 
+  Future<void> _put(String key, Object? value) async {
+    if (!_persistenceAvailable) return;
+    await _box.put(key, value);
+  }
+
   AudioQualityPreference _audioQualityFromRaw(Object? raw) {
     final value = raw?.toString().trim() ?? '';
     for (final option in AudioQualityPreference.values) {
@@ -96,14 +134,14 @@ class AppSettingsService extends ChangeNotifier {
   Future<void> setAudioQuality(AudioQualityPreference value) async {
     if (_audioQuality == value) return;
     _audioQuality = value;
-    await _box.put(_audioQualityKey, value.name);
+    await _put(_audioQualityKey, value.name);
     notifyListeners();
   }
 
   Future<void> setNormalizeVolume(bool value) async {
     if (_normalizeVolume == value) return;
     _normalizeVolume = value;
-    await _box.put(_normalizeVolumeKey, value);
+    await _put(_normalizeVolumeKey, value);
     notifyListeners();
   }
 
@@ -133,57 +171,57 @@ class AppSettingsService extends ChangeNotifier {
         _djMode = true;
         break;
     }
-    await _box.put(_crossfadeKey, _crossfade);
-    await _box.put(_djModeKey, _djMode);
+    await _put(_crossfadeKey, _crossfade);
+    await _put(_djModeKey, _djMode);
     notifyListeners();
   }
 
   Future<void> setDownloadOnlyOnWifi(bool value) async {
     if (_downloadOnlyOnWifi == value) return;
     _downloadOnlyOnWifi = value;
-    await _box.put(_downloadOnlyOnWifiKey, value);
+    await _put(_downloadOnlyOnWifiKey, value);
     notifyListeners();
   }
 
   Future<void> setAllowExplicitContent(bool value) async {
     if (_allowExplicitContent == value) return;
     _allowExplicitContent = value;
-    await _box.put(_explicitContentKey, value);
+    await _put(_explicitContentKey, value);
     notifyListeners();
   }
 
   Future<void> setAnimatedCutoutCovers(bool value) async {
     if (_animatedCutoutCovers == value) return;
     _animatedCutoutCovers = value;
-    await _box.put(_animatedCutoutCoversKey, value);
+    await _put(_animatedCutoutCoversKey, value);
     notifyListeners();
   }
 
   Future<void> setLiveLyrics(bool value) async {
     if (_liveLyrics == value) return;
     _liveLyrics = value;
-    await _box.put(_liveLyricsKey, value);
+    await _put(_liveLyricsKey, value);
     notifyListeners();
   }
 
   Future<void> setVmMusicSingEnabled(bool value) async {
     if (_vmMusicSingEnabled == value) return;
     _vmMusicSingEnabled = value;
-    await _box.put(_vmMusicSingEnabledKey, value);
+    await _put(_vmMusicSingEnabledKey, value);
     notifyListeners();
   }
 
   Future<void> setDataSaverMode(bool value) async {
     if (_dataSaverMode == value) return;
     _dataSaverMode = value;
-    await _box.put(_dataSaverModeKey, value);
+    await _put(_dataSaverModeKey, value);
     notifyListeners();
   }
 
   Future<void> setBackendOnlyPlayback(bool value) async {
     if (_backendOnlyPlayback == value) return;
     _backendOnlyPlayback = value;
-    await _box.put(_backendOnlyPlaybackKey, value);
+    await _put(_backendOnlyPlaybackKey, value);
     notifyListeners();
   }
 }

@@ -1276,7 +1276,7 @@ class _PinnedShortcutDraggableCardState
           ),
         );
 
-        if (!Platform.isIOS) return interactiveCard;
+        if (!Platform.isIOS && !Platform.isMacOS) return interactiveCard;
         return CupertinoContextMenu(
           enableHapticFeedback: true,
           actions: [

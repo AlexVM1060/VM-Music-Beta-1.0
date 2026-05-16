@@ -48,8 +48,12 @@ void main() async {
   await _initSupabase();
 
   // Inicialización de Hive
-  final appDocumentDir = await getApplicationDocumentsDirectory();
-  await Hive.initFlutter(appDocumentDir.path);
+  if (kIsWeb) {
+    await Hive.initFlutter();
+  } else {
+    final appDocumentDir = await getApplicationDocumentsDirectory();
+    await Hive.initFlutter(appDocumentDir.path);
+  }
   Hive.registerAdapter(VideoHistoryAdapter());
   Hive.registerAdapter(PlaylistAdapter());
   Hive.registerAdapter(DownloadedVideoAdapter());
@@ -666,6 +670,7 @@ class _MainTabsState extends State<MainTabs> {
     final isFullScreen = playerState.isFullScreen;
     final isExpandedPlayerVisible =
         playerState.currentVideoId != null && !playerState.isMinimized;
+    final isMacOs = !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
     final colorScheme = Theme.of(context).colorScheme;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final shellBackground = isDark
@@ -772,7 +777,8 @@ class _MainTabsState extends State<MainTabs> {
           Positioned(
             left: 0,
             right: 0,
-            bottom: 0,
+            top: isMacOs ? MediaQuery.of(context).padding.top + 10 : null,
+            bottom: isMacOs ? null : 0,
             child: _CupertinoRootTabBar(
               currentIndex: selectedIndex,
               onTap: _onItemTapped,
@@ -812,6 +818,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMacOs = !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final inactive = CupertinoColors.secondaryLabel.resolveFrom(context);
     final active = CupertinoColors.systemPink.resolveFrom(context);
@@ -850,7 +857,7 @@ class _CupertinoRootTabBar extends StatelessWidget {
         : ((currentIndex / (items.length - 1)) * 2) - 1;
 
     final barContent = Container(
-      padding: const EdgeInsets.fromLTRB(8, 7, 8, 8),
+      padding: EdgeInsets.fromLTRB(8, isMacOs ? 8 : 7, 8, isMacOs ? 9 : 8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(24),
         gradient: LinearGradient(
@@ -955,15 +962,23 @@ class _CupertinoRootTabBar extends StatelessWidget {
       top: false,
       bottom: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(24),
-          child: lightweightEffects
-              ? barContent
-              : BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                  child: barContent,
-                ),
+        padding: EdgeInsets.fromLTRB(14, 0, 14, isMacOs ? 16 : 12),
+        child: Align(
+          alignment: Alignment.bottomCenter,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: isMacOs ? 760 : double.infinity,
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: lightweightEffects
+                  ? barContent
+                  : BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                      child: barContent,
+                    ),
+            ),
+          ),
         ),
       ),
     );

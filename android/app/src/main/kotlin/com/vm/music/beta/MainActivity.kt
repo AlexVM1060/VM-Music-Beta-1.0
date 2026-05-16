@@ -1,18 +1,23 @@
 package com.vm.music.beta
 
+import android.app.PictureInPictureParams
 import android.content.Intent
 import android.net.Uri
-import io.flutter.embedding.android.FlutterActivity
+import android.os.Build
+import android.util.Rational
+import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import org.json.JSONObject
 
-class MainActivity : FlutterActivity() {
+class MainActivity : AudioServiceActivity() {
     private var songShareChannel: MethodChannel? = null
+    private var pipChannel: MethodChannel? = null
     private var pendingSharedSong: HashMap<String, Any?>? = null
 
     companion object {
         private const val SONG_SHARE_CHANNEL = "com.vm.music.beta/song_share"
+        private const val VIDEO_PIP_CHANNEL = "com.vm.music.beta/video_pip"
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -27,6 +32,34 @@ class MainActivity : FlutterActivity() {
                 pendingSharedSong = null
             } else {
                 result.notImplemented()
+            }
+        }
+        pipChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            VIDEO_PIP_CHANNEL
+        )
+        pipChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "enterPictureInPicture" -> {
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    val width = call.argument<Int>("width") ?: 16
+                    val height = call.argument<Int>("height") ?: 9
+                    val safeWidth = width.coerceAtLeast(1)
+                    val safeHeight = height.coerceAtLeast(1)
+                    return@setMethodCallHandler try {
+                        val params = PictureInPictureParams.Builder()
+                            .setAspectRatio(Rational(safeWidth, safeHeight))
+                            .build()
+                        enterPictureInPictureMode(params)
+                        result.success(true)
+                    } catch (_: Exception) {
+                        result.success(false)
+                    }
+                }
+                else -> result.notImplemented()
             }
         }
         handleIncomingIntent(intent)

@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:hive/hive.dart';
+import 'package:http/http.dart' as http;
 import 'package:image/image.dart' as img;
 import 'package:myapp/models/video_history.dart';
 import 'package:myapp/search_view_state.dart';
@@ -87,11 +88,12 @@ double _rootBottomOverlayReserve(
   BuildContext context, {
   required bool hasMiniPlayer,
 }) {
+  final isMacOs = !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
   final bottomInset = MediaQuery.of(context).padding.bottom;
   // Reserva para la tab bar flotante del shell (Inicio/Buscar/Descargas/Cuenta).
-  const tabBarReserve = 108.0;
+  final tabBarReserve = isMacOs ? 90.0 : 108.0;
   // Extra cuando el mini reproductor está visible.
-  const miniPlayerReserve = 64.0;
+  final miniPlayerReserve = isMacOs ? 56.0 : 64.0;
   return tabBarReserve + (hasMiniPlayer ? miniPlayerReserve : 0) + bottomInset;
 }
 
@@ -1531,6 +1533,10 @@ class SearchPage extends StatefulWidget {
 
 class _SearchPageState extends State<SearchPage>
     with SingleTickerProviderStateMixin {
+  static const String _webResolverBaseUrl = String.fromEnvironment(
+    'WEB_RESOLVER_BASE_URL',
+    defaultValue: 'http://localhost:10000',
+  );
   static const int _minimumSubscribers = 100000;
   static const int _maxChannelsToShow = 2;
   static const String _searchNetworkCacheBoxName = 'search_network_cache';
@@ -3212,7 +3218,7 @@ class _SearchPageState extends State<SearchPage>
   }
 
   Future<List<Video>> _searchUnfilteredVideos(String query) async {
-    final raw = await _youtubeExplode.search.search(query);
+    final raw = await _searchVideosSource(query: query, limit: 80);
     final seenIds = <String>{};
     final videos = <Video>[];
     for (final video in raw.take(80)) {
@@ -3334,7 +3340,7 @@ class _SearchPageState extends State<SearchPage>
   }) async {
     try {
       final raw = await _runYoutubeWithRetry(
-        () => _youtubeExplode.search.search(searchQuery),
+        () => _searchVideosSource(query: searchQuery, limit: 40),
         maxAttempts: 1,
       );
       for (final video in raw.take(40)) {
@@ -3354,6 +3360,82 @@ class _SearchPageState extends State<SearchPage>
     } catch (_) {
       // Ignoramos esta subconsulta y seguimos.
     }
+  }
+
+  Future<List<Video>> _searchVideosSource({
+    required String query,
+    required int limit,
+  }) async {
+    if (!kIsWeb) {
+      final results = await _youtubeExplode.search.search(query);
+      return results.take(limit).toList();
+    }
+    return _searchVideosFromWebResolver(query: query, limit: limit);
+  }
+
+  Future<List<Video>> _searchVideosFromWebResolver({
+    required String query,
+    required int limit,
+  }) async {
+    final normalizedQuery = query.trim();
+    if (normalizedQuery.isEmpty) return const <Video>[];
+
+    final uri = Uri.parse(
+      '$_webResolverBaseUrl/search?q=${Uri.encodeQueryComponent(normalizedQuery)}&limit=$limit',
+    );
+    final response = await http
+        .get(uri, headers: const {'Accept': 'application/json'})
+        .timeout(const Duration(seconds: 15));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('web_search_http_${response.statusCode}');
+    }
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map) return const <Video>[];
+    final items = decoded['items'];
+    if (items is! List) return const <Video>[];
+
+    final videos = <Video>[];
+    final seen = <String>{};
+    for (final item in items) {
+      if (item is! Map) continue;
+      final map = Map<String, dynamic>.from(item.cast<dynamic, dynamic>());
+      final video = _videoFromResolverMap(map);
+      if (video == null) continue;
+      final id = video.id.value.trim();
+      if (id.isEmpty || !seen.add(id)) continue;
+      videos.add(video);
+    }
+    return videos;
+  }
+
+  Video? _videoFromResolverMap(Map<String, dynamic> data) {
+    final id = (data['videoId'] ?? '').toString().trim();
+    if (!VideoId.validateVideoId(id)) return null;
+    final title = (data['title'] ?? '').toString().trim();
+    final author = (data['author'] ?? '').toString().trim();
+    final channelIdRaw = (data['channelId'] ?? '').toString().trim();
+    final safeTitle = title.isEmpty ? 'Sin título' : title;
+    final safeAuthor = author.isEmpty ? 'Artista' : author;
+    final safeChannelId = channelIdRaw.isEmpty
+        ? 'UC_x5XG1OV2P6uZZ5FSM9Ttw'
+        : channelIdRaw;
+
+    return Video(
+      VideoId(id),
+      safeTitle,
+      safeAuthor,
+      ChannelId(safeChannelId),
+      null,
+      null,
+      null,
+      '',
+      null,
+      ThumbnailSet(id),
+      const <String>[],
+      const Engagement(0, null, null),
+      false,
+    );
   }
 
   List<String> _buildAudioFocusedQueries(String query) {
@@ -4050,8 +4132,7 @@ class _SearchPageState extends State<SearchPage>
         : bottomOverlayReserve;
     const searchControlsClearance = 20.0;
     final contentBottomPadding =
-        (controlsBottomOffset + searchControlsClearance) -
-        bottomOverlayReserve;
+        (controlsBottomOffset + searchControlsClearance) - bottomOverlayReserve;
     const controlsBottomSpacing = 12.0;
 
     return MediaQuery(
@@ -6042,10 +6123,8 @@ class _VideoCard extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   (constraints.hasBoundedWidth
-                          ? Expanded(
-                              child: _VideoCardTextBlock(video: video),
-                            )
-                          : const SizedBox.shrink()),
+                      ? Expanded(child: _VideoCardTextBlock(video: video))
+                      : const SizedBox.shrink()),
                   if (!constraints.hasBoundedWidth)
                     SizedBox(
                       width: 220,

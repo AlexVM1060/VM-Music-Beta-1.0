@@ -1493,7 +1493,7 @@ class _ProfilePlaylistFeatureCard extends StatelessWidget {
         ),
       ),
     );
-    if (!Platform.isIOS) return tile;
+    if (!Platform.isIOS && !Platform.isMacOS) return tile;
     return CupertinoContextMenu(
       enableHapticFeedback: true,
       actions: [

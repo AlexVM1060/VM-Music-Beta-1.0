@@ -9,6 +9,7 @@ import 'package:myapp/models/downloaded_video.dart';
 import 'package:myapp/services/download_service.dart';
 import 'package:myapp/video_player_manager.dart';
 import 'package:myapp/widgets/ios_notice.dart';
+import 'package:myapp/widgets/ios_youtube_video_controls.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
@@ -94,6 +95,12 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
           looping: false,
           aspectRatio: 16 / 9,
           allowFullScreen: true,
+          showControls: true,
+          customControls: IosYoutubeVideoControls(
+            title: widget.video.title,
+            onMinimize: _manager.minimize,
+            onClose: _manager.close,
+          ),
         );
 
         setState(() {
@@ -227,24 +234,7 @@ class _OfflineVideoPlayerPageState extends State<OfflineVideoPlayerPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Stack(
-              children: [
-                AspectRatio(aspectRatio: 16 / 9, child: player),
-                Positioned(
-                  top: 8,
-                  left: 8,
-                  child: CupertinoButton(
-                    padding: EdgeInsets.zero,
-                    onPressed: _manager.minimize,
-                    child: const Icon(
-                      CupertinoIcons.chevron_down,
-                      color: Colors.white,
-                      size: 30,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+            AspectRatio(aspectRatio: 16 / 9, child: player),
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: Row(
